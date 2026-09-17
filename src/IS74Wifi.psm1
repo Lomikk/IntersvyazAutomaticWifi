@@ -1,0 +1,960 @@
+#requires -Version 5.1
+
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+
+Add-Type -AssemblyName System.Net.Http
+
+# Windows PowerShell 5.1 may otherwise inherit an older TLS default on some systems.
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+} catch {
+    # Keep going on systems where the enum differs; HttpClient will use system defaults.
+}
+
+$script:StateDir       = Join-Path $env:LOCALAPPDATA 'IS74Wifi'
+$script:DeviceFile     = Join-Path $script:StateDir 'device-id.txt'
+$script:SecretsFile    = Join-Path $script:StateDir 'secrets.dpapi'
+$script:LegacyTokenFile = Join-Path $script:StateDir 'bearer.dpapi'
+$script:SessionFile    = Join-Path $script:StateDir 'session-meta.json'
+$script:RuntimeFile    = Join-Path $script:StateDir 'runtime-state.json'
+$script:SettingsFile   = Join-Path $script:StateDir 'settings.json'
+$script:DeviceMetaFile = Join-Path $script:StateDir 'device-metadata.json'
+$script:LogDir         = Join-Path $script:StateDir 'logs'
+$script:TaskName       = 'IS74WifiAgent'
+$script:ApiBase        = 'https://api.is74.ru'
+$script:PortalBase     = 'http://w.is74.ru'
+$script:AppVersion     = '2.18.0-RS-95aa9b78'
+$script:BuildCode      = 2026061111
+$script:PollScheduleMs = @(100, 150, 200, 250, 350, 500, 700, 1000, 1400, 2000, 3000, 4500, 6500, 10000)
+
+function Initialize-IS74Storage {
+    if (-not (Test-Path $script:StateDir)) {
+        New-Item -ItemType Directory -Force -Path $script:StateDir | Out-Null
+    }
+    if (-not (Test-Path $script:LogDir)) {
+        New-Item -ItemType Directory -Force -Path $script:LogDir | Out-Null
+    }
+    if (-not (Test-Path $script:SettingsFile)) {
+        [ordered]@{
+            authWindowHours = 24
+            preExpiryMinutes = 10
+            agentPollSeconds = 15
+            retryBackoffSeconds = 60
+            notifications = $true
+        } | ConvertTo-Json | Set-Content -Path $script:SettingsFile -Encoding UTF8
+    }
+}
+
+function Write-IS74Log {
+    param(
+        [Parameter(Mandatory=$true)][string]$Message,
+        [ValidateSet('INFO','WARN','ERROR')][string]$Level = 'INFO'
+    )
+
+    try {
+        Initialize-IS74Storage
+        $logFile = Join-Path $script:LogDir ((Get-Date).ToString('yyyy-MM-dd') + '.log')
+        $line = '{0} [{1}] {2}' -f (Get-Date).ToString('o'), $Level, $Message
+        Add-Content -Path $logFile -Value $line -Encoding UTF8
+    } catch {
+        # Logging must never break authorization.
+    }
+}
+
+function Read-IS74JsonFile {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    if (-not (Test-Path $Path)) { return $null }
+    try {
+        return (Get-Content -Path $Path -Raw | ConvertFrom-Json)
+    } catch {
+        Write-IS74Log -Level WARN -Message "Не удалось прочитать JSON: $Path"
+        return $null
+    }
+}
+
+function Write-IS74JsonFile {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)]$Value
+    )
+    $Value | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
+}
+
+function Get-IS74Settings {
+    Initialize-IS74Storage
+    $settings = Read-IS74JsonFile -Path $script:SettingsFile
+    if (-not $settings) {
+        return [pscustomobject]@{
+            authWindowHours = 24
+            preExpiryMinutes = 10
+            agentPollSeconds = 15
+            retryBackoffSeconds = 60
+            notifications = $true
+        }
+    }
+    return $settings
+}
+
+function Protect-IS74Text {
+    param([Parameter(Mandatory=$true)][string]$PlainText)
+    $secure = ConvertTo-SecureString -String $PlainText -AsPlainText -Force
+    return (ConvertFrom-SecureString -SecureString $secure)
+}
+
+function Unprotect-IS74Text {
+    param([Parameter(Mandatory=$true)][string]$CipherText)
+
+    $secure = ConvertTo-SecureString -String $CipherText
+    $ptr = [IntPtr]::Zero
+    try {
+        $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+    } finally {
+        if ($ptr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+        }
+    }
+}
+
+function Get-IS74LegacyToken {
+    if (-not (Test-Path $script:LegacyTokenFile)) { return $null }
+    try {
+        $cipher = (Get-Content -Path $script:LegacyTokenFile -Raw).Trim()
+        if (-not $cipher) { return $null }
+        return (Unprotect-IS74Text -CipherText $cipher)
+    } catch {
+        Write-IS74Log -Level WARN -Message 'Старый bearer.dpapi найден, но не расшифровался.'
+        return $null
+    }
+}
+
+function Test-IS74Bearer {
+    param(
+        [Parameter(Mandatory=$true)][string]$Token,
+        [Parameter(Mandatory=$true)][string]$DeviceId
+    )
+    $pair = New-IS74HttpClientPair
+    try {
+        $request = New-IS74PushRequest -Token $Token -DeviceId $DeviceId -PageSize 1
+        $result = Send-IS74Request -Client $pair.Client -Request $request
+        return ($result.StatusCode -eq 200)
+    } catch {
+        return $false
+    } finally {
+        $pair.Client.Dispose()
+        $pair.Handler.Dispose()
+    }
+}
+
+function Save-IS74Secrets {
+    param(
+        [Parameter(Mandatory=$true)][string]$Token,
+        [Parameter(Mandatory=$true)][string]$Phone
+    )
+
+    Initialize-IS74Storage
+    $plain = ([ordered]@{ token = $Token; phone = $Phone } | ConvertTo-Json -Compress)
+    $cipher = Protect-IS74Text -PlainText $plain
+    Set-Content -Path $script:SecretsFile -Value $cipher -Encoding ASCII -NoNewline
+}
+
+function Get-IS74Secrets {
+    if (-not (Test-Path $script:SecretsFile)) { return $null }
+    try {
+        $cipher = (Get-Content -Path $script:SecretsFile -Raw).Trim()
+        $plain = Unprotect-IS74Text -CipherText $cipher
+        return ($plain | ConvertFrom-Json)
+    } catch {
+        Write-IS74Log -Level ERROR -Message 'Не удалось расшифровать локальные секреты DPAPI.'
+        return $null
+    }
+}
+
+function New-IS74DeviceId {
+    Initialize-IS74Storage
+    if (Test-Path $script:DeviceFile) {
+        $existing = (Get-Content -Path $script:DeviceFile -Raw).Trim()
+        if ($existing) { return $existing }
+    }
+
+    $bytes = New-Object byte[] 8
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    } finally {
+        $rng.Dispose()
+    }
+    $deviceId = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+    Set-Content -Path $script:DeviceFile -Value $deviceId -Encoding ASCII -NoNewline
+    return $deviceId
+}
+
+function Get-IS74DeviceId {
+    if (-not (Test-Path $script:DeviceFile)) { return $null }
+    return (Get-Content -Path $script:DeviceFile -Raw).Trim()
+}
+
+function Normalize-IS74Phone {
+    param([Parameter(Mandatory=$true)][string]$Phone)
+    $normalized = $Phone -replace '\D',''
+    if ($normalized.Length -eq 11 -and ($normalized[0] -eq '7' -or $normalized[0] -eq '8')) {
+        $normalized = $normalized.Substring(1)
+    }
+    if ($normalized.Length -ne 10) {
+        throw 'После нормализации номер телефона должен содержать 10 цифр.'
+    }
+    return $normalized
+}
+
+function New-IS74HttpClientPair {
+    param(
+        [switch]$NoRedirect,
+        [int]$TimeoutSeconds = 15,
+        [int]$MaxConnections = 16
+    )
+
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    if ($NoRedirect) { $handler.AllowAutoRedirect = $false }
+    # The captive network previously blocked CRL/OCSP reachability. Keep normal
+    # certificate/name validation, but do not make online revocation lookup a
+    # prerequisite for reaching the app API through the walled garden.
+    try { $handler.CheckCertificateRevocationList = $false } catch { }
+    try { $handler.MaxConnectionsPerServer = $MaxConnections } catch { }
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
+    return [pscustomobject]@{ Handler = $handler; Client = $client }
+}
+
+function Add-IS74ApiHeaders {
+    param(
+        [Parameter(Mandatory=$true)][System.Net.Http.HttpRequestMessage]$Request,
+        [Parameter(Mandatory=$true)][string]$DeviceId,
+        [string]$Token,
+        [switch]$NoCache,
+        [string]$UserId,
+        [string]$ProfileId
+    )
+
+    $null = $Request.Headers.TryAddWithoutValidation('Accept', 'application/json; version=v2')
+    $null = $Request.Headers.TryAddWithoutValidation('X-Device-Id', $DeviceId)
+    $null = $Request.Headers.TryAddWithoutValidation('X-Api-Source', 'com.intersvyaz.lk')
+    $null = $Request.Headers.TryAddWithoutValidation('X-App-version', $script:AppVersion)
+    $null = $Request.Headers.TryAddWithoutValidation('Platform', 'Android')
+    $null = $Request.Headers.TryAddWithoutValidation('User-Agent', "4.11.0 com.intersvyaz.lk/$($script:AppVersion).$($script:BuildCode)")
+    if ($Token) { $null = $Request.Headers.TryAddWithoutValidation('Authorization', "Bearer $Token") }
+    if ($NoCache) { $null = $Request.Headers.TryAddWithoutValidation('Cache-Control', 'no-cache') }
+    if ($UserId) { $null = $Request.Headers.TryAddWithoutValidation('X-Api-User-Id', $UserId) }
+    if ($ProfileId) { $null = $Request.Headers.TryAddWithoutValidation('X-Api-Profile-Id', $ProfileId) }
+}
+
+function Send-IS74Request {
+    param(
+        [Parameter(Mandatory=$true)][System.Net.Http.HttpClient]$Client,
+        [Parameter(Mandatory=$true)][System.Net.Http.HttpRequestMessage]$Request
+    )
+
+    $response = $null
+    try {
+        $response = $Client.SendAsync($Request).GetAwaiter().GetResult()
+        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        $location = ''
+        if ($response.Headers.Location) { $location = $response.Headers.Location.ToString() }
+        return [pscustomobject]@{
+            StatusCode = [int]$response.StatusCode
+            IsSuccess = $response.IsSuccessStatusCode
+            Body = $body
+            Location = $location
+        }
+    } finally {
+        if ($response) { $response.Dispose() }
+        $Request.Dispose()
+    }
+}
+
+function Get-IS74WindowsDescription {
+    try {
+        $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+        $buildNumber = [int]$cv.CurrentBuildNumber
+        $ubr = [string]$cv.UBR
+        $displayVersion = [string]$cv.DisplayVersion
+        $editionId = [string]$cv.EditionID
+        $windowsName = if ($buildNumber -ge 22000) { 'Windows 11' } else { 'Windows 10' }
+        $edition = switch -Regex ($editionId) {
+            '^Professional' { 'Pro'; break }
+            '^Enterprise'   { 'Enterprise'; break }
+            '^Education'    { 'Education'; break }
+            '^Core'         { 'Home'; break }
+            default         { $editionId }
+        }
+        $fullBuild = if ($ubr) { "$buildNumber.$ubr" } else { [string]$buildNumber }
+        $result = $windowsName
+        if ($edition) { $result += " $edition" }
+        if ($displayVersion) { $result += " $displayVersion" }
+        $result += " (build $fullBuild)"
+        return $result
+    } catch {
+        return [Environment]::OSVersion.VersionString
+    }
+}
+
+function Register-IS74DeviceMetadata {
+    param(
+        [Parameter(Mandatory=$true)][string]$Token,
+        [Parameter(Mandatory=$true)][string]$Phone,
+        [Parameter(Mandatory=$true)][string]$DeviceId
+    )
+
+    $pair = New-IS74HttpClientPair
+    try {
+        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, "$($script:ApiBase)/mobile/pushtoken/add-with-device-id")
+        Add-IS74ApiHeaders -Request $request -DeviceId $DeviceId -Token $Token
+
+        $osName = Get-IS74WindowsDescription
+        $deviceName = $env:COMPUTERNAME
+        $deviceInfo = [ordered]@{
+            TYPE             = 5
+            UNIQUE_DEVICE_ID = $DeviceId
+            AUTHORIZE_PHONE  = $Phone
+            VERS_NAME        = $script:AppVersion
+            ASSEMBLY_CODE    = $script:BuildCode
+            OS_VERS          = $osName
+            DEVICE_MODEL     = $deviceName
+        }
+        $request.Content = [System.Net.Http.StringContent]::new(($deviceInfo | ConvertTo-Json -Compress), [Text.Encoding]::UTF8, 'application/json')
+        $result = Send-IS74Request -Client $pair.Client -Request $request
+        if ($result.StatusCode -lt 200 -or $result.StatusCode -ge 300) {
+            Write-IS74Log -Level WARN -Message "Device metadata HTTP $($result.StatusCode)."
+            return $false
+        }
+
+        Write-IS74JsonFile -Path $script:DeviceMetaFile -Value ([ordered]@{
+            deviceId = $DeviceId
+            deviceModel = $deviceName
+            osVersion = $osName
+            registeredAt = (Get-Date).ToString('o')
+        })
+        return $true
+    } catch {
+        Write-IS74Log -Level WARN -Message "Не удалось отправить метаданные устройства: $($_.Exception.Message)"
+        return $false
+    } finally {
+        $pair.Client.Dispose()
+        $pair.Handler.Dispose()
+    }
+}
+
+function Register-IS74Account {
+    Initialize-IS74Storage
+    if (Get-IS74Secrets) {
+        Write-Host 'Устройство уже зарегистрировано. Для новой регистрации сначала выполните reset.' -ForegroundColor Green
+        return $true
+    }
+    $deviceId = New-IS74DeviceId
+    $phone = Normalize-IS74Phone -Phone (Read-Host 'Введите номер телефона')
+
+    # Seamless migration from the experiment layout: reuse the already issued
+    # year-long DPAPI Bearer instead of consuming another SMS login.
+    if (-not (Test-Path $script:SecretsFile) -and (Test-Path $script:LegacyTokenFile)) {
+        $legacyToken = Get-IS74LegacyToken
+        if ($legacyToken) {
+            Write-Host 'Найден Bearer из экспериментальной версии. Проверяю его...' -ForegroundColor Cyan
+            if (Test-IS74Bearer -Token $legacyToken -DeviceId $deviceId) {
+                Save-IS74Secrets -Token $legacyToken -Phone $phone
+                $null = Register-IS74DeviceMetadata -Token $legacyToken -Phone $phone -DeviceId $deviceId
+                Write-IS74Log -Message 'Старый bearer.dpapi мигрирован в secrets.dpapi без повторного SMS.'
+                Write-Host 'Существующая сессия перенесена. Новый SMS-код не потребовался.' -ForegroundColor Green
+                return $true
+            }
+            Write-Host 'Старый Bearer больше не действует; потребуется обычная SMS-регистрация.' -ForegroundColor Yellow
+        }
+    }
+
+    $pair = New-IS74HttpClientPair
+    try {
+        Write-Host 'Запрашиваю код подтверждения...' -ForegroundColor Cyan
+        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$($script:ApiBase)/mobile/auth/get-confirm")
+        Add-IS74ApiHeaders -Request $request -DeviceId $deviceId
+        $payload = [ordered]@{ phone = $phone; deviceId = $deviceId; authType = 0 } | ConvertTo-Json -Compress
+        $request.Content = [System.Net.Http.StringContent]::new($payload, [Text.Encoding]::UTF8, 'application/json')
+        $getConfirm = Send-IS74Request -Client $pair.Client -Request $request
+        if ($getConfirm.StatusCode -lt 200 -or $getConfirm.StatusCode -ge 300) {
+            throw "get-confirm вернул HTTP $($getConfirm.StatusCode)."
+        }
+
+        $smsCode = (Read-Host 'Введите SMS-код').Trim()
+        if ($smsCode -notmatch '^\d+$') { throw 'SMS-код должен состоять из цифр.' }
+
+        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$($script:ApiBase)/mobile/auth/check-confirm")
+        Add-IS74ApiHeaders -Request $request -DeviceId $deviceId
+        $form = [System.Collections.Generic.Dictionary[string,string]]::new()
+        $form['phone'] = $phone
+        $form['confirmCode'] = $smsCode
+        $form['authId'] = ''
+        $request.Content = [System.Net.Http.FormUrlEncodedContent]::new($form)
+        $check = Send-IS74Request -Client $pair.Client -Request $request
+        if ($check.StatusCode -lt 200 -or $check.StatusCode -ge 300) {
+            throw "check-confirm вернул HTTP $($check.StatusCode)."
+        }
+
+        $checkJson = $check.Body | ConvertFrom-Json
+        if (-not $checkJson.authId) { throw 'check-confirm не вернул подтверждённый authId.' }
+        if ($checkJson.addresses -and @($checkJson.addresses).Count -gt 0) {
+            throw 'Сервер вернул несколько связанных адресов. Этот MVP пока не выбирает userId автоматически; регистрация остановлена без сохранения Bearer.'
+        }
+
+        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$($script:ApiBase)/mobile/auth/get-token")
+        Add-IS74ApiHeaders -Request $request -DeviceId $deviceId -UserId '-1' -ProfileId 'null'
+        $form = [System.Collections.Generic.Dictionary[string,string]]::new()
+        $form['authId'] = [string]$checkJson.authId
+        $form['userId'] = ''
+        $form['uniqueDeviceId'] = $deviceId
+        $request.Content = [System.Net.Http.FormUrlEncodedContent]::new($form)
+        $tokenResult = Send-IS74Request -Client $pair.Client -Request $request
+        if ($tokenResult.StatusCode -lt 200 -or $tokenResult.StatusCode -ge 300) {
+            throw "get-token вернул HTTP $($tokenResult.StatusCode)."
+        }
+
+        $session = $tokenResult.Body | ConvertFrom-Json
+        if (-not $session.TOKEN) { throw 'get-token вернул HTTP 2xx, но TOKEN отсутствует.' }
+
+        Save-IS74Secrets -Token ([string]$session.TOKEN) -Phone $phone
+        Write-IS74JsonFile -Path $script:SessionFile -Value ([ordered]@{
+            deviceId = $deviceId
+            userId = $session.USER_ID
+            profileId = $session.PROFILE_ID
+            accessBegin = $session.ACCESS_BEGIN
+            accessEnd = $session.ACCESS_END
+            registeredAt = (Get-Date).ToString('o')
+        })
+
+        # Metadata is best-effort and must not invalidate an otherwise successful registration.
+        $null = Register-IS74DeviceMetadata -Token ([string]$session.TOKEN) -Phone $phone -DeviceId $deviceId
+        Write-IS74Log -Message 'Регистрация аккаунта завершена.'
+        Write-Host 'Регистрация завершена. Bearer и номер сохранены через DPAPI текущего пользователя.' -ForegroundColor Green
+        if ($session.ACCESS_END) { Write-Host "Сессия API действует до: $($session.ACCESS_END)" }
+        return $true
+    } finally {
+        $pair.Client.Dispose()
+        $pair.Handler.Dispose()
+    }
+}
+
+function Get-IS74ToastAppId {
+    try {
+        $app = Get-StartApps | Where-Object { $_.Name -eq 'Windows PowerShell' } | Select-Object -First 1
+        if ($app -and $app.AppID) { return [string]$app.AppID }
+    } catch { }
+    return 'Microsoft.Windows.PowerShell'
+}
+
+function Show-IS74Toast {
+    param(
+        [Parameter(Mandatory=$true)][string]$Title,
+        [Parameter(Mandatory=$true)][string]$Message
+    )
+
+    $settings = Get-IS74Settings
+    if ($settings.notifications -eq $false) { return $false }
+
+    try {
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
+        [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
+        $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02
+        $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
+        $nodes = $xml.GetElementsByTagName('text')
+        $null = $nodes.Item(0).AppendChild($xml.CreateTextNode($Title))
+        $null = $nodes.Item(1).AppendChild($xml.CreateTextNode($Message))
+        $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+        $appId = Get-IS74ToastAppId
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
+        return $true
+    } catch {
+        Write-IS74Log -Level WARN -Message "Toast не показан: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Test-IS74InternetAccess {
+    $pair = New-IS74HttpClientPair -NoRedirect -TimeoutSeconds 4 -MaxConnections 2
+    $request = $null
+    $response = $null
+    try {
+        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, 'http://www.msftconnecttest.com/connecttest.txt')
+        $response = $pair.Client.SendAsync($request).GetAwaiter().GetResult()
+        if ([int]$response.StatusCode -ne 200) { return $false }
+        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        return ($body.Trim() -eq 'Microsoft Connect Test')
+    } catch {
+        return $false
+    } finally {
+        if ($response) { $response.Dispose() }
+        if ($request) { $request.Dispose() }
+        $pair.Client.Dispose()
+        $pair.Handler.Dispose()
+    }
+}
+
+function Test-IS74SystemInternetState {
+    try {
+        $profiles = Get-NetConnectionProfile -ErrorAction Stop
+        foreach ($profile in @($profiles)) {
+            if ([string]$profile.IPv4Connectivity -eq 'Internet' -or [string]$profile.IPv6Connectivity -eq 'Internet') {
+                return $true
+            }
+        }
+    } catch {
+        # On systems without NetConnection cmdlets, fall back to the active probe.
+        return (Test-IS74InternetAccess)
+    }
+    return $false
+}
+
+function Test-IS74WifiConnected {
+    try {
+        $lines = & netsh.exe wlan show interfaces 2>$null
+        foreach ($line in $lines) {
+            if ($line -match '^\s*SSID\s*:\s*(.+?)\s*$') {
+                if ($Matches[1] -and $Matches[1] -notmatch '^N/A$') { return $true }
+            }
+        }
+    } catch { }
+    return $false
+}
+
+function New-IS74PushRequest {
+    param(
+        [Parameter(Mandatory=$true)][string]$Token,
+        [Parameter(Mandatory=$true)][string]$DeviceId,
+        [int]$PageSize = 1
+    )
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, "$($script:ApiBase)/mobile/pushmessages?page=1&pageSize=$PageSize")
+    Add-IS74ApiHeaders -Request $request -DeviceId $DeviceId -Token $Token -NoCache
+    return $request
+}
+
+function Get-IS74TopMessage {
+    param($Json)
+    if ($null -eq $Json) { return $null }
+    if ($Json -is [array]) { return @($Json)[0] }
+    if ($Json.items) { return @($Json.items)[0] }
+    if ($Json.data -is [array]) { return @($Json.data)[0] }
+    return $Json
+}
+
+function Get-IS74WifiCodeFromMessage {
+    param($Message)
+    if ($null -eq $Message) { return $null }
+    if ([string]$Message.subject -ne 'Ваш код авторизации') { return $null }
+    foreach ($text in @([string]$Message.push_message, [string]$Message.full_message)) {
+        if ($text -match '^(\d{4}) код авторизации в приложении "Интерсвязь"$') {
+            return $Matches[1]
+        }
+    }
+    return $null
+}
+
+function Get-IS74BaselineId {
+    param(
+        [Parameter(Mandatory=$true)][System.Net.Http.HttpClient]$Client,
+        [Parameter(Mandatory=$true)][string]$Token,
+        [Parameter(Mandatory=$true)][string]$DeviceId
+    )
+    $request = New-IS74PushRequest -Token $Token -DeviceId $DeviceId -PageSize 1
+    $result = Send-IS74Request -Client $Client -Request $request
+    if ($result.StatusCode -eq 401) { throw 'Bearer отклонён сервером (HTTP 401). Выполните регистрацию заново.' }
+    if (-not $result.IsSuccess) { throw "Baseline pushmessages HTTP $($result.StatusCode)." }
+    $json = $result.Body | ConvertFrom-Json
+    $msg = Get-IS74TopMessage -Json $json
+    if ($msg -and $msg.id) { return [Int64]$msg.id }
+    return [Int64]0
+}
+
+function Find-IS74WifiCodeAfterBaseline {
+    param(
+        [Parameter(Mandatory=$true)][System.Net.Http.HttpClient]$Client,
+        [Parameter(Mandatory=$true)][string]$Token,
+        [Parameter(Mandatory=$true)][string]$DeviceId,
+        [Parameter(Mandatory=$true)][Int64]$BaselineId
+    )
+    $request = New-IS74PushRequest -Token $Token -DeviceId $DeviceId -PageSize 5
+    $result = Send-IS74Request -Client $Client -Request $request
+    if (-not $result.IsSuccess) { return $null }
+    $json = $result.Body | ConvertFrom-Json
+    $messages = @()
+    if ($json -is [array]) { $messages = @($json) }
+    elseif ($json.items) { $messages = @($json.items) }
+    elseif ($json.data -is [array]) { $messages = @($json.data) }
+    else { $messages = @($json) }
+
+    foreach ($msg in $messages) {
+        if ($msg.id -and [Int64]$msg.id -gt $BaselineId) {
+            $code = Get-IS74WifiCodeFromMessage -Message $msg
+            if ($code) { return [pscustomobject]@{ Code = $code; Id = [Int64]$msg.id } }
+        }
+    }
+    return $null
+}
+
+function Read-IS74RuntimeState {
+    $state = Read-IS74JsonFile -Path $script:RuntimeFile
+    if ($state) { return $state }
+    return [pscustomobject]@{
+        lastAuthUtc = $null
+        expectedExpiryUtc = $null
+        preExpiryNotified = $false
+        lastAttemptUtc = $null
+        lastResult = $null
+        internetConfirmed = $null
+    }
+}
+
+function Save-IS74RuntimeState {
+    param([Parameter(Mandatory=$true)]$State)
+    Write-IS74JsonFile -Path $script:RuntimeFile -Value $State
+}
+
+function Set-IS74SuccessfulAuthState {
+    param([bool]$InternetConfirmed)
+    $settings = Get-IS74Settings
+    $now = [DateTime]::UtcNow
+    $state = [ordered]@{
+        lastAuthUtc = $now.ToString('o')
+        expectedExpiryUtc = $now.AddHours([double]$settings.authWindowHours).ToString('o')
+        preExpiryNotified = $false
+        lastAttemptUtc = $now.ToString('o')
+        lastResult = 'success'
+        internetConfirmed = $InternetConfirmed
+    }
+    Save-IS74RuntimeState -State $state
+}
+
+function Set-IS74AttemptState {
+    param([string]$Result)
+    $state = Read-IS74RuntimeState
+    $state.lastAttemptUtc = [DateTime]::UtcNow.ToString('o')
+    $state.lastResult = $Result
+    Save-IS74RuntimeState -State $state
+}
+
+function Connect-IS74Wifi {
+    param(
+        [switch]$Force,
+        [switch]$Quiet
+    )
+
+    Initialize-IS74Storage
+    $secrets = Get-IS74Secrets
+    $deviceId = Get-IS74DeviceId
+    if (-not $secrets -or -not $secrets.token -or -not $secrets.phone -or -not $deviceId) {
+        throw 'Устройство не зарегистрировано. Сначала выполните register.'
+    }
+
+    if (-not $Force -and (Test-IS74InternetAccess)) {
+        if (-not $Quiet) { Write-Host 'Интернет уже доступен; авторизация не требуется.' -ForegroundColor Green }
+        return [pscustomobject]@{ Status='AlreadyOnline'; InternetConfirmed=$true }
+    }
+
+    Set-IS74AttemptState -Result 'started'
+    $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Начинаю автоматическую авторизацию Wi-Fi.'
+    Write-IS74Log -Message 'Начата Wi-Fi авторизация.'
+    if (-not $Quiet) { Write-Host 'Начинаю Wi-Fi авторизацию...' -ForegroundColor Cyan }
+
+    $apiPair = New-IS74HttpClientPair -TimeoutSeconds 15 -MaxConnections 16
+    $portalPair = New-IS74HttpClientPair -NoRedirect -TimeoutSeconds 15 -MaxConnections 4
+    $polls = New-Object System.Collections.ArrayList
+    $stepRequest = $null
+    $stepResponse = $null
+
+    try {
+        $token = [string]$secrets.token
+        $phone = [string]$secrets.phone
+        $baselineId = Get-IS74BaselineId -Client $apiPair.Client -Token $token -DeviceId $deviceId
+
+        $stepRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$($script:PortalBase)/stepOne")
+        $form = [System.Collections.Generic.Dictionary[string,string]]::new()
+        $form['phone'] = "8$phone"
+        $form['dial_code'] = '7'
+        $form['country_code'] = 'ru'
+        $form['sendPush'] = 'on'
+        $stepRequest.Content = [System.Net.Http.FormUrlEncodedContent]::new($form)
+
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $stepTask = $portalPair.Client.SendAsync($stepRequest, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
+        $nextIndex = 0
+        $found = $null
+        $fallbackUsed = $false
+
+        while ($clock.Elapsed.TotalMilliseconds -lt 12000 -and -not $found) {
+            $now = $clock.Elapsed.TotalMilliseconds
+            while ($nextIndex -lt $script:PollScheduleMs.Count -and $now -ge $script:PollScheduleMs[$nextIndex] -and -not $found) {
+                $request = New-IS74PushRequest -Token $token -DeviceId $deviceId -PageSize 1
+                $task = $apiPair.Client.SendAsync($request)
+                $poll = [pscustomobject]@{
+                    Request = $request
+                    Task = $task
+                    Processed = $false
+                    TargetMs = $script:PollScheduleMs[$nextIndex]
+                }
+                $null = $polls.Add($poll)
+                $nextIndex++
+                $now = $clock.Elapsed.TotalMilliseconds
+            }
+
+            foreach ($poll in @($polls)) {
+                if ($poll.Processed -or -not $poll.Task.IsCompleted) { continue }
+                $poll.Processed = $true
+                $response = $null
+                try {
+                    $response = $poll.Task.GetAwaiter().GetResult()
+                    if (-not $response.IsSuccessStatusCode) { continue }
+                    $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                    $json = $body | ConvertFrom-Json
+                    $msg = Get-IS74TopMessage -Json $json
+                    if (-not $msg -or -not $msg.id) { continue }
+                    $id = [Int64]$msg.id
+                    if ($id -le $baselineId) { continue }
+                    $code = Get-IS74WifiCodeFromMessage -Message $msg
+                    if ($code) {
+                        $found = [pscustomobject]@{ Code = $code; Id = $id }
+                        break
+                    }
+                    if (-not $fallbackUsed) {
+                        $fallbackUsed = $true
+                        $candidate = Find-IS74WifiCodeAfterBaseline -Client $apiPair.Client -Token $token -DeviceId $deviceId -BaselineId $baselineId
+                        if ($candidate) {
+                            $found = $candidate
+                            break
+                        }
+                    }
+                } catch {
+                    Write-IS74Log -Level WARN -Message "Polling GET error: $($_.Exception.Message)"
+                } finally {
+                    if ($response) { $response.Dispose() }
+                }
+            }
+
+            if ($found) { break }
+            if ($nextIndex -ge $script:PollScheduleMs.Count -and @($polls | Where-Object { -not $_.Processed }).Count -eq 0) { break }
+            Start-Sleep -Milliseconds 1
+        }
+
+        if (-not $stepTask.IsCompleted) {
+            $stepResponse = $stepTask.GetAwaiter().GetResult()
+        } else {
+            $stepResponse = $stepTask.GetAwaiter().GetResult()
+        }
+
+        $stepStatus = [int]$stepResponse.StatusCode
+        $stepLocation = if ($stepResponse.Headers.Location) { $stepResponse.Headers.Location.ToString() } else { '' }
+
+        if ($stepStatus -ge 300 -and $stepStatus -lt 400 -and $stepLocation -notmatch '(^|/)stepTwo\?') {
+            if (Test-IS74InternetAccess) {
+                Set-IS74AttemptState -Result 'already-authorized'
+                $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Доступ уже активен; повторная авторизация не потребовалась.'
+                if (-not $Quiet) { Write-Host 'Captive portal сообщает, что клиент уже авторизован.' -ForegroundColor Green }
+                return [pscustomobject]@{ Status='AlreadyAuthorized'; InternetConfirmed=$true }
+            }
+        }
+        if (-not $found) {
+            throw 'Свежий Wi-Fi-код не появился в pushmessages за 10 секунд.'
+        }
+        if ($stepStatus -lt 300 -or $stepStatus -ge 400 -or $stepLocation -notmatch '(^|/)stepTwo\?') {
+            throw "stepOne не перевёл клиент на stepTwo (HTTP $stepStatus, Location=$stepLocation)."
+        }
+
+        $stepTwoUri = if ($stepLocation -match '^https?://') {
+            [Uri]$stepLocation
+        } else {
+            [Uri]::new([Uri]"$($script:PortalBase)/", $stepLocation)
+        }
+        $request2 = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, $stepTwoUri)
+        $form2 = [System.Collections.Generic.Dictionary[string,string]]::new()
+        $form2['confirmCode'] = [string]$found.Code
+        $form2['phone'] = $phone
+        $request2.Content = [System.Net.Http.FormUrlEncodedContent]::new($form2)
+        $stepTwo = Send-IS74Request -Client $portalPair.Client -Request $request2
+        if ($stepTwo.StatusCode -lt 300 -or $stepTwo.StatusCode -ge 400 -or $stepTwo.Location -notmatch '(^|/)stepThree(?:\?|$)') {
+            throw "stepTwo не подтвердил авторизацию (HTTP $($stepTwo.StatusCode), Location=$($stepTwo.Location))."
+        }
+
+        $internetConfirmed = $false
+        for ($i = 0; $i -lt 8; $i++) {
+            if (Test-IS74InternetAccess) { $internetConfirmed = $true; break }
+            Start-Sleep -Milliseconds 500
+        }
+
+        Set-IS74SuccessfulAuthState -InternetConfirmed:$internetConfirmed
+        $settings = Get-IS74Settings
+        $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("Авторизация завершена. Следующая ожидается примерно через {0} ч." -f $settings.authWindowHours)
+        Write-IS74Log -Message "Wi-Fi авторизация завершена. InternetConfirmed=$internetConfirmed"
+        if (-not $Quiet) {
+            Write-Host 'Авторизация завершена.' -ForegroundColor Green
+            if (-not $internetConfirmed) { Write-Host 'Portal принял код, но проверка Интернета пока не подтвердилась.' -ForegroundColor Yellow }
+        }
+        return [pscustomobject]@{ Status='Success'; InternetConfirmed=$internetConfirmed }
+    } catch {
+        Set-IS74AttemptState -Result 'error'
+        $message = $_.Exception.Message
+        $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Не удалось выполнить автоматическую авторизацию. Запустите IS74Wifi.ps1 для подробностей.'
+        Write-IS74Log -Level ERROR -Message "Wi-Fi авторизация: $message"
+        throw
+    } finally {
+        if ($stepResponse) { $stepResponse.Dispose() }
+        if ($stepRequest) { $stepRequest.Dispose() }
+        foreach ($poll in @($polls)) {
+            try { if ($poll.Request) { $poll.Request.Dispose() } } catch { }
+        }
+        $apiPair.Client.Dispose()
+        $apiPair.Handler.Dispose()
+        $portalPair.Client.Dispose()
+        $portalPair.Handler.Dispose()
+    }
+}
+
+function Test-IS74AutostartEnabled {
+    try {
+        Import-Module ScheduledTasks -ErrorAction Stop
+        $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+        return ($null -ne $task)
+    } catch {
+        return $false
+    }
+}
+
+function Enable-IS74Autostart {
+    param([Parameter(Mandatory=$true)][string]$AgentPath)
+
+    if (-not (Get-IS74Secrets)) { throw 'Сначала зарегистрируйте устройство.' }
+    Import-Module ScheduledTasks -ErrorAction Stop
+
+    $powershellExe = Join-Path $PSHOME 'powershell.exe'
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $AgentPath
+    $identityName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $action = New-ScheduledTaskAction -Execute $powershellExe -Argument $arguments
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identityName
+    $principal = New-ScheduledTaskPrincipal -UserId $identityName -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+    Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Автоматическая авторизация Wi-Fi Интерсвязь' -Force | Out-Null
+    Start-ScheduledTask -TaskName $script:TaskName
+    Write-IS74Log -Message 'Автозапуск агента включён.'
+    Write-Host 'Автозапуск включён. Агент запущен в текущей пользовательской сессии.' -ForegroundColor Green
+}
+
+function Disable-IS74Autostart {
+    try {
+        Import-Module ScheduledTasks -ErrorAction Stop
+        $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+        if ($task) {
+            try { Stop-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue } catch { }
+            Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false
+        }
+        Write-IS74Log -Message 'Автозапуск агента отключён.'
+        Write-Host 'Автозапуск отключён.' -ForegroundColor Green
+    } catch {
+        throw "Не удалось отключить автозапуск: $($_.Exception.Message)"
+    }
+}
+
+function Reset-IS74Registration {
+    foreach ($path in @($script:SecretsFile, $script:LegacyTokenFile, $script:SessionFile, $script:DeviceMetaFile, $script:RuntimeFile, $script:DeviceFile)) {
+        if (Test-Path $path) { Remove-Item -Path $path -Force }
+    }
+    Write-IS74Log -Message 'Локальная регистрация сброшена.'
+}
+
+function Remove-IS74AllData {
+    if (Test-IS74AutostartEnabled) { Disable-IS74Autostart }
+    if (Test-Path $script:StateDir) {
+        Remove-Item -Path $script:StateDir -Recurse -Force
+    }
+}
+
+function Get-IS74Status {
+    Initialize-IS74Storage
+    $secrets = Get-IS74Secrets
+    $session = Read-IS74JsonFile -Path $script:SessionFile
+    $state = Read-IS74RuntimeState
+    $registered = ($null -ne $secrets -and $null -ne $secrets.token)
+    $maskedPhone = '-'
+    if ($secrets -and $secrets.phone -and ([string]$secrets.phone).Length -eq 10) {
+        $p = [string]$secrets.phone
+        $maskedPhone = '+7 *** ***-' + $p.Substring(6,2) + '-' + $p.Substring(8,2)
+    }
+    return [pscustomobject]@{
+        Registered = $registered
+        Phone = $maskedPhone
+        AccessEnd = if ($session) { $session.accessEnd } else { $null }
+        Autostart = Test-IS74AutostartEnabled
+        LastAuthUtc = $state.lastAuthUtc
+        ExpectedExpiryUtc = $state.expectedExpiryUtc
+        LastResult = $state.lastResult
+        InternetNow = Test-IS74InternetAccess
+        StateDirectory = $script:StateDir
+    }
+}
+
+function Invoke-IS74AgentTick {
+    Initialize-IS74Storage
+    $secrets = Get-IS74Secrets
+    if (-not $secrets) { return }
+
+    $settings = Get-IS74Settings
+    $state = Read-IS74RuntimeState
+    $now = [DateTime]::UtcNow
+    $windowExpired = $false
+
+    if ($state.expectedExpiryUtc) {
+        try {
+            $expiry = [DateTime]::Parse([string]$state.expectedExpiryUtc).ToUniversalTime()
+            $windowExpired = ($now -ge $expiry)
+            if (-not [bool]$state.preExpiryNotified) {
+                $warningAt = $expiry.AddMinutes(-[double]$settings.preExpiryMinutes)
+                if ($now -ge $warningAt -and $now -lt $expiry) {
+                    $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("До ожидаемого окончания авторизации осталось около {0} минут." -f $settings.preExpiryMinutes)
+                    $state.preExpiryNotified = $true
+                    Save-IS74RuntimeState -State $state
+                    Write-IS74Log -Message 'Показано предупреждение перед окончанием 24-часового окна.'
+                }
+            }
+        } catch {
+            Write-IS74Log -Level WARN -Message 'Не удалось разобрать expectedExpiryUtc.'
+        }
+    }
+
+    # Before the expected expiry we trust Windows NCSI and avoid background HTTP.
+    # At/after the expected 24h boundary we make one active probe per agent tick so
+    # a temporarily stale NCSI "Internet" state cannot hide the captive transition.
+    if (-not $windowExpired -and (Test-IS74SystemInternetState)) { return }
+    if ($windowExpired -and (Test-IS74InternetAccess)) { return }
+    if (-not (Test-IS74WifiConnected)) { return }
+
+    if ($state.lastAttemptUtc) {
+        try {
+            $lastAttempt = [DateTime]::Parse([string]$state.lastAttemptUtc).ToUniversalTime()
+            if (($now - $lastAttempt).TotalSeconds -lt [double]$settings.retryBackoffSeconds) { return }
+        } catch { }
+    }
+
+    try {
+        $null = Connect-IS74Wifi -Quiet
+    } catch {
+        # Connect-IS74Wifi already logged and notified. The agent will retry after backoff.
+    }
+}
+
+Export-ModuleMember -Function @(
+    'Initialize-IS74Storage',
+    'Register-IS74Account',
+    'Connect-IS74Wifi',
+    'Get-IS74Status',
+    'Enable-IS74Autostart',
+    'Disable-IS74Autostart',
+    'Test-IS74AutostartEnabled',
+    'Reset-IS74Registration',
+    'Remove-IS74AllData',
+    'Invoke-IS74AgentTick',
+    'Get-IS74Settings',
+    'Show-IS74Toast'
+)
