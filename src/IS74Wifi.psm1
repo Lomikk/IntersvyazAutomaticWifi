@@ -337,8 +337,9 @@ function Send-IS74Request {
         $location = ''
         if ($response.Headers.Location) { $location = $response.Headers.Location.ToString() }
         $dateUtc = $null
-        if ($response.Headers.Date.HasValue) {
-            $dateUtc = $response.Headers.Date.Value.UtcDateTime.ToString('o')
+        $dateHeader = $response.Headers.Date
+        if ($null -ne $dateHeader) {
+            $dateUtc = ([DateTimeOffset]$dateHeader).UtcDateTime.ToString('o')
         }
         Write-IS74HttpLog -Operation $DiagnosticOperation -Method $method -Uri $uri -StatusCode ([int]$response.StatusCode) -Location $location -DateUtc $dateUtc -ElapsedMs ([int]$clock.Elapsed.TotalMilliseconds)
         return [pscustomobject]@{
@@ -950,7 +951,8 @@ function Connect-IS74Wifi {
             $stepStatus = [int]$stepResponse.StatusCode
             if ($stepResponse.Headers.Location) { $stepLocation = $stepResponse.Headers.Location.ToString() }
             $stepDateUtc = $null
-            if ($stepResponse.Headers.Date.HasValue) { $stepDateUtc = $stepResponse.Headers.Date.Value.UtcDateTime.ToString('o') }
+            $stepDateHeader = $stepResponse.Headers.Date
+            if ($null -ne $stepDateHeader) { $stepDateUtc = ([DateTimeOffset]$stepDateHeader).UtcDateTime.ToString('o') }
             Write-IS74HttpLog -Operation 'portal.stepOne' -Method 'POST' -Uri "$($script:PortalBase)/stepOne" -StatusCode $stepStatus -Location $stepLocation -DateUtc $stepDateUtc -ElapsedMs $stepResponseElapsedMs
         } elseif ($stepException) {
             Write-IS74HttpLog -Operation 'portal.stepOne' -Method 'POST' -Uri "$($script:PortalBase)/stepOne" -ElapsedMs ([int]$clock.Elapsed.TotalMilliseconds) -ErrorMessage $stepException.Message
