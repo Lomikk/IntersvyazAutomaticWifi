@@ -49,7 +49,7 @@ public sealed class IS74SequenceHandler : HttpMessageHandler
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        int call = Interlocked.Increment(ref _calls);
+        int call = ++_calls;
         var response = new HttpResponseMessage(HttpStatusCode.OK);
         response.Content = new StringContent(call == 1 ? _baselineBody : _codeBody);
         response.Headers.Date = new DateTimeOffset(2026, 9, 17, 21, 51, 52, TimeSpan.Zero);
@@ -81,14 +81,14 @@ public sealed class IS74FallbackRaceHandler : HttpMessageHandler
         string query = request.RequestUri.Query ?? String.Empty;
         if (query.IndexOf("pageSize=5", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            Interlocked.Increment(ref _fallbackCalls);
+            ++_fallbackCalls;
             await Task.Delay(4500, cancellationToken).ConfigureAwait(false);
             var fallback = new HttpResponseMessage(HttpStatusCode.OK);
             fallback.Content = new StringContent(_codeBody);
             return fallback;
         }
 
-        int call = Interlocked.Increment(ref _pageSizeOneCalls);
+        int call = ++_pageSizeOneCalls;
         var response = new HttpResponseMessage(HttpStatusCode.OK);
         response.Content = new StringContent(call == 1 ? _baselineBody : (call == 2 ? _otherBody : _codeBody));
         response.Headers.Date = new DateTimeOffset(2026, 9, 17, 21, 51, 52, TimeSpan.Zero);
@@ -109,7 +109,7 @@ public sealed class IS74PortalDelayHandler : HttpMessageHandler
         string path = request.RequestUri.AbsolutePath;
         if (path.EndsWith("/stepOne", StringComparison.OrdinalIgnoreCase))
         {
-            Interlocked.Increment(ref _stepOneCalls);
+            ++_stepOneCalls;
             await Task.Delay(4500, cancellationToken).ConfigureAwait(false);
             var delayed = new HttpResponseMessage(HttpStatusCode.Found);
             delayed.Headers.Location = new Uri("stepTwo?phone=9000000000&isMp=true", UriKind.Relative);
@@ -118,7 +118,7 @@ public sealed class IS74PortalDelayHandler : HttpMessageHandler
 
         if (path.EndsWith("/stepTwo", StringComparison.OrdinalIgnoreCase))
         {
-            Interlocked.Increment(ref _stepTwoCalls);
+            ++_stepTwoCalls;
             var accepted = new HttpResponseMessage(HttpStatusCode.Found);
             accepted.Headers.Location = new Uri("stepThree", UriKind.Relative);
             accepted.Headers.Date = new DateTimeOffset(2026, 9, 17, 21, 51, 53, TimeSpan.Zero);
