@@ -71,7 +71,7 @@ jobs:
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
           try {
-            $actual = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\\', '/') } | Sort-Object)
+            $actual = @($zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' } | Sort-Object)
           }
           finally {
             $zip.Dispose()
