@@ -577,20 +577,70 @@ function New-IS74PushRequest {
     return $request
 }
 
+function Get-IS74PropertyValue {
+    param(
+        $Object,
+        [Parameter(Mandatory=$true)][string]$Name
+    )
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Get-IS74PushMessages {
+    param(
+        $Json,
+        [int]$Depth = 0
+    )
+
+    if ($null -eq $Json -or $Depth -gt 4) { return @() }
+    if ($Json -is [array]) { return @($Json) }
+
+    $id = Get-IS74PropertyValue -Object $Json -Name 'id'
+    $subject = Get-IS74PropertyValue -Object $Json -Name 'subject'
+    $pushMessage = Get-IS74PropertyValue -Object $Json -Name 'push_message'
+    $fullMessage = Get-IS74PropertyValue -Object $Json -Name 'full_message'
+    if ($null -ne $id -or $null -ne $subject -or $null -ne $pushMessage -or $null -ne $fullMessage) {
+        return ,$Json
+    }
+
+    foreach ($name in @('items', 'data', 'messages', 'pushMessages', 'push_messages', 'result', 'content')) {
+        $property = $Json.PSObject.Properties[$name]
+        if ($null -eq $property) { continue }
+        $value = $property.Value
+        if ($null -eq $value) { return @() }
+        $messages = @(Get-IS74PushMessages -Json $value -Depth ($Depth + 1))
+        if ($messages.Count -gt 0) { return $messages }
+        if ($value -is [array]) { return @() }
+    }
+
+    foreach ($property in @($Json.PSObject.Properties)) {
+        $value = $property.Value
+        if ($null -eq $value -or $value -is [string] -or $value -is [ValueType]) { continue }
+        $messages = @(Get-IS74PushMessages -Json $value -Depth ($Depth + 1))
+        if ($messages.Count -gt 0) { return $messages }
+    }
+
+    return @()
+}
+
 function Get-IS74TopMessage {
     param($Json)
-    if ($null -eq $Json) { return $null }
-    if ($Json -is [array]) { return @($Json)[0] }
-    if ($Json.items) { return @($Json.items)[0] }
-    if ($Json.data -is [array]) { return @($Json.data)[0] }
-    return $Json
+    $messages = @(Get-IS74PushMessages -Json $Json)
+    if ($messages.Count -eq 0) { return $null }
+    return $messages[0]
 }
 
 function Get-IS74WifiCodeFromMessage {
     param($Message)
     if ($null -eq $Message) { return $null }
-    if ([string]$Message.subject -ne 'Ваш код авторизации') { return $null }
-    foreach ($text in @([string]$Message.push_message, [string]$Message.full_message)) {
+    $subject = [string](Get-IS74PropertyValue -Object $Message -Name 'subject')
+    if ($subject -ne 'Ваш код авторизации') { return $null }
+    foreach ($text in @(
+        [string](Get-IS74PropertyValue -Object $Message -Name 'push_message'),
+        [string](Get-IS74PropertyValue -Object $Message -Name 'full_message')
+    )) {
         if ($text -match '^(\d{4}) код авторизации в приложении "Интерсвязь"$') {
             return $Matches[1]
         }
@@ -610,11 +660,13 @@ function Get-IS74BaselineId {
     if (-not $result.IsSuccess) { throw "Baseline pushmessages HTTP $($result.StatusCode)." }
     $json = $result.Body | ConvertFrom-Json
     $msg = Get-IS74TopMessage -Json $json
-    if ($msg -and $msg.id) {
-        Write-IS74Log -Message ("push.baseline topId={0}" -f [Int64]$msg.id)
-        return [Int64]$msg.id
+    $messageId = if ($msg) { Get-IS74PropertyValue -Object $msg -Name 'id' } else { $null }
+    if ($null -ne $messageId) {
+        Write-IS74Log -Message ("push.baseline topId={0}" -f [Int64]$messageId)
+        return [Int64]$messageId
     }
-    Write-IS74Log -Message 'push.baseline empty topId=0'
+    $rootProperties = if ($json -is [array]) { '<array>' } else { @($json.PSObject.Properties.Name) -join ',' }
+    Write-IS74Log -Message ("push.baseline empty topId=0 rootProperties={0}" -f $rootProperties)
     return [Int64]0
 }
 
@@ -629,18 +681,15 @@ function Find-IS74WifiCodeAfterBaseline {
     $result = Send-IS74Request -Client $Client -Request $request -DiagnosticOperation 'push.fallback'
     if (-not $result.IsSuccess) { return $null }
     $json = $result.Body | ConvertFrom-Json
-    $messages = @()
-    if ($json -is [array]) { $messages = @($json) }
-    elseif ($json.items) { $messages = @($json.items) }
-    elseif ($json.data -is [array]) { $messages = @($json.data) }
-    else { $messages = @($json) }
+    $messages = @(Get-IS74PushMessages -Json $json)
 
     foreach ($msg in $messages) {
-        if ($msg.id -and [Int64]$msg.id -gt $BaselineId) {
+        $messageId = Get-IS74PropertyValue -Object $msg -Name 'id'
+        if ($null -ne $messageId -and [Int64]$messageId -gt $BaselineId) {
             $code = Get-IS74WifiCodeFromMessage -Message $msg
             if ($code) {
-                Write-IS74Log -Message ("push.fallback codeFound=true messageId={0}" -f [Int64]$msg.id)
-                return [pscustomobject]@{ Code = $code; Id = [Int64]$msg.id }
+                Write-IS74Log -Message ("push.fallback codeFound=true messageId={0}" -f [Int64]$messageId)
+                return [pscustomobject]@{ Code = $code; Id = [Int64]$messageId }
             }
         }
     }
@@ -883,8 +932,9 @@ function Connect-IS74Wifi {
                     $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
                     $json = $body | ConvertFrom-Json
                     $msg = Get-IS74TopMessage -Json $json
-                    if (-not $msg -or -not $msg.id) { continue }
-                    $id = [Int64]$msg.id
+                    $messageId = if ($msg) { Get-IS74PropertyValue -Object $msg -Name 'id' } else { $null }
+                    if ($null -eq $messageId) { continue }
+                    $id = [Int64]$messageId
                     if ($id -le $baselineId) { continue }
                     $code = Get-IS74WifiCodeFromMessage -Message $msg
                     if ($code) {
