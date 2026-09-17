@@ -20,6 +20,10 @@ $script:RuntimeFile    = Join-Path $script:StateDir 'runtime-state.json'
 $script:SettingsFile   = Join-Path $script:StateDir 'settings.json'
 $script:DeviceMetaFile = Join-Path $script:StateDir 'device-metadata.json'
 $script:LogDir         = Join-Path $script:StateDir 'logs'
+$script:LogFile        = Join-Path $script:LogDir 'diagnostic.log'
+$script:LogMaxBytes    = 1MB
+$script:LogRetentionFiles = 5
+$script:LogPreviewChars = 1024
 $script:TaskName       = 'IS74WifiAgent'
 $script:ApiBase        = 'https://api.is74.ru'
 $script:PortalBase     = 'http://w.is74.ru'
@@ -49,6 +53,45 @@ function Initialize-IS74Storage {
     }
 }
 
+function Invoke-IS74LogRotation {
+    try {
+        if (-not (Test-Path $script:LogFile)) { return }
+        $item = Get-Item -Path $script:LogFile -ErrorAction Stop
+        if ($item.Length -lt $script:LogMaxBytes) { return }
+
+        $maxBackup = [Math]::Max(1, [int]$script:LogRetentionFiles - 1)
+        $oldest = Join-Path $script:LogDir ("diagnostic.{0}.log" -f $maxBackup)
+        if (Test-Path $oldest) { Remove-Item -Path $oldest -Force -ErrorAction SilentlyContinue }
+
+        for ($i = $maxBackup - 1; $i -ge 1; $i--) {
+            $source = Join-Path $script:LogDir ("diagnostic.{0}.log" -f $i)
+            $target = Join-Path $script:LogDir ("diagnostic.{0}.log" -f ($i + 1))
+            if (Test-Path $source) { Move-Item -Path $source -Destination $target -Force }
+        }
+
+        Move-Item -Path $script:LogFile -Destination (Join-Path $script:LogDir 'diagnostic.1.log') -Force
+    } catch {
+        # Rotation failures must never affect authorization.
+    }
+}
+
+function Protect-IS74LogText {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    $value = $Text
+
+    # Never persist reusable credentials, one-time codes or phone numbers.
+    $value = [regex]::Replace($value, '(?i)(Authorization\s*[:=]\s*Bearer\s+)[A-Za-z0-9._~+/=-]+', '$1<redacted>')
+    $value = [regex]::Replace($value, '(?i)("(?:TOKEN|token|bearer|access_token|authId|confirmCode|phone|AUTHORIZE_PHONE)"\s*:\s*")[^"]*(")', '$1<redacted>$2')
+    $value = [regex]::Replace($value, '(?i)([?&](?:phone|confirmCode|authId)=)[^&\s]+', '$1<redacted>')
+    $value = [regex]::Replace($value, '(?i)((?:phone|confirmCode|authId)\s*=\s*)[^&\s]+', '$1<redacted>')
+    $value = [regex]::Replace($value, '\b\d{4}(?=\s+код авторизации)', '<redacted-code>')
+    $value = [regex]::Replace($value, '(?<!\d)(?:\+?7|8)\d{10}(?!\d)', '<redacted-phone>')
+    $value = $value -replace '[\r\n]+', ' '
+    return $value
+}
+
 function Write-IS74Log {
     param(
         [Parameter(Mandatory=$true)][string]$Message,
@@ -57,12 +100,59 @@ function Write-IS74Log {
 
     try {
         Initialize-IS74Storage
-        $logFile = Join-Path $script:LogDir ((Get-Date).ToString('yyyy-MM-dd') + '.log')
-        $line = '{0} [{1}] {2}' -f (Get-Date).ToString('o'), $Level, $Message
-        Add-Content -Path $logFile -Value $line -Encoding UTF8
+        Invoke-IS74LogRotation
+        $safeMessage = Protect-IS74LogText -Text $Message
+        $line = '{0} [{1}] [pid={2}] {3}' -f ([DateTime]::UtcNow.ToString('o')), $Level, $PID, $safeMessage
+        Add-Content -Path $script:LogFile -Value $line -Encoding UTF8
     } catch {
         # Logging must never break authorization.
     }
+}
+
+function Write-IS74HttpLog {
+    param(
+        [Parameter(Mandatory=$true)][string]$Operation,
+        [Parameter(Mandatory=$true)][string]$Method,
+        [Parameter(Mandatory=$true)][string]$Uri,
+        [object]$StatusCode = $null,
+        [string]$Location,
+        [string]$DateUtc,
+        [object]$ElapsedMs = $null,
+        [string]$Body,
+        [string]$ErrorMessage
+    )
+
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    $parts.Add(('HTTP op={0}' -f (Protect-IS74LogText -Text $Operation)))
+    $parts.Add(('method={0}' -f $Method))
+    $parts.Add(('uri={0}' -f (Protect-IS74LogText -Text $Uri)))
+    if ($null -ne $StatusCode) { $parts.Add(('status={0}' -f [int]$StatusCode)) }
+    if ($null -ne $ElapsedMs) { $parts.Add(('elapsedMs={0}' -f [int]$ElapsedMs)) }
+    if ($DateUtc) { $parts.Add(('serverDate={0}' -f (Protect-IS74LogText -Text $DateUtc))) }
+    if ($Location) { $parts.Add(('location={0}' -f (Protect-IS74LogText -Text $Location))) }
+    if ($ErrorMessage) { $parts.Add(('error={0}' -f (Protect-IS74LogText -Text $ErrorMessage))) }
+    if ($Body) {
+        $preview = Protect-IS74LogText -Text $Body
+        if ($preview.Length -gt $script:LogPreviewChars) {
+            $preview = $preview.Substring(0, $script:LogPreviewChars) + '<truncated>'
+        }
+        $parts.Add(('body={0}' -f $preview))
+    }
+    $level = if ($ErrorMessage) { 'WARN' } else { 'INFO' }
+    Write-IS74Log -Level $level -Message ($parts -join ' ')
+}
+
+function Get-IS74DiagnosticLogPath {
+    Initialize-IS74Storage
+    return $script:LogFile
+}
+
+function Write-IS74RuntimeEvent {
+    param(
+        [Parameter(Mandatory=$true)][string]$Message,
+        [ValidateSet('INFO','WARN','ERROR')][string]$Level = 'INFO'
+    )
+    Write-IS74Log -Message $Message -Level $Level
 }
 
 function Read-IS74JsonFile {
@@ -234,10 +324,14 @@ function Add-IS74ApiHeaders {
 function Send-IS74Request {
     param(
         [Parameter(Mandatory=$true)][System.Net.Http.HttpClient]$Client,
-        [Parameter(Mandatory=$true)][System.Net.Http.HttpRequestMessage]$Request
+        [Parameter(Mandatory=$true)][System.Net.Http.HttpRequestMessage]$Request,
+        [string]$DiagnosticOperation = 'http'
     )
 
     $response = $null
+    $method = [string]$Request.Method.Method
+    $uri = [string]$Request.RequestUri.AbsoluteUri
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     try {
         $response = $Client.SendAsync($Request).GetAwaiter().GetResult()
         $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
@@ -247,6 +341,7 @@ function Send-IS74Request {
         if ($response.Headers.Date.HasValue) {
             $dateUtc = $response.Headers.Date.Value.UtcDateTime.ToString('o')
         }
+        Write-IS74HttpLog -Operation $DiagnosticOperation -Method $method -Uri $uri -StatusCode ([int]$response.StatusCode) -Location $location -DateUtc $dateUtc -ElapsedMs ([int]$clock.Elapsed.TotalMilliseconds)
         return [pscustomobject]@{
             StatusCode = [int]$response.StatusCode
             IsSuccess = $response.IsSuccessStatusCode
@@ -254,6 +349,9 @@ function Send-IS74Request {
             Location = $location
             DateUtc = $dateUtc
         }
+    } catch {
+        Write-IS74HttpLog -Operation $DiagnosticOperation -Method $method -Uri $uri -ElapsedMs ([int]$clock.Elapsed.TotalMilliseconds) -ErrorMessage $_.Exception.Message
+        throw
     } finally {
         if ($response) { $response.Dispose() }
         $Request.Dispose()
@@ -310,7 +408,7 @@ function Register-IS74DeviceMetadata {
             DEVICE_MODEL     = $deviceName
         }
         $request.Content = [System.Net.Http.StringContent]::new(($deviceInfo | ConvertTo-Json -Compress), [Text.Encoding]::UTF8, 'application/json')
-        $result = Send-IS74Request -Client $pair.Client -Request $request
+        $result = Send-IS74Request -Client $pair.Client -Request $request -DiagnosticOperation 'device-metadata'
         if ($result.StatusCode -lt 200 -or $result.StatusCode -ge 300) {
             Write-IS74Log -Level WARN -Message "Device metadata HTTP $($result.StatusCode)."
             return $false
@@ -349,7 +447,7 @@ function Register-IS74Account {
         Add-IS74ApiHeaders -Request $request -DeviceId $deviceId
         $payload = [ordered]@{ phone = $phone; deviceId = $deviceId; authType = 0 } | ConvertTo-Json -Compress
         $request.Content = [System.Net.Http.StringContent]::new($payload, [Text.Encoding]::UTF8, 'application/json')
-        $getConfirm = Send-IS74Request -Client $pair.Client -Request $request
+        $getConfirm = Send-IS74Request -Client $pair.Client -Request $request -DiagnosticOperation 'auth.get-confirm'
         if ($getConfirm.StatusCode -lt 200 -or $getConfirm.StatusCode -ge 300) {
             throw "get-confirm вернул HTTP $($getConfirm.StatusCode)."
         }
@@ -364,12 +462,14 @@ function Register-IS74Account {
         $form['confirmCode'] = $smsCode
         $form['authId'] = ''
         $request.Content = [System.Net.Http.FormUrlEncodedContent]::new($form)
-        $check = Send-IS74Request -Client $pair.Client -Request $request
+        $check = Send-IS74Request -Client $pair.Client -Request $request -DiagnosticOperation 'auth.check-confirm'
         if ($check.StatusCode -lt 200 -or $check.StatusCode -ge 300) {
             throw "check-confirm вернул HTTP $($check.StatusCode)."
         }
 
         $checkJson = $check.Body | ConvertFrom-Json
+        $addressesCount = if ($checkJson.addresses) { @($checkJson.addresses).Count } else { 0 }
+        Write-IS74Log -Message ("auth.check-confirm parsed authIdPresent={0} addressesCount={1}" -f [bool]$checkJson.authId, $addressesCount)
         if (-not $checkJson.authId) { throw 'check-confirm не вернул подтверждённый authId.' }
         if ($checkJson.addresses -and @($checkJson.addresses).Count -gt 0) {
             throw 'Сервер вернул несколько связанных адресов. Этот MVP пока не выбирает userId автоматически; регистрация остановлена без сохранения Bearer.'
@@ -382,12 +482,13 @@ function Register-IS74Account {
         $form['userId'] = ''
         $form['uniqueDeviceId'] = $deviceId
         $request.Content = [System.Net.Http.FormUrlEncodedContent]::new($form)
-        $tokenResult = Send-IS74Request -Client $pair.Client -Request $request
+        $tokenResult = Send-IS74Request -Client $pair.Client -Request $request -DiagnosticOperation 'auth.get-token'
         if ($tokenResult.StatusCode -lt 200 -or $tokenResult.StatusCode -ge 300) {
             throw "get-token вернул HTTP $($tokenResult.StatusCode)."
         }
 
         $session = $tokenResult.Body | ConvertFrom-Json
+        Write-IS74Log -Message ("auth.get-token parsed tokenPresent={0} accessBegin={1} accessEnd={2}" -f [bool]$session.TOKEN, [string]$session.ACCESS_BEGIN, [string]$session.ACCESS_END)
         if (-not $session.TOKEN) { throw 'get-token вернул HTTP 2xx, но TOKEN отсутствует.' }
 
         Save-IS74Secrets -Token ([string]$session.TOKEN) -Phone $phone
@@ -448,18 +549,29 @@ function Show-IS74Toast {
 }
 
 function Test-IS74InternetAccess {
+    param([switch]$DiagnosticOnFailure)
+
     $pair = New-IS74HttpClientPair -NoRedirect -TimeoutSeconds 4 -MaxConnections 2
     $request = $null
     $response = $null
+    $uri = 'http://www.msftconnecttest.com/connecttest.txt'
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, 'http://www.msftconnecttest.com/connecttest.txt')
+        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
         $null = $request.Headers.TryAddWithoutValidation('Cache-Control', 'no-cache, no-store')
         $null = $request.Headers.TryAddWithoutValidation('Pragma', 'no-cache')
         $response = $pair.Client.SendAsync($request).GetAwaiter().GetResult()
-        if ([int]$response.StatusCode -ne 200) { return $false }
+        $status = [int]$response.StatusCode
         $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-        return ($body.Trim() -eq 'Microsoft Connect Test')
+        $ok = ($status -eq 200 -and $body.Trim() -eq 'Microsoft Connect Test')
+        if (-not $ok -and $DiagnosticOnFailure) {
+            Write-IS74HttpLog -Operation 'internet.probe' -Method 'GET' -Uri $uri -StatusCode $status -ElapsedMs ([int]$clock.Elapsed.TotalMilliseconds) -Body $body
+        }
+        return $ok
     } catch {
+        if ($DiagnosticOnFailure) {
+            Write-IS74HttpLog -Operation 'internet.probe' -Method 'GET' -Uri $uri -ElapsedMs ([int]$clock.Elapsed.TotalMilliseconds) -ErrorMessage $_.Exception.Message
+        }
         return $false
     } finally {
         if ($response) { $response.Dispose() }
@@ -520,12 +632,16 @@ function Get-IS74BaselineId {
         [Parameter(Mandatory=$true)][string]$DeviceId
     )
     $request = New-IS74PushRequest -Token $Token -DeviceId $DeviceId -PageSize 1
-    $result = Send-IS74Request -Client $Client -Request $request
+    $result = Send-IS74Request -Client $Client -Request $request -DiagnosticOperation 'push.baseline'
     if ($result.StatusCode -eq 401) { throw 'Bearer отклонён сервером (HTTP 401). Выполните регистрацию заново.' }
     if (-not $result.IsSuccess) { throw "Baseline pushmessages HTTP $($result.StatusCode)." }
     $json = $result.Body | ConvertFrom-Json
     $msg = Get-IS74TopMessage -Json $json
-    if ($msg -and $msg.id) { return [Int64]$msg.id }
+    if ($msg -and $msg.id) {
+        Write-IS74Log -Message ("push.baseline topId={0}" -f [Int64]$msg.id)
+        return [Int64]$msg.id
+    }
+    Write-IS74Log -Message 'push.baseline empty topId=0'
     return [Int64]0
 }
 
@@ -537,7 +653,7 @@ function Find-IS74WifiCodeAfterBaseline {
         [Parameter(Mandatory=$true)][Int64]$BaselineId
     )
     $request = New-IS74PushRequest -Token $Token -DeviceId $DeviceId -PageSize 5
-    $result = Send-IS74Request -Client $Client -Request $request
+    $result = Send-IS74Request -Client $Client -Request $request -DiagnosticOperation 'push.fallback'
     if (-not $result.IsSuccess) { return $null }
     $json = $result.Body | ConvertFrom-Json
     $messages = @()
@@ -549,7 +665,10 @@ function Find-IS74WifiCodeAfterBaseline {
     foreach ($msg in $messages) {
         if ($msg.id -and [Int64]$msg.id -gt $BaselineId) {
             $code = Get-IS74WifiCodeFromMessage -Message $msg
-            if ($code) { return [pscustomobject]@{ Code = $code; Id = [Int64]$msg.id } }
+            if ($code) {
+                Write-IS74Log -Message ("push.fallback codeFound=true messageId={0}" -f [Int64]$msg.id)
+                return [pscustomobject]@{ Code = $code; Id = [Int64]$msg.id }
+            }
         }
     }
     return $null
@@ -619,6 +738,7 @@ function Set-IS74SuccessfulAuthState {
         edgeWatchActive = $false
     }
     Save-IS74RuntimeState -State $state
+    Write-IS74Log -Message ("auth.state success authorizedAtUtc={0} expectedExpiryUtc={1} internetConfirmed={2}" -f $state.lastAuthUtc, $state.expectedExpiryUtc, $InternetConfirmed)
 }
 
 function Set-IS74AttemptState {
@@ -652,6 +772,7 @@ function Register-IS74AutomaticStepOneSend {
     $state.lastAttemptReason = $Reason
     $state.lastResult = 'step-one-sent'
     Save-IS74RuntimeState -State $state
+    Write-IS74Log -Message ("portal.stepOne send attempt={0} reason={1}" -f $count, $Reason)
     return $count
 }
 
@@ -687,13 +808,21 @@ function Test-IS74InternetUnavailableConfirmed {
     param([int]$DelayMilliseconds = -1)
 
     $settings = Get-IS74Settings
-    if (Test-IS74InternetAccess) { return $false }
+    if (Test-IS74InternetAccess -DiagnosticOnFailure) { return $false }
+    Write-IS74Log -Level WARN -Message 'internet.probe firstFailure=true; confirming availability loss.'
 
     if ($DelayMilliseconds -lt 0) {
         $DelayMilliseconds = [int]([double]$settings.internetProbeConfirmDelaySeconds * 1000)
     }
     if ($DelayMilliseconds -gt 0) { Start-Sleep -Milliseconds $DelayMilliseconds }
-    return (-not (Test-IS74InternetAccess))
+    $secondFailed = -not (Test-IS74InternetAccess -DiagnosticOnFailure)
+    if ($secondFailed) {
+        Write-IS74Log -Level WARN -Message 'internet.probe unavailableConfirmed=true.'
+        return $true
+    }
+
+    Write-IS74Log -Message 'internet.probe transientFailure=true; confirmation succeeded.'
+    return $false
 }
 
 function Connect-IS74Wifi {
@@ -756,6 +885,7 @@ function Connect-IS74Wifi {
         $clock = [Diagnostics.Stopwatch]::StartNew()
         $stepTask = $portalPair.Client.SendAsync($stepRequest, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
         $stepException = $null
+        $stepResponseElapsedMs = $null
         $nextIndex = 0
         $found = $null
         $fallbackUsed = $false
@@ -792,6 +922,7 @@ function Connect-IS74Wifi {
                     $code = Get-IS74WifiCodeFromMessage -Message $msg
                     if ($code) {
                         $found = [pscustomobject]@{ Code = $code; Id = $id }
+                        Write-IS74Log -Message ("push.poll codeFound=true messageId={0} targetMs={1} observedMs={2}" -f $id, $poll.TargetMs, [int]$clock.Elapsed.TotalMilliseconds)
                         break
                     }
                     if (-not $fallbackUsed) {
@@ -799,6 +930,7 @@ function Connect-IS74Wifi {
                         $candidate = Find-IS74WifiCodeAfterBaseline -Client $apiPair.Client -Token $token -DeviceId $deviceId -BaselineId $baselineId
                         if ($candidate) {
                             $found = $candidate
+                            Write-IS74Log -Message ("push.poll fallbackFound=true messageId={0} observedMs={1}" -f $candidate.Id, [int]$clock.Elapsed.TotalMilliseconds)
                             break
                         }
                     }
@@ -819,6 +951,7 @@ function Connect-IS74Wifi {
             if (-not $stepResponse -and -not $stepException -and $stepTask.IsCompleted) {
                 try {
                     $stepResponse = $stepTask.GetAwaiter().GetResult()
+                    $stepResponseElapsedMs = [int]$clock.Elapsed.TotalMilliseconds
                     $earlyStatus = [int]$stepResponse.StatusCode
                     $earlyLocation = if ($stepResponse.Headers.Location) { $stepResponse.Headers.Location.ToString() } else { '' }
                     if ($earlyStatus -ge 300 -and $earlyStatus -lt 400 -and $earlyLocation -notmatch '(^|/)stepTwo\?') {
@@ -839,6 +972,7 @@ function Connect-IS74Wifi {
         if (-not $stepResponse -and -not $stepException) {
             try {
                 $stepResponse = $stepTask.GetAwaiter().GetResult()
+                $stepResponseElapsedMs = [int]$clock.Elapsed.TotalMilliseconds
             } catch {
                 $stepException = $_.Exception
             }
@@ -849,6 +983,11 @@ function Connect-IS74Wifi {
         if ($stepResponse) {
             $stepStatus = [int]$stepResponse.StatusCode
             if ($stepResponse.Headers.Location) { $stepLocation = $stepResponse.Headers.Location.ToString() }
+            $stepDateUtc = $null
+            if ($stepResponse.Headers.Date.HasValue) { $stepDateUtc = $stepResponse.Headers.Date.Value.UtcDateTime.ToString('o') }
+            Write-IS74HttpLog -Operation 'portal.stepOne' -Method 'POST' -Uri "$($script:PortalBase)/stepOne" -StatusCode $stepStatus -Location $stepLocation -DateUtc $stepDateUtc -ElapsedMs $stepResponseElapsedMs
+        } elseif ($stepException) {
+            Write-IS74HttpLog -Operation 'portal.stepOne' -Method 'POST' -Uri "$($script:PortalBase)/stepOne" -ElapsedMs ([int]$clock.Elapsed.TotalMilliseconds) -ErrorMessage $stepException.Message
         }
 
         # A fresh code proves stepOne reached the backend even if the HTTP response
@@ -866,6 +1005,7 @@ function Connect-IS74Wifi {
             # portal response itself; do not probe Internet here because the actual
             # cutoff can happen a few hundred milliseconds after this response.
             Set-IS74AttemptState -Result 'already-authorized' -Reason $AttemptReason
+            Write-IS74Log -Message ("portal.stepOne classified=already-authorized reason={0}" -f $AttemptReason)
             if (-not $SuppressFailureToast) {
                 $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Доступ пока ещё активен; слежу за границей авторизации.'
             }
@@ -894,7 +1034,11 @@ function Connect-IS74Wifi {
             while (-not $found -and [DateTime]::UtcNow -lt $slowDeadline) {
                 Start-Sleep -Seconds 5
                 $candidate = Find-IS74WifiCodeAfterBaseline -Client $apiPair.Client -Token $token -DeviceId $deviceId -BaselineId $baselineId
-                if ($candidate) { $found = $candidate; break }
+                if ($candidate) {
+                    $found = $candidate
+                    Write-IS74Log -Message ("push.slowPoll codeFound=true messageId={0}" -f $candidate.Id)
+                    break
+                }
             }
         }
         if (-not $found) {
@@ -917,7 +1061,7 @@ function Connect-IS74Wifi {
         $form2['confirmCode'] = [string]$found.Code
         $form2['phone'] = $phone
         $request2.Content = [System.Net.Http.FormUrlEncodedContent]::new($form2)
-        $stepTwo = Send-IS74Request -Client $portalPair.Client -Request $request2
+        $stepTwo = Send-IS74Request -Client $portalPair.Client -Request $request2 -DiagnosticOperation 'portal.stepTwo'
         if ($stepTwo.StatusCode -lt 300 -or $stepTwo.StatusCode -ge 400 -or $stepTwo.Location -notmatch '(^|/)stepThree(?:\?|$)') {
             throw (New-IS74ConnectException -Message "stepTwo не подтвердил авторизацию (HTTP $($stepTwo.StatusCode), Location=$($stepTwo.Location))." -UserActionRequired)
         }
@@ -1043,6 +1187,7 @@ function Get-IS74Status {
         UserActionRequired = [bool]$state.userActionRequired
         InternetNow = Test-IS74InternetAccess
         StateDirectory = $script:StateDir
+        DiagnosticLog = $script:LogFile
     }
 }
 
@@ -1271,5 +1416,7 @@ Export-ModuleMember -Function @(
     'Invoke-IS74AgentTick',
     'Get-IS74AgentSleepMilliseconds',
     'Get-IS74Settings',
+    'Get-IS74DiagnosticLogPath',
+    'Write-IS74RuntimeEvent',
     'Show-IS74Toast'
 )

@@ -42,4 +42,13 @@ assert 'Start-Sleep -Milliseconds $delayMs' in agent
 assert "automaticStepOneAttempts" in module
 assert "userActionRequired" in module
 assert "Cache-Control', 'no-cache, no-store'" in module
+assert "diagnostic.log" in module
+assert "LogMaxBytes    = 1MB" in module
+assert "LogRetentionFiles = 5" in module
+assert "Protect-IS74LogText" in module
+assert "<redacted-code>" in module
+assert "Get-IS74DiagnosticLogPath" in module
+assert "'logs'" in cli
+assert "agent.start" in agent
+assert "agent.tick error=" in agent
 print('static checks: OK')
