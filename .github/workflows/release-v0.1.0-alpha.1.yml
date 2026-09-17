@@ -100,12 +100,6 @@ jobs:
           $repo = '${{ github.repository }}'
           $asset = ".\dist\IS74Wifi-$tag.zip"
 
-          gh release view $tag --repo $repo *> $null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release $tag already exists; nothing to do."
-            exit 0
-          }
-
           $notes = @'
           First test release of the production runtime.
 
