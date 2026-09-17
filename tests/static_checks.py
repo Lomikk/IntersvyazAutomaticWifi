@@ -1,6 +1,14 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
+runtime_files = [
+    root / 'IS74Wifi.ps1',
+    root / 'agent.ps1',
+    root / 'src' / 'IS74Wifi.psm1',
+]
+for path in runtime_files:
+    assert path.read_bytes().startswith(b'\xef\xbb\xbf'), f'{path.name}: UTF-8 BOM required for Windows PowerShell 5.1'
+
 module = (root / 'src' / 'IS74Wifi.psm1').read_text(encoding='utf-8')
 cli = (root / 'IS74Wifi.ps1').read_text(encoding='utf-8')
 agent = (root / 'agent.ps1').read_text(encoding='utf-8')
