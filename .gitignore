@@ -1,0 +1,17 @@
+# Local auth state / secrets
+bearer.dpapi
+device-id.txt
+session-meta.json
+check-confirm-success.json
+*-response.json
+*.har
+
+# Local experiment output
+artifacts/
+is-auth-test/
+is-auth-curl/
+
+# PowerShell / editor noise
+.vscode/
+.idea/
+*.log
