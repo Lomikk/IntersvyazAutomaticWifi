@@ -25,11 +25,9 @@ $script:LogMaxBytes    = 1MB
 $script:LogRetentionFiles = 5
 $script:LogPreviewChars = 1024
 $script:TaskName       = 'IS74WifiAgent'
-$script:ToastAppId     = 'IS74.AutomaticWifi'
 $script:ProjectRoot    = Split-Path -Parent $PSScriptRoot
 $script:ModulePath      = $PSCommandPath
 $script:CliScriptPath  = Join-Path $script:ProjectRoot 'IS74Wifi.ps1'
-$script:ToastShortcutPath = Join-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') 'IS74 Automatic Wi-Fi.lnk'
 $script:ApiBase        = 'https://api.is74.ru'
 $script:PortalBase     = 'http://w.is74.ru'
 $script:AppVersion     = '2.18.0-RS-95aa9b78'
@@ -46,14 +44,12 @@ function Initialize-IS74Storage {
     if (-not (Test-Path $script:SettingsFile)) {
         [ordered]@{
             authWindowHours = 24
-            preExpiryMinutes = 10
             agentPollSeconds = 15
             guardWindowSeconds = 10
             guardProbeIntervalMilliseconds = 250
             internetProbeConfirmDelaySeconds = 2
             maxAutomaticStepOneAttempts = 4
             automaticRetryDelaysSeconds = @(15, 30, 60)
-            notifications = $true
         } | ConvertTo-Json | Set-Content -Path $script:SettingsFile -Encoding UTF8
     }
 }
@@ -183,14 +179,12 @@ function Get-IS74Settings {
     Initialize-IS74Storage
     $defaults = [ordered]@{
         authWindowHours = 24
-        preExpiryMinutes = 10
         agentPollSeconds = 15
         guardWindowSeconds = 10
         guardProbeIntervalMilliseconds = 250
         internetProbeConfirmDelaySeconds = 2
         maxAutomaticStepOneAttempts = 4
         automaticRetryDelaysSeconds = @(15, 30, 60)
-        notifications = $true
     }
 
     $settings = Read-IS74JsonFile -Path $script:SettingsFile
@@ -526,286 +520,6 @@ function Get-IS74WindowsPowerShellPath {
     throw 'Не найден Windows PowerShell 5.1 (powershell.exe).'
 }
 
-function Initialize-IS74ToastShortcutInterop {
-    if ('IS74.ToastShortcut' -as [type]) { return }
-
-    $source = @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-
-namespace IS74
-{
-    [StructLayout(LayoutKind.Sequential, Pack = 4)]
-    public struct PropertyKey
-    {
-        public Guid fmtid;
-        public uint pid;
-        public PropertyKey(Guid fmtid, uint pid) { this.fmtid = fmtid; this.pid = pid; }
-    }
-
-    [StructLayout(LayoutKind.Explicit)]
-    public struct PropVariant
-    {
-        [FieldOffset(0)] public ushort vt;
-        [FieldOffset(8)] public IntPtr pointerValue;
-
-        public static PropVariant FromString(string value)
-        {
-            PropVariant pv = new PropVariant();
-            pv.vt = 31; // VT_LPWSTR
-            pv.pointerValue = Marshal.StringToCoTaskMemUni(value);
-            return pv;
-        }
-    }
-
-    [ComImport]
-    [Guid("00021401-0000-0000-C000-000000000046")]
-    public class ShellLink { }
-
-    [ComImport]
-    [Guid("000214F9-0000-0000-C000-000000000046")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    public interface IShellLinkW
-    {
-        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch, IntPtr pfd, uint fFlags);
-        void GetIDList(out IntPtr ppidl);
-        void SetIDList(IntPtr pidl);
-        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
-        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
-        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
-        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
-        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
-        void GetHotkey(out short pwHotkey);
-        void SetHotkey(short wHotkey);
-        void GetShowCmd(out int piShowCmd);
-        void SetShowCmd(int iShowCmd);
-        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
-        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
-        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
-        void Resolve(IntPtr hwnd, uint fFlags);
-        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
-    }
-
-    [ComImport]
-    [Guid("0000010b-0000-0000-C000-000000000046")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    public interface IPersistFile
-    {
-        [PreserveSig] int GetClassID(out Guid pClassID);
-        [PreserveSig] int IsDirty();
-        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
-        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
-        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
-        void GetCurFile(out IntPtr ppszFileName);
-    }
-
-    [ComImport]
-    [Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    public interface IPropertyStore
-    {
-        void GetCount(out uint cProps);
-        void GetAt(uint iProp, out PropertyKey pkey);
-        void GetValue(ref PropertyKey key, out PropVariant pv);
-        void SetValue(ref PropertyKey key, ref PropVariant propvar);
-        void Commit();
-    }
-
-    public static class ToastShortcut
-    {
-        [DllImport("ole32.dll")]
-        private static extern int PropVariantClear(ref PropVariant pvar);
-
-        public static void Create(
-            string shortcutPath,
-            string targetPath,
-            string arguments,
-            string workingDirectory,
-            string description,
-            string iconPath,
-            string appId)
-        {
-            object linkObject = new ShellLink();
-            PropVariant value = new PropVariant();
-            bool valueCreated = false;
-            try
-            {
-                IShellLinkW link = (IShellLinkW)linkObject;
-                link.SetPath(targetPath);
-                link.SetArguments(arguments);
-                link.SetWorkingDirectory(workingDirectory);
-                link.SetDescription(description);
-                link.SetIconLocation(iconPath, 0);
-
-                // Set the AppUserModelID on the in-memory shell link before the
-                // first Save. This matches Microsoft's desktop-toast pattern and
-                // avoids reopening an existing .lnk through a read-only storage.
-                IPropertyStore store = (IPropertyStore)linkObject;
-                PropertyKey key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
-                value = PropVariant.FromString(appId);
-                valueCreated = true;
-                store.SetValue(ref key, ref value);
-                store.Commit();
-
-                IPersistFile persist = (IPersistFile)linkObject;
-                persist.Save(shortcutPath, true);
-            }
-            finally
-            {
-                if (valueCreated) PropVariantClear(ref value);
-                if (Marshal.IsComObject(linkObject)) Marshal.FinalReleaseComObject(linkObject);
-            }
-        }
-    }
-}
-'@
-    Add-Type -TypeDefinition $source -Language CSharp
-}
-
-function Install-IS74NotificationShortcut {
-    Initialize-IS74Storage
-    $shortcutDir = Split-Path -Parent $script:ToastShortcutPath
-    if (-not (Test-Path $shortcutDir)) {
-        New-Item -ItemType Directory -Force -Path $shortcutDir | Out-Null
-    }
-
-    $powershellExe = Get-IS74WindowsPowerShellPath
-    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $script:CliScriptPath
-    Initialize-IS74ToastShortcutInterop
-    [IS74.ToastShortcut]::Create(
-        $script:ToastShortcutPath,
-        $powershellExe,
-        $arguments,
-        $script:ProjectRoot,
-        'IS74 Automatic Wi-Fi',
-        $powershellExe,
-        $script:ToastAppId
-    )
-    Write-IS74Log -Message "Toast shortcut ready appId=$($script:ToastAppId) path=$($script:ToastShortcutPath)"
-    return $script:ToastShortcutPath
-}
-
-function Remove-IS74NotificationShortcut {
-    try {
-        if (Test-Path $script:ToastShortcutPath) {
-            Remove-Item -Path $script:ToastShortcutPath -Force
-            Write-IS74Log -Message 'Toast shortcut removed.'
-        }
-    } catch {
-        Write-IS74Log -Level WARN -Message "Не удалось удалить toast shortcut: $($_.Exception.Message)"
-    }
-}
-
-function Test-IS74ToastSettingsEnabled {
-    $enabled = $true
-    try {
-        $global = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' -Name ToastEnabled -ErrorAction SilentlyContinue
-        if ($global -and $null -ne $global.ToastEnabled -and [int]$global.ToastEnabled -eq 0) {
-            Write-IS74Log -Level WARN -Message 'Windows toast notifications are globally disabled for the current user.'
-            $enabled = $false
-        }
-    } catch { }
-
-    try {
-        $appKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\{0}' -f $script:ToastAppId
-        $app = Get-ItemProperty $appKey -Name Enabled -ErrorAction SilentlyContinue
-        if ($app -and $null -ne $app.Enabled -and [int]$app.Enabled -eq 0) {
-            Write-IS74Log -Level WARN -Message "Windows toast notifications are disabled for appId=$($script:ToastAppId)."
-            $enabled = $false
-        }
-    } catch { }
-    return $enabled
-}
-
-function Show-IS74Toast {
-    param(
-        [Parameter(Mandatory=$true)][string]$Title,
-        [Parameter(Mandatory=$true)][string]$Message,
-        [switch]$Diagnostic,
-        [switch]$NativeOnly
-    )
-
-    $settings = Get-IS74Settings
-    if ($settings.notifications -eq $false) {
-        Write-IS74Log -Level WARN -Message 'Toast skipped because notifications=false in settings.json.'
-        if ($Diagnostic) { Write-Host 'Уведомления отключены в settings.json.' -ForegroundColor Yellow }
-        return $false
-    }
-
-    # PowerShell 7 does not reliably resolve the Windows Runtime metadata type
-    # used by Windows.UI.Notifications. The agent already runs under Windows
-    # PowerShell 5.1, so make manual pwsh invocations use the same native path.
-    if (-not $NativeOnly -and $PSVersionTable.PSEdition -eq 'Core') {
-        $powershellExe = Get-IS74WindowsPowerShellPath
-        $oldTitle = [Environment]::GetEnvironmentVariable('IS74_TOAST_TITLE', 'Process')
-        $oldMessage = [Environment]::GetEnvironmentVariable('IS74_TOAST_MESSAGE', 'Process')
-        try {
-            [Environment]::SetEnvironmentVariable('IS74_TOAST_TITLE', $Title, 'Process')
-            [Environment]::SetEnvironmentVariable('IS74_TOAST_MESSAGE', $Message, 'Process')
-
-            $moduleLiteral = $script:ModulePath.Replace("'", "''")
-            $diagArg = if ($Diagnostic) { ' -Diagnostic' } else { '' }
-            $command = @"
-`$ErrorActionPreference = 'Stop'
-Import-Module '$moduleLiteral' -Force
-`$ok = Show-IS74Toast -Title `$env:IS74_TOAST_TITLE -Message `$env:IS74_TOAST_MESSAGE -NativeOnly$diagArg
-if (`$ok) { exit 0 } else { exit 2 }
-"@
-            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-            & $powershellExe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded
-            $exitCode = $LASTEXITCODE
-            Write-IS74Log -Message "Toast PowerShell7 bridge completed exitCode=$exitCode exe=$powershellExe"
-            return ($exitCode -eq 0)
-        } catch {
-            Write-IS74Log -Level WARN -Message "Toast PowerShell7 bridge failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
-            if ($Diagnostic) {
-                Write-Host ("Не удалось запустить Windows PowerShell 5.1 для toast: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
-                Write-Host ("Подробности: {0}" -f $script:LogFile)
-            }
-            return $false
-        } finally {
-            [Environment]::SetEnvironmentVariable('IS74_TOAST_TITLE', $oldTitle, 'Process')
-            [Environment]::SetEnvironmentVariable('IS74_TOAST_MESSAGE', $oldMessage, 'Process')
-        }
-    }
-
-    try {
-        $shortcut = Install-IS74NotificationShortcut
-        $windowsEnabled = Test-IS74ToastSettingsEnabled
-        if (-not $windowsEnabled -and $Diagnostic) {
-            Write-Host 'Windows сообщает, что уведомления отключены. Проверьте Параметры > Система > Уведомления.' -ForegroundColor Yellow
-        }
-
-        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
-        [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
-        $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02
-        $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
-        $nodes = $xml.GetElementsByTagName('text')
-        $null = $nodes.Item(0).AppendChild($xml.CreateTextNode($Title))
-        $null = $nodes.Item(1).AppendChild($xml.CreateTextNode($Message))
-        $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($script:ToastAppId).Show($toast)
-        Write-IS74Log -Message "Toast submitted appId=$($script:ToastAppId) shortcutExists=$([bool](Test-Path $shortcut)) windowsSettingsEnabled=$windowsEnabled psEdition=$($PSVersionTable.PSEdition)"
-        if ($Diagnostic) {
-            Write-Host ("Toast отправлен Windows. AppUserModelID: {0}" -f $script:ToastAppId) -ForegroundColor Green
-            Write-Host ("Start Menu shortcut: {0}" -f $shortcut)
-            if (-not $windowsEnabled) {
-                Write-Host 'Сам вызов Show() выполнен, но Windows может скрыть уведомление из-за настроек.' -ForegroundColor Yellow
-            }
-        }
-        return $true
-    } catch {
-        Write-IS74Log -Level WARN -Message "Toast не показан: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
-        if ($Diagnostic) {
-            Write-Host ("Toast не удалось отправить: {0}: {1}" -f $_.Exception.GetType().FullName, $_.Exception.Message) -ForegroundColor Yellow
-            Write-Host ("Подробности: {0}" -f $script:LogFile)
-        }
-        return $false
-    }
-}
-
 function Test-IS74InternetAccess {
     param([switch]$DiagnosticOnFailure)
 
@@ -936,7 +650,6 @@ function Read-IS74RuntimeState {
     $defaults = [ordered]@{
         lastAuthUtc = $null
         expectedExpiryUtc = $null
-        preExpiryNotified = $false
         lastAttemptUtc = $null
         lastAttemptReason = $null
         lastResult = $null
@@ -985,7 +698,6 @@ function Set-IS74SuccessfulAuthState {
     $state = [ordered]@{
         lastAuthUtc = $authorizedAt.ToString('o')
         expectedExpiryUtc = $authorizedAt.AddHours([double]$settings.authWindowHours).ToString('o')
-        preExpiryNotified = $false
         lastAttemptUtc = [DateTime]::UtcNow.ToString('o')
         lastAttemptReason = 'success'
         lastResult = 'success'
@@ -1048,6 +760,7 @@ function Set-IS74UserActionRequired {
     $state.nextAutomaticRetryUtc = $null
     $state.lastResult = $Result
     Save-IS74RuntimeState -State $state
+    Write-IS74Log -Level WARN -Message ("automatic.state userActionRequired=true result={0}" -f $Result)
 }
 
 function New-IS74ConnectException {
@@ -1087,9 +800,7 @@ function Connect-IS74Wifi {
     param(
         [switch]$Force,
         [switch]$Quiet,
-        [ValidateSet('manual','automatic','retry')][string]$AttemptReason = 'manual',
-        [switch]$SuppressStartToast,
-        [switch]$SuppressFailureToast
+        [ValidateSet('manual','automatic','retry')][string]$AttemptReason = 'manual'
     )
 
     Initialize-IS74Storage
@@ -1111,9 +822,6 @@ function Connect-IS74Wifi {
     }
 
     Set-IS74AttemptState -Result 'started' -Reason $AttemptReason
-    if (-not $SuppressStartToast) {
-        $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Начинаю автоматическую авторизацию Wi-Fi.'
-    }
     Write-IS74Log -Message "Начата Wi-Fi авторизация. Reason=$AttemptReason"
     if (-not $Quiet) { Write-Host 'Начинаю Wi-Fi авторизацию...' -ForegroundColor Cyan }
 
@@ -1264,9 +972,6 @@ function Connect-IS74Wifi {
             # cutoff can happen a few hundred milliseconds after this response.
             Set-IS74AttemptState -Result 'already-authorized' -Reason $AttemptReason
             Write-IS74Log -Message ("portal.stepOne classified=already-authorized reason={0}" -f $AttemptReason)
-            if (-not $SuppressFailureToast) {
-                $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Доступ пока ещё активен; слежу за границей авторизации.'
-            }
             if (-not $Quiet) { Write-Host 'Captive portal сообщает, что клиент ещё авторизован.' -ForegroundColor Green }
             return [pscustomobject]@{ Status='AlreadyAuthorized'; InternetConfirmed=$null }
         }
@@ -1331,8 +1036,6 @@ function Connect-IS74Wifi {
         }
 
         Set-IS74SuccessfulAuthState -InternetConfirmed:$internetConfirmed -AuthorizedAtUtc $stepTwo.DateUtc
-        $settings = Get-IS74Settings
-        $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("Авторизация завершена. Следующая ожидается примерно через {0} ч." -f $settings.authWindowHours)
         Write-IS74Log -Message "Wi-Fi авторизация завершена. InternetConfirmed=$internetConfirmed"
         if (-not $Quiet) {
             Write-Host 'Авторизация завершена.' -ForegroundColor Green
@@ -1345,9 +1048,6 @@ function Connect-IS74Wifi {
         if ($_.Exception.Data['IS74RetryableStepOne']) { $result = 'step-one-retryable-error' }
         if ($_.Exception.Data['IS74UserActionRequired']) { $result = 'user-action-required' }
         Set-IS74AttemptState -Result $result -Reason $AttemptReason
-        if (-not $SuppressFailureToast) {
-            $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Не удалось выполнить автоматическую авторизацию. Запустите IS74Wifi.ps1 для подробностей.'
-        }
         Write-IS74Log -Level ERROR -Message "Wi-Fi авторизация: $message"
         throw
     } finally {
@@ -1380,7 +1080,6 @@ function Enable-IS74Autostart {
     Import-Module ScheduledTasks -ErrorAction Stop
 
     $powershellExe = Get-IS74WindowsPowerShellPath
-    $null = Install-IS74NotificationShortcut
     $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $AgentPath
     $identityName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $action = New-ScheduledTaskAction -Execute $powershellExe -Argument $arguments
@@ -1418,7 +1117,6 @@ function Reset-IS74Registration {
 
 function Remove-IS74AllData {
     if (Test-IS74AutostartEnabled) { Disable-IS74Autostart }
-    Remove-IS74NotificationShortcut
     if (Test-Path $script:StateDir) {
         Remove-Item -Path $script:StateDir -Recurse -Force
     }
@@ -1521,16 +1219,6 @@ function Invoke-IS74AgentTick {
     $guardEnd = $expiry.AddSeconds($guardSeconds)
     $guardProbeDelayMs = [Math]::Max(100, [int]$settings.guardProbeIntervalMilliseconds)
 
-    if (-not [bool]$state.preExpiryNotified) {
-        $warningAt = $expiry.AddMinutes(-[double]$settings.preExpiryMinutes)
-        if ($now -ge $warningAt -and $now -lt $expiry) {
-            $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("До ожидаемого окончания 24-часовой авторизации осталось около {0} минут." -f $settings.preExpiryMinutes)
-            $state.preExpiryNotified = $true
-            Save-IS74RuntimeState -State $state
-            Write-IS74Log -Message 'Показано предупреждение перед окончанием 24-часового окна.'
-        }
-    }
-
     # Outside the small guarded zone we deliberately do not probe the Internet
     # before expiry and do not touch the captive portal.
     if ($now -lt $guardStart) { return }
@@ -1552,7 +1240,6 @@ function Invoke-IS74AgentTick {
     $maxAttempts = [int]$settings.maxAutomaticStepOneAttempts
     if ($attempts -ge $maxAttempts) {
         Set-IS74UserActionRequired -Result 'automatic-step-one-limit'
-        $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("Автоматическая авторизация остановлена после {0} попыток stepOne. Запустите IS74Wifi.ps1 и выберите 'Авторизовать Wi-Fi сейчас'." -f $maxAttempts)
         Write-IS74Log -Level ERROR -Message "Достигнут лимит автоматических stepOne: $maxAttempts. Требуется действие пользователя."
         return
     }
@@ -1609,8 +1296,7 @@ function Invoke-IS74AgentTick {
     if (-not $shouldSendStepOne) { return }
 
     try {
-        $suppressStart = ($attempts -gt 0)
-        $result = Connect-IS74Wifi -Force -Quiet -AttemptReason $reason -SuppressStartToast:$suppressStart -SuppressFailureToast
+        $result = Connect-IS74Wifi -Force -Quiet -AttemptReason $reason
 
         if ($result.Status -eq 'AlreadyAuthorized') {
             $state = Read-IS74RuntimeState
@@ -1638,14 +1324,12 @@ function Invoke-IS74AgentTick {
 
         if ($ex.Data['IS74UserActionRequired']) {
             Set-IS74UserActionRequired
-            $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Автоматическая авторизация остановлена. Требуется действие пользователя; откройте IS74Wifi.ps1.'
             return
         }
 
         if ($ex.Data['IS74RetryableStepOne']) {
             if ($attempts -ge $maxAttempts) {
                 Set-IS74UserActionRequired -Result 'automatic-step-one-limit'
-                $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("Не удалось авторизоваться после {0} попыток stepOne. Автоматические повторы остановлены; откройте IS74Wifi.ps1." -f $maxAttempts)
                 return
             }
 
@@ -1677,6 +1361,5 @@ Export-ModuleMember -Function @(
     'Get-IS74AgentSleepMilliseconds',
     'Get-IS74Settings',
     'Get-IS74DiagnosticLogPath',
-    'Write-IS74RuntimeEvent',
-    'Show-IS74Toast'
+    'Write-IS74RuntimeEvent'
 )

@@ -6,7 +6,7 @@
 
 - `IS74Wifi.ps1` — CLI и интерактивное меню.
 - `agent.ps1` — фоновый пользовательский агент.
-- `src/IS74Wifi.psm1` — HTTP, регистрация, DPAPI, captive portal, уведомления и Task Scheduler.
+- `src/IS74Wifi.psm1` — HTTP, регистрация, DPAPI, captive portal, диагностика и Task Scheduler.
 - `experiments/*` — остаются неизменёнными как воспроизводимые исследования протокола.
 
 ## Первый запуск
@@ -35,7 +35,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\IS74Wifi.ps1 register
 .\IS74Wifi.ps1 uninstall
 .\IS74Wifi.ps1 reset
 .\IS74Wifi.ps1 purge
-.\IS74Wifi.ps1 toast-test
+.\IS74Wifi.ps1 logs
 ```
 
 Без аргументов открывается текстовое меню.
@@ -50,20 +50,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\IS74Wifi.ps1 register
 powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File agent.ps1
 ```
 
-Windows Service не используется. Это сохраняет тот же пользовательский DPAPI-контекст и позволяет показывать уведомления в интерактивной сессии.
+Windows Service пока не используется. Это сохраняет текущий пользовательский DPAPI `CurrentUser`-контекст без смены модели хранения секретов.
 
 `uninstall` останавливает и удаляет задачу, но оставляет регистрацию и Bearer. `reset` удаляет регистрацию и deviceId. `purge` дополнительно удаляет `%LOCALAPPDATA%\IS74Wifi`.
 
-## Уведомления
-
-MVP отправляет toast в четырёх случаях:
-
-1. примерно за 10 минут до ожидаемого окончания 24-часового окна;
-2. непосредственно перед началом captive-авторизации;
-3. после успешного `POST /stepTwo`;
-4. при ошибке автоматической авторизации.
-
-Для обычного desktop-процесса Windows требует Start Menu shortcut с AppUserModelID. IS74Wifi создаёт пользовательский ярлык `IS74 Automatic Wi-Fi` со своим AppUserModelID `IS74.AutomaticWifi` без сторонних модулей; AppUserModelID назначается в памяти до первого сохранения `.lnk`. Если CLI запущен через `pwsh` (PowerShell 7), отправка toast мостится через системный Windows PowerShell 5.1. `toast-test` создаёт/проверяет ярлык и выводит диагностическую информацию. Системные настройки Windows всё равно могут скрыть уведомление, поэтому toast остаётся best-effort и никогда не блокирует авторизацию.
+## 24-часовой цикл
 
 24-часовая граница считается от успешного `POST /stepTwo → 302 stepThree`. Если ответ `stepTwo` содержит серверный HTTP `Date`, он используется как опорное время; иначе берётся локальный UTC в момент ответа. Ручная неудачная попытка, `stepOne`, получение кода и проверка Internet не сдвигают эту границу.
 
@@ -96,5 +87,4 @@ baseline /pushmessages
 
 - IP/DNS cache/fallback из `docs/protocol.md` пока не перенесён в production-модуль; HTTP использует системный DNS.
 - Ветка с непустым `addresses` намеренно не угадывает схему выбора `userId`.
-- Toast должен быть проверен командой `toast-test`; системные настройки Windows могут запрещать уведомления.
 - Проверка наличия Интернета использует стандартный Microsoft Connect Test URL и требует точного ожидаемого ответа.
