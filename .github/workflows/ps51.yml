@@ -1,4 +1,4 @@
-name: Windows PowerShell 5.1
+name: PowerShell compatibility
 
 on:
   push:
@@ -40,6 +40,40 @@ jobs:
         run: |
           Import-Module .\src\IS74Wifi.psm1 -Force
           Get-Command -Module IS74Wifi | Out-String | Write-Host
+
+      - name: Critical-path contract checks with Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\critical_path_contract.ps1
+
+      - name: Parse and import production runtime with PowerShell 7
+        shell: pwsh
+        run: |
+          $files = @(
+            '.\IS74Wifi.ps1',
+            '.\agent.ps1',
+            '.\src\IS74Wifi.psm1',
+            '.\tests\critical_path_contract.ps1'
+          )
+
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "PowerShell parser errors in $file"
+            }
+          }
+
+          Import-Module .\src\IS74Wifi.psm1 -Force
+
+      - name: Critical-path contract checks with PowerShell 7
+        shell: pwsh
+        run: .\tests\critical_path_contract.ps1
 
       - name: Static checks
         shell: powershell
