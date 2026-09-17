@@ -4,7 +4,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName System.Net.Http
-Add-Type -TypeDefinition @'
+Add-Type -ReferencedAssemblies ([System.Net.Http.HttpClient].Assembly.Location) -TypeDefinition @'
 using System;
 using System.Net;
 using System.Net.Http;
