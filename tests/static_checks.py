@@ -64,4 +64,11 @@ assert 'AppUserModelID' not in module
 assert 'Windows.UI.Notifications' not in module
 assert '.Headers.Date.HasValue' not in module
 assert '.Headers.Date.Value' not in module
+assert '$Json.items' not in module
+assert '$json.items' not in module
+assert '$Message.subject' not in module
+assert '$Message.push_message' not in module
+assert '$Message.full_message' not in module
+assert 'Get-IS74PushMessages' in module
+assert 'Get-IS74PropertyValue' in module
 print('static checks: OK')
