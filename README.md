@@ -10,6 +10,7 @@
 4. В тесте сервер выдал сессию сроком на один год (`ACCESS_BEGIN` → `ACCESS_END`).
 5. Captive portal подтверждён HAR-трассировкой: `stepOne` → `stepTwo` → `stepThree`. Финальный `stepTwo` содержит только `confirmCode` и `phone`; cookies/CSRF в наблюдавшемся сценарии не требовались.
 6. Wi‑Fi-код появляется в серверной ленте `/mobile/pushmessages`, поэтому ежедневная работа не требует Android push.
+7. Windows-сессии можно передать человекочитаемые метаданные через `PUT /mobile/pushtoken/add-with-device-id`: проверено обновление активного устройства до вида `DESKTOP-..., Windows ...` без настоящего push-token.
 
 Подробности: [`docs/protocol.md`](docs/protocol.md).
 
@@ -19,6 +20,7 @@
 - `experiments/02-check-confirm.ps1` — проверяет SMS-код; для обычного SMS отправляет пустой `authId` и сохраняет новый подтверждённый `authId`.
 - `experiments/03-get-token.ps1` — получает `AuthSession`, сохраняет Bearer через Windows DPAPI и записывает несекретные метаданные сессии.
 - `experiments/04-read-pushmessages.ps1` — проверяет чтение `/mobile/pushmessages` с локальным Bearer.
+- `experiments/05-register-device-metadata.ps1` — обновляет существующую Windows-сессию человекочитаемыми `DEVICE_MODEL` и `OS_VERS` без поддельного push-token.
 - `prototypes/01-captive-manual-code.ps1` — прототип штатной длинной последовательности captive portal с ручным вводом 4-значного кода.
 - `docs/protocol.md` — зафиксированные параметры протокола и известные неизвестные.
 
@@ -32,6 +34,7 @@
     bearer.dpapi
     session-meta.json
     check-confirm-success.json
+    device-metadata.json
 ```
 
 `bearer.dpapi` создаётся через Windows DPAPI и не должен попадать в репозиторий.
@@ -50,7 +53,7 @@
 → проверяет появление Интернета
 ```
 
-Регистрация человекочитаемых метаданных Windows-устройства (например `DESKTOP-H9F324S`) пока вынесена в отдельную задачу: endpoint обновления device metadata ещё нужно точно определить.
+Регистрация человекочитаемых метаданных Windows-устройства уже проверена отдельно и может быть частью onboarding/первого запуска MVP.
 
 ## Безопасность
 
