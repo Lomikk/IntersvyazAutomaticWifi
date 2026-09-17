@@ -54,6 +54,14 @@ assert "agent.tick error=" in agent
 assert "ToastAppId     = 'IS74.AutomaticWifi'" in module
 assert 'Install-IS74NotificationShortcut' in module
 assert 'System.AppUserModel.ID' not in module  # encoded through the documented property key
+
+# Desktop toast shortcut is created with AppUserModelID before the first Save,
+# and PowerShell 7 bridges toast delivery through Windows PowerShell 5.1.
+assert '[IS74.ToastShortcut]::Create(' in module
+assert 'persist.Load(shortcutPath, 0)' not in module
+assert "$PSVersionTable.PSEdition -eq 'Core'" in module
+assert '-EncodedCommand $encoded' in module
+assert '-NativeOnly' in module
 assert '9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3' in module
 assert "System32\\WindowsPowerShell\\v1.0\\powershell.exe" in module
 assert 'Get-StartApps' not in module

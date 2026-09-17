@@ -27,6 +27,7 @@ $script:LogPreviewChars = 1024
 $script:TaskName       = 'IS74WifiAgent'
 $script:ToastAppId     = 'IS74.AutomaticWifi'
 $script:ProjectRoot    = Split-Path -Parent $PSScriptRoot
+$script:ModulePath      = $PSCommandPath
 $script:CliScriptPath  = Join-Path $script:ProjectRoot 'IS74Wifi.ps1'
 $script:ToastShortcutPath = Join-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') 'IS74 Automatic Wi-Fi.lnk'
 $script:ApiBase        = 'https://api.is74.ru'
@@ -531,6 +532,7 @@ function Initialize-IS74ToastShortcutInterop {
     $source = @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace IS74
 {
@@ -562,6 +564,31 @@ namespace IS74
     public class ShellLink { }
 
     [ComImport]
+    [Guid("000214F9-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch, IntPtr pfd, uint fFlags);
+        void GetIDList(out IntPtr ppidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+        void GetHotkey(out short pwHotkey);
+        void SetHotkey(short wHotkey);
+        void GetShowCmd(out int piShowCmd);
+        void SetShowCmd(int iShowCmd);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
+        void Resolve(IntPtr hwnd, uint fFlags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+    }
+
+    [ComImport]
     [Guid("0000010b-0000-0000-C000-000000000046")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IPersistFile
@@ -591,24 +618,44 @@ namespace IS74
         [DllImport("ole32.dll")]
         private static extern int PropVariantClear(ref PropVariant pvar);
 
-        public static void SetAppUserModelId(string shortcutPath, string appId)
+        public static void Create(
+            string shortcutPath,
+            string targetPath,
+            string arguments,
+            string workingDirectory,
+            string description,
+            string iconPath,
+            string appId)
         {
-            object link = new ShellLink();
-            IPersistFile persist = (IPersistFile)link;
-            persist.Load(shortcutPath, 0);
-            IPropertyStore store = (IPropertyStore)link;
-            PropertyKey key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
-            PropVariant value = PropVariant.FromString(appId);
+            object linkObject = new ShellLink();
+            PropVariant value = new PropVariant();
+            bool valueCreated = false;
             try
             {
+                IShellLinkW link = (IShellLinkW)linkObject;
+                link.SetPath(targetPath);
+                link.SetArguments(arguments);
+                link.SetWorkingDirectory(workingDirectory);
+                link.SetDescription(description);
+                link.SetIconLocation(iconPath, 0);
+
+                // Set the AppUserModelID on the in-memory shell link before the
+                // first Save. This matches Microsoft's desktop-toast pattern and
+                // avoids reopening an existing .lnk through a read-only storage.
+                IPropertyStore store = (IPropertyStore)linkObject;
+                PropertyKey key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+                value = PropVariant.FromString(appId);
+                valueCreated = true;
                 store.SetValue(ref key, ref value);
                 store.Commit();
+
+                IPersistFile persist = (IPersistFile)linkObject;
                 persist.Save(shortcutPath, true);
             }
             finally
             {
-                PropVariantClear(ref value);
-                if (Marshal.IsComObject(link)) Marshal.FinalReleaseComObject(link);
+                if (valueCreated) PropVariantClear(ref value);
+                if (Marshal.IsComObject(linkObject)) Marshal.FinalReleaseComObject(linkObject);
             }
         }
     }
@@ -625,23 +672,17 @@ function Install-IS74NotificationShortcut {
     }
 
     $powershellExe = Get-IS74WindowsPowerShellPath
-    $shell = New-Object -ComObject WScript.Shell
-    try {
-        $shortcut = $shell.CreateShortcut($script:ToastShortcutPath)
-        $shortcut.TargetPath = $powershellExe
-        $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $script:CliScriptPath
-        $shortcut.WorkingDirectory = $script:ProjectRoot
-        $shortcut.Description = 'IS74 Automatic Wi-Fi'
-        $shortcut.IconLocation = "$powershellExe,0"
-        $shortcut.Save()
-    } finally {
-        if ($shell -and [Runtime.InteropServices.Marshal]::IsComObject($shell)) {
-            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
-        }
-    }
-
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $script:CliScriptPath
     Initialize-IS74ToastShortcutInterop
-    [IS74.ToastShortcut]::SetAppUserModelId($script:ToastShortcutPath, $script:ToastAppId)
+    [IS74.ToastShortcut]::Create(
+        $script:ToastShortcutPath,
+        $powershellExe,
+        $arguments,
+        $script:ProjectRoot,
+        'IS74 Automatic Wi-Fi',
+        $powershellExe,
+        $script:ToastAppId
+    )
     Write-IS74Log -Message "Toast shortcut ready appId=$($script:ToastAppId) path=$($script:ToastShortcutPath)"
     return $script:ToastShortcutPath
 }
@@ -682,7 +723,8 @@ function Show-IS74Toast {
     param(
         [Parameter(Mandatory=$true)][string]$Title,
         [Parameter(Mandatory=$true)][string]$Message,
-        [switch]$Diagnostic
+        [switch]$Diagnostic,
+        [switch]$NativeOnly
     )
 
     $settings = Get-IS74Settings
@@ -690,6 +732,43 @@ function Show-IS74Toast {
         Write-IS74Log -Level WARN -Message 'Toast skipped because notifications=false in settings.json.'
         if ($Diagnostic) { Write-Host 'Уведомления отключены в settings.json.' -ForegroundColor Yellow }
         return $false
+    }
+
+    # PowerShell 7 does not reliably resolve the Windows Runtime metadata type
+    # used by Windows.UI.Notifications. The agent already runs under Windows
+    # PowerShell 5.1, so make manual pwsh invocations use the same native path.
+    if (-not $NativeOnly -and $PSVersionTable.PSEdition -eq 'Core') {
+        $powershellExe = Get-IS74WindowsPowerShellPath
+        $oldTitle = [Environment]::GetEnvironmentVariable('IS74_TOAST_TITLE', 'Process')
+        $oldMessage = [Environment]::GetEnvironmentVariable('IS74_TOAST_MESSAGE', 'Process')
+        try {
+            [Environment]::SetEnvironmentVariable('IS74_TOAST_TITLE', $Title, 'Process')
+            [Environment]::SetEnvironmentVariable('IS74_TOAST_MESSAGE', $Message, 'Process')
+
+            $moduleLiteral = $script:ModulePath.Replace("'", "''")
+            $diagArg = if ($Diagnostic) { ' -Diagnostic' } else { '' }
+            $command = @"
+`$ErrorActionPreference = 'Stop'
+Import-Module '$moduleLiteral' -Force
+`$ok = Show-IS74Toast -Title `$env:IS74_TOAST_TITLE -Message `$env:IS74_TOAST_MESSAGE -NativeOnly$diagArg
+if (`$ok) { exit 0 } else { exit 2 }
+"@
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+            & $powershellExe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded
+            $exitCode = $LASTEXITCODE
+            Write-IS74Log -Message "Toast PowerShell7 bridge completed exitCode=$exitCode exe=$powershellExe"
+            return ($exitCode -eq 0)
+        } catch {
+            Write-IS74Log -Level WARN -Message "Toast PowerShell7 bridge failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+            if ($Diagnostic) {
+                Write-Host ("Не удалось запустить Windows PowerShell 5.1 для toast: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+                Write-Host ("Подробности: {0}" -f $script:LogFile)
+            }
+            return $false
+        } finally {
+            [Environment]::SetEnvironmentVariable('IS74_TOAST_TITLE', $oldTitle, 'Process')
+            [Environment]::SetEnvironmentVariable('IS74_TOAST_MESSAGE', $oldMessage, 'Process')
+        }
     }
 
     try {
@@ -708,7 +787,7 @@ function Show-IS74Toast {
         $null = $nodes.Item(1).AppendChild($xml.CreateTextNode($Message))
         $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($script:ToastAppId).Show($toast)
-        Write-IS74Log -Message "Toast submitted appId=$($script:ToastAppId) shortcutExists=$([bool](Test-Path $shortcut)) windowsSettingsEnabled=$windowsEnabled"
+        Write-IS74Log -Message "Toast submitted appId=$($script:ToastAppId) shortcutExists=$([bool](Test-Path $shortcut)) windowsSettingsEnabled=$windowsEnabled psEdition=$($PSVersionTable.PSEdition)"
         if ($Diagnostic) {
             Write-Host ("Toast отправлен Windows. AppUserModelID: {0}" -f $script:ToastAppId) -ForegroundColor Green
             Write-Host ("Start Menu shortcut: {0}" -f $shortcut)
