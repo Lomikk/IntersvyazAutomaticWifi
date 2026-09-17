@@ -2,7 +2,7 @@
 
 param(
     [Parameter(Position=0)]
-    [ValidateSet('menu','register','connect','status','install','uninstall','reset','purge','toast-test')]
+    [ValidateSet('menu','register','connect','status','install','uninstall','reset','purge','toast-test','logs')]
     [string]$Command = 'menu'
 )
 
@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 $modulePath = Join-Path $PSScriptRoot 'src\IS74Wifi.psm1'
 Import-Module $modulePath -Force
 Initialize-IS74Storage
+Write-IS74RuntimeEvent -Message ("cli.start command={0} psVersion={1}" -f $Command, $PSVersionTable.PSVersion)
 
 function Show-Status {
     $s = Get-IS74Status
@@ -36,6 +37,7 @@ function Show-Status {
         Write-Host 'Требуется действие           : да — автоматические попытки остановлены' -ForegroundColor Yellow
     }
     Write-Host "Данные приложения            : $($s.StateDirectory)"
+    Write-Host "Диагностический журнал       : $($s.DiagnosticLog)"
     Write-Host ''
 }
 
@@ -64,6 +66,14 @@ function Invoke-CommandMode {
             else { Write-Host 'Toast показать не удалось. Смотрите журнал приложения.' -ForegroundColor Yellow }
             return
         }
+        'logs' {
+            $logPath = Get-IS74DiagnosticLogPath
+            $logDir = Split-Path -Parent $logPath
+            Write-Host "Журнал: $logPath" -ForegroundColor Cyan
+            Write-Host 'Для диагностики можно прислать diagnostic.log и diagnostic.N.log из этой папки.'
+            try { Start-Process explorer.exe -ArgumentList $logDir } catch { }
+            return
+        }
     }
 }
 
@@ -82,6 +92,7 @@ while ($true) {
     Write-Host '6. Сбросить регистрацию'
     Write-Host '7. Удалить все данные приложения'
     Write-Host '8. Проверить уведомление'
+    Write-Host '9. Открыть диагностические логи'
     Write-Host '0. Выход'
     Write-Host ''
     $choice = Read-Host 'Выберите действие'
@@ -107,6 +118,7 @@ while ($true) {
                 }
             }
             '8' { Invoke-CommandMode -Name 'toast-test' }
+            '9' { Invoke-CommandMode -Name 'logs' }
             '0' { break }
             default { Write-Host 'Неизвестный пункт.' -ForegroundColor Yellow }
         }
