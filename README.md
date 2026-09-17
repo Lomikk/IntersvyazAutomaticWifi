@@ -10,7 +10,9 @@
 4. В тесте сервер выдал сессию сроком на один год (`ACCESS_BEGIN` → `ACCESS_END`).
 5. Captive portal подтверждён HAR-трассировкой: `stepOne` → `stepTwo` → `stepThree`. Финальный `stepTwo` содержит только `confirmCode` и `phone`; cookies/CSRF в наблюдавшемся сценарии не требовались.
 6. Wi‑Fi-код появляется в серверной ленте `/mobile/pushmessages`, поэтому ежедневная работа не требует Android push.
-7. Windows-сессии можно передать человекочитаемые метаданные через `PUT /mobile/pushtoken/add-with-device-id`: проверено обновление активного устройства до вида `DESKTOP-..., Windows ...` без настоящего push-token.
+7. `page=1&pageSize=1` возвращает самую свежую запись; наблюдавшиеся ID идут от новых к старым. Для свежего чтения используется `Cache-Control: no-cache`, при котором сервер отвечал `X-Cache-Status: BYPASS`.
+8. Параллельный замер показал, что новое сообщение с Wi‑Fi-кодом становится доступно практически одновременно с завершением `/stepOne`: в одном измерении последний ответ со старым ID закончился на ~70.6 ms, `/stepOne` вернул `302` на ~135.4 ms, а следующий GET с новым ID завершился на ~139.3 ms относительно начала `/stepOne`.
+9. Windows-сессии можно передать человекочитаемые метаданные через `PUT /mobile/pushtoken/add-with-device-id`: проверено обновление активного устройства до вида `DESKTOP-..., Windows ...` без настоящего push-token.
 
 Подробности: [`docs/protocol.md`](docs/protocol.md).
 
@@ -21,6 +23,7 @@
 - `experiments/03-get-token.ps1` — получает `AuthSession`, сохраняет Bearer через Windows DPAPI и записывает несекретные метаданные сессии.
 - `experiments/04-read-pushmessages.ps1` — проверяет чтение `/mobile/pushmessages` с локальным Bearer.
 - `experiments/05-register-device-metadata.ps1` — обновляет существующую Windows-сессию человекочитаемыми `DEVICE_MODEL` и `OS_VERS` без поддельного push-token.
+- `experiments/06-measure-push-latency.ps1` — запускает наблюдатель `/pushmessages` до `/stepOne` и измеряет момент появления новой записи; код не выводится и `/stepTwo` не вызывается.
 - `prototypes/01-captive-manual-code.ps1` — прототип штатной длинной последовательности captive portal с ручным вводом 4-значного кода.
 - `docs/protocol.md` — зафиксированные параметры протокола и известные неизвестные.
 
@@ -48,7 +51,8 @@
 → читает существующий Bearer из DPAPI
 → запоминает baseline ID уведомлений
 → запускает /stepOne
-→ ждёт новый Wi‑Fi-код через /mobile/pushmessages
+→ сразу читает pageSize=1 с no-cache
+→ при необходимости кратко polling'ует до появления нового Wi‑Fi-кода
 → отправляет /stepTwo с того же Windows-клиента
 → проверяет появление Интернета
 ```
