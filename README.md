@@ -15,9 +15,11 @@
 
 ## Структура
 
-- `experiments/01-account-auth.ps1` — полный эксперимент получения Windows Bearer по номеру телефона + SMS и проверка `/mobile/pushmessages`.
-- `experiments/02-read-pushmessages.ps1` — чтение ленты уведомлений с Bearer, сохранённым через Windows DPAPI.
-- `prototypes/01-captive-manual-code.ps1` — прототип штатной последовательности captive portal с ручным вводом 4-значного кода. Он нужен как промежуточная проверка перед полной автоматизацией.
+- `experiments/01-get-confirm.ps1` — создаёт/переиспользует Windows `deviceId` и запускает телефонное подтверждение.
+- `experiments/02-check-confirm.ps1` — проверяет SMS-код; для обычного SMS отправляет пустой `authId` и сохраняет новый подтверждённый `authId`.
+- `experiments/03-get-token.ps1` — получает `AuthSession`, сохраняет Bearer через Windows DPAPI и записывает несекретные метаданные сессии.
+- `experiments/04-read-pushmessages.ps1` — проверяет чтение `/mobile/pushmessages` с локальным Bearer.
+- `prototypes/01-captive-manual-code.ps1` — прототип штатной длинной последовательности captive portal с ручным вводом 4-значного кода.
 - `docs/protocol.md` — зафиксированные параметры протокола и известные неизвестные.
 
 ## Локальное состояние
@@ -29,6 +31,7 @@
     device-id.txt
     bearer.dpapi
     session-meta.json
+    check-confirm-success.json
 ```
 
 `bearer.dpapi` создаётся через Windows DPAPI и не должен попадать в репозиторий.
