@@ -18,6 +18,8 @@ assert 'preExpiryMinutes = 10' in module
 assert 'maxAutomaticStepOneAttempts = 4' in module
 assert 'automaticRetryDelaysSeconds = @(15, 30, 60)' in module
 assert 'internetProbeConfirmDelaySeconds = 2' in module
+assert 'guardWindowSeconds = 10' in module
+assert 'guardProbeIntervalMilliseconds = 250' in module
 assert 'Test-IS74InternetUnavailableConfirmed' in module
 assert 'Get-NetConnectionProfile' not in module.replace('# NCSI/Get-NetConnectionProfile is deliberately not authoritative here.', '')
 assert 'LegacyTokenFile' not in module
@@ -33,7 +35,10 @@ assert 'secrets.dpapi' in module
 assert 'confirmCode' in module
 assert "'connect'  { $null = Connect-IS74Wifi -Force; return }" in cli
 assert "authId'] = ''" in module
-assert "if ($now -lt $expiry) { return }" in module
+assert "if ($now -lt $guardStart) { return }" in module
+assert 'At or after the expected 24-hour boundary, the timer itself is enough.' in module
+assert 'Get-IS74AgentSleepMilliseconds' in module
+assert 'Start-Sleep -Milliseconds $delayMs' in agent
 assert "automaticStepOneAttempts" in module
 assert "userActionRequired" in module
 assert "Cache-Control', 'no-cache, no-store'" in module
