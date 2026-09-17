@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 
 $ErrorActionPreference = 'Stop'
 $modulePath = Join-Path $PSScriptRoot 'src\IS74Wifi.psm1'
