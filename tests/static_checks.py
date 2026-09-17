@@ -62,4 +62,6 @@ assert "System32\\WindowsPowerShell\\v1.0\\powershell.exe" in module
 assert 'toast-test' not in cli
 assert 'AppUserModelID' not in module
 assert 'Windows.UI.Notifications' not in module
+assert '.Headers.Date.HasValue' not in module
+assert '.Headers.Date.Value' not in module
 print('static checks: OK')
