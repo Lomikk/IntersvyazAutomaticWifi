@@ -123,3 +123,5 @@ jobs:
             --title 'IS74Wifi v0.1.0-alpha.1' `
             --notes $notes `
             --prerelease
+
+# Triggered after the Windows PowerShell 5.1 UTF-8 BOM fix landed.
