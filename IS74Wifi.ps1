@@ -61,9 +61,8 @@ function Invoke-CommandMode {
             return
         }
         'toast-test' {
-            $shown = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Тестовое уведомление IS74 Automatic Wi-Fi.'
-            if ($shown) { Write-Host 'Toast отправлен.' -ForegroundColor Green }
-            else { Write-Host 'Toast показать не удалось. Смотрите журнал приложения.' -ForegroundColor Yellow }
+            $shown = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Тестовое уведомление IS74 Automatic Wi-Fi.' -Diagnostic
+            if (-not $shown) { Write-Host 'Автоматическая Wi-Fi авторизация от уведомлений не зависит.' -ForegroundColor DarkGray }
             return
         }
         'logs' {

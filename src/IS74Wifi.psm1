@@ -25,6 +25,10 @@ $script:LogMaxBytes    = 1MB
 $script:LogRetentionFiles = 5
 $script:LogPreviewChars = 1024
 $script:TaskName       = 'IS74WifiAgent'
+$script:ToastAppId     = 'IS74.AutomaticWifi'
+$script:ProjectRoot    = Split-Path -Parent $PSScriptRoot
+$script:CliScriptPath  = Join-Path $script:ProjectRoot 'IS74Wifi.ps1'
+$script:ToastShortcutPath = Join-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') 'IS74 Automatic Wi-Fi.lnk'
 $script:ApiBase        = 'https://api.is74.ru'
 $script:PortalBase     = 'http://w.is74.ru'
 $script:AppVersion     = '2.18.0-RS-95aa9b78'
@@ -513,24 +517,188 @@ function Register-IS74Account {
     }
 }
 
-function Get-IS74ToastAppId {
+function Get-IS74WindowsPowerShellPath {
+    $path = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path $path) { return $path }
+    $cmd = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) { return [string]$cmd.Source }
+    throw 'Не найден Windows PowerShell 5.1 (powershell.exe).'
+}
+
+function Initialize-IS74ToastShortcutInterop {
+    if ('IS74.ToastShortcut' -as [type]) { return }
+
+    $source = @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace IS74
+{
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    public struct PropertyKey
+    {
+        public Guid fmtid;
+        public uint pid;
+        public PropertyKey(Guid fmtid, uint pid) { this.fmtid = fmtid; this.pid = pid; }
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    public struct PropVariant
+    {
+        [FieldOffset(0)] public ushort vt;
+        [FieldOffset(8)] public IntPtr pointerValue;
+
+        public static PropVariant FromString(string value)
+        {
+            PropVariant pv = new PropVariant();
+            pv.vt = 31; // VT_LPWSTR
+            pv.pointerValue = Marshal.StringToCoTaskMemUni(value);
+            return pv;
+        }
+    }
+
+    [ComImport]
+    [Guid("00021401-0000-0000-C000-000000000046")]
+    public class ShellLink { }
+
+    [ComImport]
+    [Guid("0000010b-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IPersistFile
+    {
+        [PreserveSig] int GetClassID(out Guid pClassID);
+        [PreserveSig] int IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
+        void GetCurFile(out IntPtr ppszFileName);
+    }
+
+    [ComImport]
+    [Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IPropertyStore
+    {
+        void GetCount(out uint cProps);
+        void GetAt(uint iProp, out PropertyKey pkey);
+        void GetValue(ref PropertyKey key, out PropVariant pv);
+        void SetValue(ref PropertyKey key, ref PropVariant propvar);
+        void Commit();
+    }
+
+    public static class ToastShortcut
+    {
+        [DllImport("ole32.dll")]
+        private static extern int PropVariantClear(ref PropVariant pvar);
+
+        public static void SetAppUserModelId(string shortcutPath, string appId)
+        {
+            object link = new ShellLink();
+            IPersistFile persist = (IPersistFile)link;
+            persist.Load(shortcutPath, 0);
+            IPropertyStore store = (IPropertyStore)link;
+            PropertyKey key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+            PropVariant value = PropVariant.FromString(appId);
+            try
+            {
+                store.SetValue(ref key, ref value);
+                store.Commit();
+                persist.Save(shortcutPath, true);
+            }
+            finally
+            {
+                PropVariantClear(ref value);
+                if (Marshal.IsComObject(link)) Marshal.FinalReleaseComObject(link);
+            }
+        }
+    }
+}
+'@
+    Add-Type -TypeDefinition $source -Language CSharp
+}
+
+function Install-IS74NotificationShortcut {
+    Initialize-IS74Storage
+    $shortcutDir = Split-Path -Parent $script:ToastShortcutPath
+    if (-not (Test-Path $shortcutDir)) {
+        New-Item -ItemType Directory -Force -Path $shortcutDir | Out-Null
+    }
+
+    $powershellExe = Get-IS74WindowsPowerShellPath
+    $shell = New-Object -ComObject WScript.Shell
     try {
-        $app = Get-StartApps | Where-Object { $_.Name -eq 'Windows PowerShell' } | Select-Object -First 1
-        if ($app -and $app.AppID) { return [string]$app.AppID }
+        $shortcut = $shell.CreateShortcut($script:ToastShortcutPath)
+        $shortcut.TargetPath = $powershellExe
+        $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $script:CliScriptPath
+        $shortcut.WorkingDirectory = $script:ProjectRoot
+        $shortcut.Description = 'IS74 Automatic Wi-Fi'
+        $shortcut.IconLocation = "$powershellExe,0"
+        $shortcut.Save()
+    } finally {
+        if ($shell -and [Runtime.InteropServices.Marshal]::IsComObject($shell)) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+        }
+    }
+
+    Initialize-IS74ToastShortcutInterop
+    [IS74.ToastShortcut]::SetAppUserModelId($script:ToastShortcutPath, $script:ToastAppId)
+    Write-IS74Log -Message "Toast shortcut ready appId=$($script:ToastAppId) path=$($script:ToastShortcutPath)"
+    return $script:ToastShortcutPath
+}
+
+function Remove-IS74NotificationShortcut {
+    try {
+        if (Test-Path $script:ToastShortcutPath) {
+            Remove-Item -Path $script:ToastShortcutPath -Force
+            Write-IS74Log -Message 'Toast shortcut removed.'
+        }
+    } catch {
+        Write-IS74Log -Level WARN -Message "Не удалось удалить toast shortcut: $($_.Exception.Message)"
+    }
+}
+
+function Test-IS74ToastSettingsEnabled {
+    $enabled = $true
+    try {
+        $global = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' -Name ToastEnabled -ErrorAction SilentlyContinue
+        if ($global -and $null -ne $global.ToastEnabled -and [int]$global.ToastEnabled -eq 0) {
+            Write-IS74Log -Level WARN -Message 'Windows toast notifications are globally disabled for the current user.'
+            $enabled = $false
+        }
     } catch { }
-    return 'Microsoft.Windows.PowerShell'
+
+    try {
+        $appKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\{0}' -f $script:ToastAppId
+        $app = Get-ItemProperty $appKey -Name Enabled -ErrorAction SilentlyContinue
+        if ($app -and $null -ne $app.Enabled -and [int]$app.Enabled -eq 0) {
+            Write-IS74Log -Level WARN -Message "Windows toast notifications are disabled for appId=$($script:ToastAppId)."
+            $enabled = $false
+        }
+    } catch { }
+    return $enabled
 }
 
 function Show-IS74Toast {
     param(
         [Parameter(Mandatory=$true)][string]$Title,
-        [Parameter(Mandatory=$true)][string]$Message
+        [Parameter(Mandatory=$true)][string]$Message,
+        [switch]$Diagnostic
     )
 
     $settings = Get-IS74Settings
-    if ($settings.notifications -eq $false) { return $false }
+    if ($settings.notifications -eq $false) {
+        Write-IS74Log -Level WARN -Message 'Toast skipped because notifications=false in settings.json.'
+        if ($Diagnostic) { Write-Host 'Уведомления отключены в settings.json.' -ForegroundColor Yellow }
+        return $false
+    }
 
     try {
+        $shortcut = Install-IS74NotificationShortcut
+        $windowsEnabled = Test-IS74ToastSettingsEnabled
+        if (-not $windowsEnabled -and $Diagnostic) {
+            Write-Host 'Windows сообщает, что уведомления отключены. Проверьте Параметры > Система > Уведомления.' -ForegroundColor Yellow
+        }
+
         [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
         [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
         $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02
@@ -539,11 +707,22 @@ function Show-IS74Toast {
         $null = $nodes.Item(0).AppendChild($xml.CreateTextNode($Title))
         $null = $nodes.Item(1).AppendChild($xml.CreateTextNode($Message))
         $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-        $appId = Get-IS74ToastAppId
-        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($script:ToastAppId).Show($toast)
+        Write-IS74Log -Message "Toast submitted appId=$($script:ToastAppId) shortcutExists=$([bool](Test-Path $shortcut)) windowsSettingsEnabled=$windowsEnabled"
+        if ($Diagnostic) {
+            Write-Host ("Toast отправлен Windows. AppUserModelID: {0}" -f $script:ToastAppId) -ForegroundColor Green
+            Write-Host ("Start Menu shortcut: {0}" -f $shortcut)
+            if (-not $windowsEnabled) {
+                Write-Host 'Сам вызов Show() выполнен, но Windows может скрыть уведомление из-за настроек.' -ForegroundColor Yellow
+            }
+        }
         return $true
     } catch {
-        Write-IS74Log -Level WARN -Message "Toast не показан: $($_.Exception.Message)"
+        Write-IS74Log -Level WARN -Message "Toast не показан: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+        if ($Diagnostic) {
+            Write-Host ("Toast не удалось отправить: {0}: {1}" -f $_.Exception.GetType().FullName, $_.Exception.Message) -ForegroundColor Yellow
+            Write-Host ("Подробности: {0}" -f $script:LogFile)
+        }
         return $false
     }
 }
@@ -1121,7 +1300,8 @@ function Enable-IS74Autostart {
     if (-not (Get-IS74Secrets)) { throw 'Сначала зарегистрируйте устройство.' }
     Import-Module ScheduledTasks -ErrorAction Stop
 
-    $powershellExe = Join-Path $PSHOME 'powershell.exe'
+    $powershellExe = Get-IS74WindowsPowerShellPath
+    $null = Install-IS74NotificationShortcut
     $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $AgentPath
     $identityName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $action = New-ScheduledTaskAction -Execute $powershellExe -Argument $arguments
@@ -1159,6 +1339,7 @@ function Reset-IS74Registration {
 
 function Remove-IS74AllData {
     if (Test-IS74AutostartEnabled) { Disable-IS74Autostart }
+    Remove-IS74NotificationShortcut
     if (Test-Path $script:StateDir) {
         Remove-Item -Path $script:StateDir -Recurse -Force
     }

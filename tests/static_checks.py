@@ -51,4 +51,11 @@ assert "Get-IS74DiagnosticLogPath" in module
 assert "'logs'" in cli
 assert "agent.start" in agent
 assert "agent.tick error=" in agent
+assert "ToastAppId     = 'IS74.AutomaticWifi'" in module
+assert 'Install-IS74NotificationShortcut' in module
+assert 'System.AppUserModel.ID' not in module  # encoded through the documented property key
+assert '9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3' in module
+assert "System32\\WindowsPowerShell\\v1.0\\powershell.exe" in module
+assert 'Get-StartApps' not in module
+assert '-Diagnostic' in cli
 print('static checks: OK')
