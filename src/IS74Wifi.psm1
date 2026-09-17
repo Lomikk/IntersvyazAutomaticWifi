@@ -39,6 +39,8 @@ function Initialize-IS74Storage {
             authWindowHours = 24
             preExpiryMinutes = 10
             agentPollSeconds = 15
+            guardWindowSeconds = 10
+            guardProbeIntervalMilliseconds = 250
             internetProbeConfirmDelaySeconds = 2
             maxAutomaticStepOneAttempts = 4
             automaticRetryDelaysSeconds = @(15, 30, 60)
@@ -88,6 +90,8 @@ function Get-IS74Settings {
         authWindowHours = 24
         preExpiryMinutes = 10
         agentPollSeconds = 15
+        guardWindowSeconds = 10
+        guardProbeIntervalMilliseconds = 250
         internetProbeConfirmDelaySeconds = 2
         maxAutomaticStepOneAttempts = 4
         automaticRetryDelaysSeconds = @(15, 30, 60)
@@ -563,6 +567,7 @@ function Read-IS74RuntimeState {
         automaticStepOneAttempts = 0
         nextAutomaticRetryUtc = $null
         userActionRequired = $false
+        edgeWatchActive = $false
     }
 
     $saved = Read-IS74JsonFile -Path $script:RuntimeFile
@@ -586,6 +591,7 @@ function Clear-IS74AutomaticRetryState {
     $state.automaticStepOneAttempts = 0
     $state.nextAutomaticRetryUtc = $null
     $state.userActionRequired = $false
+    $state.edgeWatchActive = $false
     Save-IS74RuntimeState -State $state
 }
 
@@ -610,6 +616,7 @@ function Set-IS74SuccessfulAuthState {
         automaticStepOneAttempts = 0
         nextAutomaticRetryUtc = $null
         userActionRequired = $false
+        edgeWatchActive = $false
     }
     Save-IS74RuntimeState -State $state
 }
@@ -677,10 +684,15 @@ function New-IS74ConnectException {
 }
 
 function Test-IS74InternetUnavailableConfirmed {
+    param([int]$DelayMilliseconds = -1)
+
     $settings = Get-IS74Settings
     if (Test-IS74InternetAccess) { return $false }
-    $delay = [int]$settings.internetProbeConfirmDelaySeconds
-    if ($delay -gt 0) { Start-Sleep -Seconds $delay }
+
+    if ($DelayMilliseconds -lt 0) {
+        $DelayMilliseconds = [int]([double]$settings.internetProbeConfirmDelaySeconds * 1000)
+    }
+    if ($DelayMilliseconds -gt 0) { Start-Sleep -Milliseconds $DelayMilliseconds }
     return (-not (Test-IS74InternetAccess))
 }
 
@@ -743,6 +755,7 @@ function Connect-IS74Wifi {
 
         $clock = [Diagnostics.Stopwatch]::StartNew()
         $stepTask = $portalPair.Client.SendAsync($stepRequest, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
+        $stepException = $null
         $nextIndex = 0
         $found = $null
         $fallbackUsed = $false
@@ -797,15 +810,38 @@ function Connect-IS74Wifi {
             }
 
             if ($found) { break }
+
+            # Observe stepOne completion concurrently with push polling. An
+            # already-authorized landing redirect must be handled immediately;
+            # waiting out the 10-second code schedule would create avoidable
+            # downtime exactly at the 24-hour edge. A normal stepTwo redirect
+            # does not stop polling because its code may arrive a little later.
+            if (-not $stepResponse -and -not $stepException -and $stepTask.IsCompleted) {
+                try {
+                    $stepResponse = $stepTask.GetAwaiter().GetResult()
+                    $earlyStatus = [int]$stepResponse.StatusCode
+                    $earlyLocation = if ($stepResponse.Headers.Location) { $stepResponse.Headers.Location.ToString() } else { '' }
+                    if ($earlyStatus -ge 300 -and $earlyStatus -lt 400 -and $earlyLocation -notmatch '(^|/)stepTwo\?') {
+                        break
+                    }
+                } catch {
+                    # Keep polling: the request may have reached the backend even
+                    # when the client did not receive its HTTP response. A fresh
+                    # code is stronger evidence than the transport exception.
+                    $stepException = $_.Exception
+                }
+            }
+
             if ($nextIndex -ge $script:PollScheduleMs.Count -and @($polls | Where-Object { -not $_.Processed }).Count -eq 0) { break }
             Start-Sleep -Milliseconds 1
         }
 
-        $stepException = $null
-        try {
-            $stepResponse = $stepTask.GetAwaiter().GetResult()
-        } catch {
-            $stepException = $_.Exception
+        if (-not $stepResponse -and -not $stepException) {
+            try {
+                $stepResponse = $stepTask.GetAwaiter().GetResult()
+            } catch {
+                $stepException = $_.Exception
+            }
         }
 
         $stepStatus = $null
@@ -825,14 +861,16 @@ function Connect-IS74Wifi {
         }
 
         if ($stepResponse -and $stepStatus -ge 300 -and $stepStatus -lt 400 -and $stepLocation -notmatch '(^|/)stepTwo\?') {
-            if (Test-IS74InternetAccess) {
-                Set-IS74AttemptState -Result 'already-authorized' -Reason $AttemptReason
-                if (-not $SuppressFailureToast) {
-                    $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Доступ уже активен; повторная авторизация не потребовалась.'
-                }
-                if (-not $Quiet) { Write-Host 'Captive portal сообщает, что клиент уже авторизован.' -ForegroundColor Green }
-                return [pscustomobject]@{ Status='AlreadyAuthorized'; InternetConfirmed=$true }
+            # Experimentally, an already-authorized client is redirected straight
+            # to the landing page and no fresh Wi-Fi code is created. Classify the
+            # portal response itself; do not probe Internet here because the actual
+            # cutoff can happen a few hundred milliseconds after this response.
+            Set-IS74AttemptState -Result 'already-authorized' -Reason $AttemptReason
+            if (-not $SuppressFailureToast) {
+                $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Доступ пока ещё активен; слежу за границей авторизации.'
             }
+            if (-not $Quiet) { Write-Host 'Captive portal сообщает, что клиент ещё авторизован.' -ForegroundColor Green }
+            return [pscustomobject]@{ Status='AlreadyAuthorized'; InternetConfirmed=$null }
         }
 
         if (-not $stepOneAccepted) {
@@ -1008,6 +1046,50 @@ function Get-IS74Status {
     }
 }
 
+function Get-IS74AgentSleepMilliseconds {
+    $settings = Get-IS74Settings
+    $state = Read-IS74RuntimeState
+    $idleMs = [Math]::Max(1000, [int]$settings.agentPollSeconds * 1000)
+
+    if (-not $state.expectedExpiryUtc) { return $idleMs }
+
+    try {
+        $expiry = [DateTime]::Parse([string]$state.expectedExpiryUtc).ToUniversalTime()
+    } catch {
+        return $idleMs
+    }
+
+    $now = [DateTime]::UtcNow
+    $guardSeconds = [Math]::Max(1, [int]$settings.guardWindowSeconds)
+    $guardStart = $expiry.AddSeconds(-$guardSeconds)
+    $guardEnd = $expiry.AddSeconds($guardSeconds)
+    $guardMs = [Math]::Max(100, [int]$settings.guardProbeIntervalMilliseconds)
+
+    if ($now -lt $guardStart) {
+        # Never sleep across the start of the guarded zone.
+        $untilGuardMs = [int][Math]::Ceiling(($guardStart - $now).TotalMilliseconds)
+        return [Math]::Max(100, [Math]::Min($idleMs, $untilGuardMs))
+    }
+
+    if ($now -le $guardEnd) {
+        return $guardMs
+    }
+
+    if ($state.nextAutomaticRetryUtc) {
+        try {
+            $retryAt = [DateTime]::Parse([string]$state.nextAutomaticRetryUtc).ToUniversalTime()
+            if ($now -lt $retryAt) {
+                $untilRetryMs = [int][Math]::Ceiling(($retryAt - $now).TotalMilliseconds)
+                return [Math]::Max(100, [Math]::Min($idleMs, $untilRetryMs))
+            }
+        } catch { }
+    }
+
+    # Once overdue, wake promptly so reconnecting Wi-Fi can be repaired without
+    # waiting for a long idle interval. No Internet probe is performed here.
+    return [Math]::Min($idleMs, 1000)
+}
+
 function Invoke-IS74AgentTick {
     Initialize-IS74Storage
     $secrets = Get-IS74Secrets
@@ -1029,6 +1111,11 @@ function Invoke-IS74AgentTick {
         return
     }
 
+    $guardSeconds = [Math]::Max(1, [int]$settings.guardWindowSeconds)
+    $guardStart = $expiry.AddSeconds(-$guardSeconds)
+    $guardEnd = $expiry.AddSeconds($guardSeconds)
+    $guardProbeDelayMs = [Math]::Max(100, [int]$settings.guardProbeIntervalMilliseconds)
+
     if (-not [bool]$state.preExpiryNotified) {
         $warningAt = $expiry.AddMinutes(-[double]$settings.preExpiryMinutes)
         if ($now -ge $warningAt -and $now -lt $expiry) {
@@ -1039,23 +1126,21 @@ function Invoke-IS74AgentTick {
         }
     }
 
-    # Loss of Internet is NOT a trigger before 24 hours. This avoids reacting to
-    # temporary outages, VPN changes, sleep/wake transitions, or stale NCSI state.
-    if ($now -lt $expiry) { return }
+    # Outside the small guarded zone we deliberately do not probe the Internet
+    # before expiry and do not touch the captive portal.
+    if ($now -lt $guardStart) { return }
     if ([bool]$state.userActionRequired) { return }
     if (-not (Test-IS74WifiConnected)) { return }
 
+    # Retryable stepOne failures keep their own backoff. A manual attempt never
+    # shifts the 24-hour reference, but an actual failed automatic send should not
+    # be hammered merely because the expiry boundary has arrived.
     if ($state.nextAutomaticRetryUtc) {
         try {
             $retryAt = [DateTime]::Parse([string]$state.nextAutomaticRetryUtc).ToUniversalTime()
             if ($now -lt $retryAt) { return }
         } catch { }
     }
-
-    # NCSI/Get-NetConnectionProfile is deliberately not authoritative here. After
-    # expiry we perform two fresh HTTP probes; only two consecutive failures allow
-    # a captive-portal authorization attempt.
-    if (-not (Test-IS74InternetUnavailableConfirmed)) { return }
 
     $state = Read-IS74RuntimeState
     $attempts = [int]$state.automaticStepOneAttempts
@@ -1067,12 +1152,80 @@ function Invoke-IS74AgentTick {
         return
     }
 
+    $shouldSendStepOne = $false
     $reason = if ($attempts -eq 0) { 'automatic' } else { 'retry' }
+
+    if ($now -lt $expiry) {
+        # Only inside the short pre-expiry guard do we actively watch Internet.
+        # Two close failures mean the real cutoff arrived slightly earlier than
+        # our predicted 24-hour timestamp, so stepOne is sent immediately.
+        if (Test-IS74InternetUnavailableConfirmed -DelayMilliseconds $guardProbeDelayMs) {
+            $shouldSendStepOne = $true
+        } else {
+            return
+        }
+    } else {
+        # At or after the expected 24-hour boundary, the timer itself is enough.
+        # Do NOT spend time probing Internet first. This also covers a machine that
+        # slept through the boundary and starts again many hours later (for example
+        # at +32h): its first eligible tick goes straight to stepOne.
+        $lastAutomaticSendWasBeforeExpiry = $false
+        if ($attempts -gt 0 -and $state.lastAttemptUtc) {
+            try {
+                $lastAttempt = [DateTime]::Parse([string]$state.lastAttemptUtc).ToUniversalTime()
+                $lastAutomaticSendWasBeforeExpiry = ($lastAttempt -lt $expiry)
+            } catch { }
+        }
+
+        if ($attempts -eq 0 -or $lastAutomaticSendWasBeforeExpiry) {
+            $shouldSendStepOne = $true
+        } elseif ([bool]$state.edgeWatchActive -and $now -le $guardEnd) {
+            # stepOne said the old authorization was still alive right around the
+            # boundary. Watch only this tiny edge window; the moment Internet
+            # actually disappears, send the next allowed stepOne immediately.
+            if (Test-IS74InternetUnavailableConfirmed -DelayMilliseconds $guardProbeDelayMs) {
+                $shouldSendStepOne = $true
+            } else {
+                return
+            }
+        } elseif ([bool]$state.edgeWatchActive -and $now -gt $guardEnd) {
+            # The server kept the old session alive beyond the guarded skew window.
+            # Stop probing and use the timer/overdue rule again. One direct stepOne
+            # is allowed; if the server still says "already authorized", normal
+            # retry spacing is used rather than a tight loop.
+            $shouldSendStepOne = $true
+        } elseif ($state.lastResult -eq 'step-one-retryable-error') {
+            $shouldSendStepOne = $true
+        } else {
+            return
+        }
+    }
+
+    if (-not $shouldSendStepOne) { return }
+
     try {
         $suppressStart = ($attempts -gt 0)
-        $null = Connect-IS74Wifi -Quiet -AttemptReason $reason -SuppressStartToast:$suppressStart -SuppressFailureToast
-        # AlreadyOnline/AlreadyAuthorized are not successful renewals and do not
-        # move the 24-hour reference. A later tick will actively probe again.
+        $result = Connect-IS74Wifi -Force -Quiet -AttemptReason $reason -SuppressStartToast:$suppressStart -SuppressFailureToast
+
+        if ($result.Status -eq 'AlreadyAuthorized') {
+            $state = Read-IS74RuntimeState
+            $state.edgeWatchActive = $true
+            $state.nextAutomaticRetryUtc = $null
+            Save-IS74RuntimeState -State $state
+
+            # Inside the guarded edge we do not wait a fixed number of seconds;
+            # fast probes will catch a cutoff that follows this response by only
+            # a few hundred milliseconds. Outside the guard, avoid burning the
+            # remaining stepOne budget in a tight loop.
+            if ([DateTime]::UtcNow -gt $guardEnd) {
+                $delays = @($settings.automaticRetryDelaysSeconds)
+                $currentAttempts = [int]$state.automaticStepOneAttempts
+                $index = [Math]::Max(0, [Math]::Min($currentAttempts - 1, $delays.Count - 1))
+                $delay = if ($delays.Count -gt 0) { [int]$delays[$index] } else { 60 }
+                Set-IS74AutomaticRetry -DelaySeconds $delay
+            }
+        }
+        return
     } catch {
         $ex = $_.Exception
         $state = Read-IS74RuntimeState
@@ -1116,6 +1269,7 @@ Export-ModuleMember -Function @(
     'Reset-IS74Registration',
     'Remove-IS74AllData',
     'Invoke-IS74AgentTick',
+    'Get-IS74AgentSleepMilliseconds',
     'Get-IS74Settings',
     'Show-IS74Toast'
 )

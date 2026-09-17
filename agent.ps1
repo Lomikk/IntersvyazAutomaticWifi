@@ -20,10 +20,9 @@ try {
             # Tick errors are isolated; Connect-IS74Wifi writes its own diagnostics.
         }
 
-        $settings = Get-IS74Settings
-        $seconds = [int]$settings.agentPollSeconds
-        if ($seconds -lt 5) { $seconds = 5 }
-        Start-Sleep -Seconds $seconds
+        $delayMs = [int](Get-IS74AgentSleepMilliseconds)
+        if ($delayMs -lt 100) { $delayMs = 100 }
+        Start-Sleep -Milliseconds $delayMs
     }
 } finally {
     try { $mutex.ReleaseMutex() } catch { }
