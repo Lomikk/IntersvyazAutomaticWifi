@@ -15,7 +15,6 @@ try {
 $script:StateDir       = Join-Path $env:LOCALAPPDATA 'IS74Wifi'
 $script:DeviceFile     = Join-Path $script:StateDir 'device-id.txt'
 $script:SecretsFile    = Join-Path $script:StateDir 'secrets.dpapi'
-$script:LegacyTokenFile = Join-Path $script:StateDir 'bearer.dpapi'
 $script:SessionFile    = Join-Path $script:StateDir 'session-meta.json'
 $script:RuntimeFile    = Join-Path $script:StateDir 'runtime-state.json'
 $script:SettingsFile   = Join-Path $script:StateDir 'settings.json'
@@ -40,7 +39,9 @@ function Initialize-IS74Storage {
             authWindowHours = 24
             preExpiryMinutes = 10
             agentPollSeconds = 15
-            retryBackoffSeconds = 60
+            internetProbeConfirmDelaySeconds = 2
+            maxAutomaticStepOneAttempts = 4
+            automaticRetryDelaysSeconds = @(15, 30, 60)
             notifications = $true
         } | ConvertTo-Json | Set-Content -Path $script:SettingsFile -Encoding UTF8
     }
@@ -83,14 +84,22 @@ function Write-IS74JsonFile {
 
 function Get-IS74Settings {
     Initialize-IS74Storage
+    $defaults = [ordered]@{
+        authWindowHours = 24
+        preExpiryMinutes = 10
+        agentPollSeconds = 15
+        internetProbeConfirmDelaySeconds = 2
+        maxAutomaticStepOneAttempts = 4
+        automaticRetryDelaysSeconds = @(15, 30, 60)
+        notifications = $true
+    }
+
     $settings = Read-IS74JsonFile -Path $script:SettingsFile
-    if (-not $settings) {
-        return [pscustomobject]@{
-            authWindowHours = 24
-            preExpiryMinutes = 10
-            agentPollSeconds = 15
-            retryBackoffSeconds = 60
-            notifications = $true
+    if (-not $settings) { return [pscustomobject]$defaults }
+
+    foreach ($name in @($defaults.Keys)) {
+        if (-not ($settings.PSObject.Properties.Name -contains $name)) {
+            Add-Member -InputObject $settings -MemberType NoteProperty -Name $name -Value $defaults[$name]
         }
     }
     return $settings
@@ -114,36 +123,6 @@ function Unprotect-IS74Text {
         if ($ptr -ne [IntPtr]::Zero) {
             [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
         }
-    }
-}
-
-function Get-IS74LegacyToken {
-    if (-not (Test-Path $script:LegacyTokenFile)) { return $null }
-    try {
-        $cipher = (Get-Content -Path $script:LegacyTokenFile -Raw).Trim()
-        if (-not $cipher) { return $null }
-        return (Unprotect-IS74Text -CipherText $cipher)
-    } catch {
-        Write-IS74Log -Level WARN -Message 'Старый bearer.dpapi найден, но не расшифровался.'
-        return $null
-    }
-}
-
-function Test-IS74Bearer {
-    param(
-        [Parameter(Mandatory=$true)][string]$Token,
-        [Parameter(Mandatory=$true)][string]$DeviceId
-    )
-    $pair = New-IS74HttpClientPair
-    try {
-        $request = New-IS74PushRequest -Token $Token -DeviceId $DeviceId -PageSize 1
-        $result = Send-IS74Request -Client $pair.Client -Request $request
-        return ($result.StatusCode -eq 200)
-    } catch {
-        return $false
-    } finally {
-        $pair.Client.Dispose()
-        $pair.Handler.Dispose()
     }
 }
 
@@ -260,11 +239,16 @@ function Send-IS74Request {
         $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         $location = ''
         if ($response.Headers.Location) { $location = $response.Headers.Location.ToString() }
+        $dateUtc = $null
+        if ($response.Headers.Date.HasValue) {
+            $dateUtc = $response.Headers.Date.Value.UtcDateTime.ToString('o')
+        }
         return [pscustomobject]@{
             StatusCode = [int]$response.StatusCode
             IsSuccess = $response.IsSuccessStatusCode
             Body = $body
             Location = $location
+            DateUtc = $dateUtc
         }
     } finally {
         if ($response) { $response.Dispose() }
@@ -353,22 +337,6 @@ function Register-IS74Account {
     $deviceId = New-IS74DeviceId
     $phone = Normalize-IS74Phone -Phone (Read-Host 'Введите номер телефона')
 
-    # Seamless migration from the experiment layout: reuse the already issued
-    # year-long DPAPI Bearer instead of consuming another SMS login.
-    if (-not (Test-Path $script:SecretsFile) -and (Test-Path $script:LegacyTokenFile)) {
-        $legacyToken = Get-IS74LegacyToken
-        if ($legacyToken) {
-            Write-Host 'Найден Bearer из экспериментальной версии. Проверяю его...' -ForegroundColor Cyan
-            if (Test-IS74Bearer -Token $legacyToken -DeviceId $deviceId) {
-                Save-IS74Secrets -Token $legacyToken -Phone $phone
-                $null = Register-IS74DeviceMetadata -Token $legacyToken -Phone $phone -DeviceId $deviceId
-                Write-IS74Log -Message 'Старый bearer.dpapi мигрирован в secrets.dpapi без повторного SMS.'
-                Write-Host 'Существующая сессия перенесена. Новый SMS-код не потребовался.' -ForegroundColor Green
-                return $true
-            }
-            Write-Host 'Старый Bearer больше не действует; потребуется обычная SMS-регистрация.' -ForegroundColor Yellow
-        }
-    }
 
     $pair = New-IS74HttpClientPair
     try {
@@ -481,6 +449,8 @@ function Test-IS74InternetAccess {
     $response = $null
     try {
         $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, 'http://www.msftconnecttest.com/connecttest.txt')
+        $null = $request.Headers.TryAddWithoutValidation('Cache-Control', 'no-cache, no-store')
+        $null = $request.Headers.TryAddWithoutValidation('Pragma', 'no-cache')
         $response = $pair.Client.SendAsync($request).GetAwaiter().GetResult()
         if ([int]$response.StatusCode -ne 200) { return $false }
         $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
@@ -493,21 +463,6 @@ function Test-IS74InternetAccess {
         $pair.Client.Dispose()
         $pair.Handler.Dispose()
     }
-}
-
-function Test-IS74SystemInternetState {
-    try {
-        $profiles = Get-NetConnectionProfile -ErrorAction Stop
-        foreach ($profile in @($profiles)) {
-            if ([string]$profile.IPv4Connectivity -eq 'Internet' -or [string]$profile.IPv6Connectivity -eq 'Internet') {
-                return $true
-            }
-        }
-    } catch {
-        # On systems without NetConnection cmdlets, fall back to the active probe.
-        return (Test-IS74InternetAccess)
-    }
-    return $false
 }
 
 function Test-IS74WifiConnected {
@@ -597,16 +552,28 @@ function Find-IS74WifiCodeAfterBaseline {
 }
 
 function Read-IS74RuntimeState {
-    $state = Read-IS74JsonFile -Path $script:RuntimeFile
-    if ($state) { return $state }
-    return [pscustomobject]@{
+    $defaults = [ordered]@{
         lastAuthUtc = $null
         expectedExpiryUtc = $null
         preExpiryNotified = $false
         lastAttemptUtc = $null
+        lastAttemptReason = $null
         lastResult = $null
         internetConfirmed = $null
+        automaticStepOneAttempts = 0
+        nextAutomaticRetryUtc = $null
+        userActionRequired = $false
     }
+
+    $saved = Read-IS74JsonFile -Path $script:RuntimeFile
+    if ($saved) {
+        foreach ($name in @($defaults.Keys)) {
+            if ($saved.PSObject.Properties.Name -contains $name) {
+                $defaults[$name] = $saved.$name
+            }
+        }
+    }
+    return [pscustomobject]$defaults
 }
 
 function Save-IS74RuntimeState {
@@ -614,33 +581,116 @@ function Save-IS74RuntimeState {
     Write-IS74JsonFile -Path $script:RuntimeFile -Value $State
 }
 
+function Clear-IS74AutomaticRetryState {
+    $state = Read-IS74RuntimeState
+    $state.automaticStepOneAttempts = 0
+    $state.nextAutomaticRetryUtc = $null
+    $state.userActionRequired = $false
+    Save-IS74RuntimeState -State $state
+}
+
 function Set-IS74SuccessfulAuthState {
-    param([bool]$InternetConfirmed)
+    param(
+        [bool]$InternetConfirmed,
+        [string]$AuthorizedAtUtc
+    )
     $settings = Get-IS74Settings
-    $now = [DateTime]::UtcNow
+    $authorizedAt = [DateTime]::UtcNow
+    if ($AuthorizedAtUtc) {
+        try { $authorizedAt = [DateTime]::Parse($AuthorizedAtUtc).ToUniversalTime() } catch { }
+    }
     $state = [ordered]@{
-        lastAuthUtc = $now.ToString('o')
-        expectedExpiryUtc = $now.AddHours([double]$settings.authWindowHours).ToString('o')
+        lastAuthUtc = $authorizedAt.ToString('o')
+        expectedExpiryUtc = $authorizedAt.AddHours([double]$settings.authWindowHours).ToString('o')
         preExpiryNotified = $false
-        lastAttemptUtc = $now.ToString('o')
+        lastAttemptUtc = [DateTime]::UtcNow.ToString('o')
+        lastAttemptReason = 'success'
         lastResult = 'success'
         internetConfirmed = $InternetConfirmed
+        automaticStepOneAttempts = 0
+        nextAutomaticRetryUtc = $null
+        userActionRequired = $false
     }
     Save-IS74RuntimeState -State $state
 }
 
 function Set-IS74AttemptState {
-    param([string]$Result)
+    param(
+        [Parameter(Mandatory=$true)][string]$Result,
+        [string]$Reason
+    )
     $state = Read-IS74RuntimeState
     $state.lastAttemptUtc = [DateTime]::UtcNow.ToString('o')
+    if ($Reason) { $state.lastAttemptReason = $Reason }
     $state.lastResult = $Result
     Save-IS74RuntimeState -State $state
+}
+
+function Register-IS74AutomaticStepOneSend {
+    param([Parameter(Mandatory=$true)][string]$Reason)
+    $settings = Get-IS74Settings
+    $state = Read-IS74RuntimeState
+    if ([bool]$state.userActionRequired) {
+        throw 'Автоматические попытки остановлены до действия пользователя.'
+    }
+    $count = [int]$state.automaticStepOneAttempts
+    if ($count -ge [int]$settings.maxAutomaticStepOneAttempts) {
+        $state.userActionRequired = $true
+        Save-IS74RuntimeState -State $state
+        throw 'Достигнут лимит автоматических отправок stepOne.'
+    }
+    $count++
+    $state.automaticStepOneAttempts = $count
+    $state.lastAttemptUtc = [DateTime]::UtcNow.ToString('o')
+    $state.lastAttemptReason = $Reason
+    $state.lastResult = 'step-one-sent'
+    Save-IS74RuntimeState -State $state
+    return $count
+}
+
+function Set-IS74AutomaticRetry {
+    param([int]$DelaySeconds)
+    $state = Read-IS74RuntimeState
+    $state.nextAutomaticRetryUtc = [DateTime]::UtcNow.AddSeconds($DelaySeconds).ToString('o')
+    Save-IS74RuntimeState -State $state
+}
+
+function Set-IS74UserActionRequired {
+    param([string]$Result = 'user-action-required')
+    $state = Read-IS74RuntimeState
+    $state.userActionRequired = $true
+    $state.nextAutomaticRetryUtc = $null
+    $state.lastResult = $Result
+    Save-IS74RuntimeState -State $state
+}
+
+function New-IS74ConnectException {
+    param(
+        [Parameter(Mandatory=$true)][string]$Message,
+        [switch]$RetryableStepOne,
+        [switch]$UserActionRequired
+    )
+    $ex = [System.InvalidOperationException]::new($Message)
+    if ($RetryableStepOne) { $ex.Data['IS74RetryableStepOne'] = $true }
+    if ($UserActionRequired) { $ex.Data['IS74UserActionRequired'] = $true }
+    return $ex
+}
+
+function Test-IS74InternetUnavailableConfirmed {
+    $settings = Get-IS74Settings
+    if (Test-IS74InternetAccess) { return $false }
+    $delay = [int]$settings.internetProbeConfirmDelaySeconds
+    if ($delay -gt 0) { Start-Sleep -Seconds $delay }
+    return (-not (Test-IS74InternetAccess))
 }
 
 function Connect-IS74Wifi {
     param(
         [switch]$Force,
-        [switch]$Quiet
+        [switch]$Quiet,
+        [ValidateSet('manual','automatic','retry')][string]$AttemptReason = 'manual',
+        [switch]$SuppressStartToast,
+        [switch]$SuppressFailureToast
     )
 
     Initialize-IS74Storage
@@ -650,14 +700,22 @@ function Connect-IS74Wifi {
         throw 'Устройство не зарегистрировано. Сначала выполните register.'
     }
 
+    if ($AttemptReason -eq 'manual') {
+        # Explicit user action unlocks a stopped automatic cycle, but never changes
+        # the 24-hour timer. Only successful stepTwo may do that.
+        Clear-IS74AutomaticRetryState
+    }
+
     if (-not $Force -and (Test-IS74InternetAccess)) {
         if (-not $Quiet) { Write-Host 'Интернет уже доступен; авторизация не требуется.' -ForegroundColor Green }
         return [pscustomobject]@{ Status='AlreadyOnline'; InternetConfirmed=$true }
     }
 
-    Set-IS74AttemptState -Result 'started'
-    $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Начинаю автоматическую авторизацию Wi-Fi.'
-    Write-IS74Log -Message 'Начата Wi-Fi авторизация.'
+    Set-IS74AttemptState -Result 'started' -Reason $AttemptReason
+    if (-not $SuppressStartToast) {
+        $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Начинаю автоматическую авторизацию Wi-Fi.'
+    }
+    Write-IS74Log -Message "Начата Wi-Fi авторизация. Reason=$AttemptReason"
     if (-not $Quiet) { Write-Host 'Начинаю Wi-Fi авторизацию...' -ForegroundColor Cyan }
 
     $apiPair = New-IS74HttpClientPair -TimeoutSeconds 15 -MaxConnections 16
@@ -670,6 +728,10 @@ function Connect-IS74Wifi {
         $token = [string]$secrets.token
         $phone = [string]$secrets.phone
         $baselineId = Get-IS74BaselineId -Client $apiPair.Client -Token $token -DeviceId $deviceId
+
+        if ($AttemptReason -ne 'manual') {
+            $null = Register-IS74AutomaticStepOneSend -Reason $AttemptReason
+        }
 
         $stepRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$($script:PortalBase)/stepOne")
         $form = [System.Collections.Generic.Dictionary[string,string]]::new()
@@ -686,8 +748,8 @@ function Connect-IS74Wifi {
         $fallbackUsed = $false
 
         while ($clock.Elapsed.TotalMilliseconds -lt 12000 -and -not $found) {
-            $now = $clock.Elapsed.TotalMilliseconds
-            while ($nextIndex -lt $script:PollScheduleMs.Count -and $now -ge $script:PollScheduleMs[$nextIndex] -and -not $found) {
+            $nowMs = $clock.Elapsed.TotalMilliseconds
+            while ($nextIndex -lt $script:PollScheduleMs.Count -and $nowMs -ge $script:PollScheduleMs[$nextIndex] -and -not $found) {
                 $request = New-IS74PushRequest -Token $token -DeviceId $deviceId -PageSize 1
                 $task = $apiPair.Client.SendAsync($request)
                 $poll = [pscustomobject]@{
@@ -698,7 +760,7 @@ function Connect-IS74Wifi {
                 }
                 $null = $polls.Add($poll)
                 $nextIndex++
-                $now = $clock.Elapsed.TotalMilliseconds
+                $nowMs = $clock.Elapsed.TotalMilliseconds
             }
 
             foreach ($poll in @($polls)) {
@@ -739,35 +801,79 @@ function Connect-IS74Wifi {
             Start-Sleep -Milliseconds 1
         }
 
-        if (-not $stepTask.IsCompleted) {
+        $stepException = $null
+        try {
             $stepResponse = $stepTask.GetAwaiter().GetResult()
-        } else {
-            $stepResponse = $stepTask.GetAwaiter().GetResult()
+        } catch {
+            $stepException = $_.Exception
         }
 
-        $stepStatus = [int]$stepResponse.StatusCode
-        $stepLocation = if ($stepResponse.Headers.Location) { $stepResponse.Headers.Location.ToString() } else { '' }
+        $stepStatus = $null
+        $stepLocation = ''
+        if ($stepResponse) {
+            $stepStatus = [int]$stepResponse.StatusCode
+            if ($stepResponse.Headers.Location) { $stepLocation = $stepResponse.Headers.Location.ToString() }
+        }
 
-        if ($stepStatus -ge 300 -and $stepStatus -lt 400 -and $stepLocation -notmatch '(^|/)stepTwo\?') {
+        # A fresh code proves stepOne reached the backend even if the HTTP response
+        # was lost. In that case direct stepTwo is safer than generating another code.
+        $stepOneAccepted = $false
+        if ($found) {
+            $stepOneAccepted = $true
+        } elseif ($stepResponse -and $stepStatus -ge 300 -and $stepStatus -lt 400 -and $stepLocation -match '(^|/)stepTwo\?') {
+            $stepOneAccepted = $true
+        }
+
+        if ($stepResponse -and $stepStatus -ge 300 -and $stepStatus -lt 400 -and $stepLocation -notmatch '(^|/)stepTwo\?') {
             if (Test-IS74InternetAccess) {
-                Set-IS74AttemptState -Result 'already-authorized'
-                $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Доступ уже активен; повторная авторизация не потребовалась.'
+                Set-IS74AttemptState -Result 'already-authorized' -Reason $AttemptReason
+                if (-not $SuppressFailureToast) {
+                    $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Доступ уже активен; повторная авторизация не потребовалась.'
+                }
                 if (-not $Quiet) { Write-Host 'Captive portal сообщает, что клиент уже авторизован.' -ForegroundColor Green }
                 return [pscustomobject]@{ Status='AlreadyAuthorized'; InternetConfirmed=$true }
             }
         }
-        if (-not $found) {
-            throw 'Свежий Wi-Fi-код не появился в pushmessages за 10 секунд.'
-        }
-        if ($stepStatus -lt 300 -or $stepStatus -ge 400 -or $stepLocation -notmatch '(^|/)stepTwo\?') {
-            throw "stepOne не перевёл клиент на stepTwo (HTTP $stepStatus, Location=$stepLocation)."
+
+        if (-not $stepOneAccepted) {
+            if ($stepException) {
+                throw (New-IS74ConnectException -Message ("stepOne завершился сетевой ошибкой: " + $stepException.Message) -RetryableStepOne)
+            }
+            if ($stepStatus -eq 429) {
+                throw (New-IS74ConnectException -Message 'stepOne вернул HTTP 429. Автоматические повторы остановлены.' -UserActionRequired)
+            }
+            if ($stepStatus -eq 408 -or $stepStatus -ge 500) {
+                throw (New-IS74ConnectException -Message "stepOne временно недоступен (HTTP $stepStatus)." -RetryableStepOne)
+            }
+            throw (New-IS74ConnectException -Message "stepOne не перевёл клиент на stepTwo (HTTP $stepStatus, Location=$stepLocation)." -UserActionRequired)
         }
 
-        $stepTwoUri = if ($stepLocation -match '^https?://') {
-            [Uri]$stepLocation
-        } else {
-            [Uri]::new([Uri]"$($script:PortalBase)/", $stepLocation)
+        # If stepOne explicitly accepted the transaction, never create another code
+        # merely because delivery to pushmessages is delayed. Give the existing
+        # transaction up to one minute to appear.
+        if (-not $found) {
+            $slowDeadline = [DateTime]::UtcNow.AddSeconds(50)
+            while (-not $found -and [DateTime]::UtcNow -lt $slowDeadline) {
+                Start-Sleep -Seconds 5
+                $candidate = Find-IS74WifiCodeAfterBaseline -Client $apiPair.Client -Token $token -DeviceId $deviceId -BaselineId $baselineId
+                if ($candidate) { $found = $candidate; break }
+            }
         }
+        if (-not $found) {
+            throw (New-IS74ConnectException -Message 'stepOne принят сервером, но код не появился в pushmessages. Новый stepOne автоматически не отправляется.' -UserActionRequired)
+        }
+
+        $stepTwoUri = $null
+        if ($stepLocation -and $stepLocation -match '(^|/)stepTwo\?') {
+            $stepTwoUri = if ($stepLocation -match '^https?://') {
+                [Uri]$stepLocation
+            } else {
+                [Uri]::new([Uri]"$($script:PortalBase)/", $stepLocation)
+            }
+        } else {
+            $stepTwoUri = [Uri]("$($script:PortalBase)/stepTwo?phone=$phone&isMp=true")
+        }
+
         $request2 = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, $stepTwoUri)
         $form2 = [System.Collections.Generic.Dictionary[string,string]]::new()
         $form2['confirmCode'] = [string]$found.Code
@@ -775,7 +881,7 @@ function Connect-IS74Wifi {
         $request2.Content = [System.Net.Http.FormUrlEncodedContent]::new($form2)
         $stepTwo = Send-IS74Request -Client $portalPair.Client -Request $request2
         if ($stepTwo.StatusCode -lt 300 -or $stepTwo.StatusCode -ge 400 -or $stepTwo.Location -notmatch '(^|/)stepThree(?:\?|$)') {
-            throw "stepTwo не подтвердил авторизацию (HTTP $($stepTwo.StatusCode), Location=$($stepTwo.Location))."
+            throw (New-IS74ConnectException -Message "stepTwo не подтвердил авторизацию (HTTP $($stepTwo.StatusCode), Location=$($stepTwo.Location))." -UserActionRequired)
         }
 
         $internetConfirmed = $false
@@ -784,7 +890,7 @@ function Connect-IS74Wifi {
             Start-Sleep -Milliseconds 500
         }
 
-        Set-IS74SuccessfulAuthState -InternetConfirmed:$internetConfirmed
+        Set-IS74SuccessfulAuthState -InternetConfirmed:$internetConfirmed -AuthorizedAtUtc $stepTwo.DateUtc
         $settings = Get-IS74Settings
         $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("Авторизация завершена. Следующая ожидается примерно через {0} ч." -f $settings.authWindowHours)
         Write-IS74Log -Message "Wi-Fi авторизация завершена. InternetConfirmed=$internetConfirmed"
@@ -794,9 +900,14 @@ function Connect-IS74Wifi {
         }
         return [pscustomobject]@{ Status='Success'; InternetConfirmed=$internetConfirmed }
     } catch {
-        Set-IS74AttemptState -Result 'error'
         $message = $_.Exception.Message
-        $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Не удалось выполнить автоматическую авторизацию. Запустите IS74Wifi.ps1 для подробностей.'
+        $result = 'error'
+        if ($_.Exception.Data['IS74RetryableStepOne']) { $result = 'step-one-retryable-error' }
+        if ($_.Exception.Data['IS74UserActionRequired']) { $result = 'user-action-required' }
+        Set-IS74AttemptState -Result $result -Reason $AttemptReason
+        if (-not $SuppressFailureToast) {
+            $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Не удалось выполнить автоматическую авторизацию. Запустите IS74Wifi.ps1 для подробностей.'
+        }
         Write-IS74Log -Level ERROR -Message "Wi-Fi авторизация: $message"
         throw
     } finally {
@@ -858,7 +969,7 @@ function Disable-IS74Autostart {
 }
 
 function Reset-IS74Registration {
-    foreach ($path in @($script:SecretsFile, $script:LegacyTokenFile, $script:SessionFile, $script:DeviceMetaFile, $script:RuntimeFile, $script:DeviceFile)) {
+    foreach ($path in @($script:SecretsFile, $script:SessionFile, $script:DeviceMetaFile, $script:RuntimeFile, $script:DeviceFile)) {
         if (Test-Path $path) { Remove-Item -Path $path -Force }
     }
     Write-IS74Log -Message 'Локальная регистрация сброшена.'
@@ -890,6 +1001,8 @@ function Get-IS74Status {
         LastAuthUtc = $state.lastAuthUtc
         ExpectedExpiryUtc = $state.expectedExpiryUtc
         LastResult = $state.lastResult
+        AutomaticStepOneAttempts = [int]$state.automaticStepOneAttempts
+        UserActionRequired = [bool]$state.userActionRequired
         InternetNow = Test-IS74InternetAccess
         StateDirectory = $script:StateDir
     }
@@ -903,44 +1016,92 @@ function Invoke-IS74AgentTick {
     $settings = Get-IS74Settings
     $state = Read-IS74RuntimeState
     $now = [DateTime]::UtcNow
-    $windowExpired = $false
 
-    if ($state.expectedExpiryUtc) {
-        try {
-            $expiry = [DateTime]::Parse([string]$state.expectedExpiryUtc).ToUniversalTime()
-            $windowExpired = ($now -ge $expiry)
-            if (-not [bool]$state.preExpiryNotified) {
-                $warningAt = $expiry.AddMinutes(-[double]$settings.preExpiryMinutes)
-                if ($now -ge $warningAt -and $now -lt $expiry) {
-                    $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("До ожидаемого окончания авторизации осталось около {0} минут." -f $settings.preExpiryMinutes)
-                    $state.preExpiryNotified = $true
-                    Save-IS74RuntimeState -State $state
-                    Write-IS74Log -Message 'Показано предупреждение перед окончанием 24-часового окна.'
-                }
-            }
-        } catch {
-            Write-IS74Log -Level WARN -Message 'Не удалось разобрать expectedExpiryUtc.'
+    # No successful stepTwo means there is no trustworthy 24-hour reference yet.
+    # The first authorization is therefore explicit user action.
+    if (-not $state.expectedExpiryUtc) { return }
+
+    $expiry = $null
+    try {
+        $expiry = [DateTime]::Parse([string]$state.expectedExpiryUtc).ToUniversalTime()
+    } catch {
+        Write-IS74Log -Level WARN -Message 'Не удалось разобрать expectedExpiryUtc.'
+        return
+    }
+
+    if (-not [bool]$state.preExpiryNotified) {
+        $warningAt = $expiry.AddMinutes(-[double]$settings.preExpiryMinutes)
+        if ($now -ge $warningAt -and $now -lt $expiry) {
+            $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("До ожидаемого окончания 24-часовой авторизации осталось около {0} минут." -f $settings.preExpiryMinutes)
+            $state.preExpiryNotified = $true
+            Save-IS74RuntimeState -State $state
+            Write-IS74Log -Message 'Показано предупреждение перед окончанием 24-часового окна.'
         }
     }
 
-    # Before the expected expiry we trust Windows NCSI and avoid background HTTP.
-    # At/after the expected 24h boundary we make one active probe per agent tick so
-    # a temporarily stale NCSI "Internet" state cannot hide the captive transition.
-    if (-not $windowExpired -and (Test-IS74SystemInternetState)) { return }
-    if ($windowExpired -and (Test-IS74InternetAccess)) { return }
+    # Loss of Internet is NOT a trigger before 24 hours. This avoids reacting to
+    # temporary outages, VPN changes, sleep/wake transitions, or stale NCSI state.
+    if ($now -lt $expiry) { return }
+    if ([bool]$state.userActionRequired) { return }
     if (-not (Test-IS74WifiConnected)) { return }
 
-    if ($state.lastAttemptUtc) {
+    if ($state.nextAutomaticRetryUtc) {
         try {
-            $lastAttempt = [DateTime]::Parse([string]$state.lastAttemptUtc).ToUniversalTime()
-            if (($now - $lastAttempt).TotalSeconds -lt [double]$settings.retryBackoffSeconds) { return }
+            $retryAt = [DateTime]::Parse([string]$state.nextAutomaticRetryUtc).ToUniversalTime()
+            if ($now -lt $retryAt) { return }
         } catch { }
     }
 
+    # NCSI/Get-NetConnectionProfile is deliberately not authoritative here. After
+    # expiry we perform two fresh HTTP probes; only two consecutive failures allow
+    # a captive-portal authorization attempt.
+    if (-not (Test-IS74InternetUnavailableConfirmed)) { return }
+
+    $state = Read-IS74RuntimeState
+    $attempts = [int]$state.automaticStepOneAttempts
+    $maxAttempts = [int]$settings.maxAutomaticStepOneAttempts
+    if ($attempts -ge $maxAttempts) {
+        Set-IS74UserActionRequired -Result 'automatic-step-one-limit'
+        $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("Автоматическая авторизация остановлена после {0} попыток stepOne. Запустите IS74Wifi.ps1 и выберите 'Авторизовать Wi-Fi сейчас'." -f $maxAttempts)
+        Write-IS74Log -Level ERROR -Message "Достигнут лимит автоматических stepOne: $maxAttempts. Требуется действие пользователя."
+        return
+    }
+
+    $reason = if ($attempts -eq 0) { 'automatic' } else { 'retry' }
     try {
-        $null = Connect-IS74Wifi -Quiet
+        $suppressStart = ($attempts -gt 0)
+        $null = Connect-IS74Wifi -Quiet -AttemptReason $reason -SuppressStartToast:$suppressStart -SuppressFailureToast
+        # AlreadyOnline/AlreadyAuthorized are not successful renewals and do not
+        # move the 24-hour reference. A later tick will actively probe again.
     } catch {
-        # Connect-IS74Wifi already logged and notified. The agent will retry after backoff.
+        $ex = $_.Exception
+        $state = Read-IS74RuntimeState
+        $attempts = [int]$state.automaticStepOneAttempts
+
+        if ($ex.Data['IS74UserActionRequired']) {
+            Set-IS74UserActionRequired
+            $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Автоматическая авторизация остановлена. Требуется действие пользователя; откройте IS74Wifi.ps1.'
+            return
+        }
+
+        if ($ex.Data['IS74RetryableStepOne']) {
+            if ($attempts -ge $maxAttempts) {
+                Set-IS74UserActionRequired -Result 'automatic-step-one-limit'
+                $null = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message ("Не удалось авторизоваться после {0} попыток stepOne. Автоматические повторы остановлены; откройте IS74Wifi.ps1." -f $maxAttempts)
+                return
+            }
+
+            $delays = @($settings.automaticRetryDelaysSeconds)
+            $index = [Math]::Max(0, [Math]::Min($attempts - 1, $delays.Count - 1))
+            $delay = if ($delays.Count -gt 0) { [int]$delays[$index] } else { 60 }
+            Set-IS74AutomaticRetry -DelaySeconds $delay
+            Write-IS74Log -Level WARN -Message "stepOne будет повторён не раньше чем через $delay сек. Попыток: $attempts/$maxAttempts."
+            return
+        }
+
+        # Failure before stepOne (for example API baseline/DNS) must not consume
+        # the four portal attempts. Back off for one minute to avoid a busy loop.
+        Set-IS74AutomaticRetry -DelaySeconds 60
     }
 }
 

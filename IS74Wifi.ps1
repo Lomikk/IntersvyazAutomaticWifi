@@ -29,6 +29,12 @@ function Show-Status {
         Write-Host ('Ожидаемое окончание окна    : {0}' -f $expiry.ToString('dd.MM.yyyy HH:mm:ss'))
     }
     if ($s.LastResult) { Write-Host "Последний результат          : $($s.LastResult)" }
+    if ($s.AutomaticStepOneAttempts -gt 0) {
+        Write-Host ("Авто stepOne                 : {0}/4" -f $s.AutomaticStepOneAttempts)
+    }
+    if ($s.UserActionRequired) {
+        Write-Host 'Требуется действие           : да — автоматические попытки остановлены' -ForegroundColor Yellow
+    }
     Write-Host "Данные приложения            : $($s.StateDirectory)"
     Write-Host ''
 }
@@ -37,7 +43,7 @@ function Invoke-CommandMode {
     param([string]$Name)
     switch ($Name) {
         'register' { $null = Register-IS74Account; return }
-        'connect'  { $null = Connect-IS74Wifi; return }
+        'connect'  { $null = Connect-IS74Wifi -Force; return }
         'status'   { Show-Status; return }
         'install'  { Enable-IS74Autostart -AgentPath (Join-Path $PSScriptRoot 'agent.ps1'); return }
         'uninstall'{ Disable-IS74Autostart; return }
@@ -83,7 +89,7 @@ while ($true) {
     try {
         switch ($choice) {
             '1' { $null = Register-IS74Account }
-            '2' { $null = Connect-IS74Wifi }
+            '2' { $null = Connect-IS74Wifi -Force }
             '3' { Enable-IS74Autostart -AgentPath (Join-Path $PSScriptRoot 'agent.ps1') }
             '4' { Disable-IS74Autostart }
             '5' { Show-Status }
