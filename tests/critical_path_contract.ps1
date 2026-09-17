@@ -411,8 +411,11 @@ $module = Import-Module $modulePath -Force -PassThru
     Assert-True (Test-IS74StepTwoLocation -Location 'http://w.is74.ru/stepTwo?phone=123&isMp=true') 'absolute stepTwo'
     Assert-True (Test-IS74StepThreeLocation -Location 'stepThree') 'relative stepThree'
     Assert-True (Test-IS74StepThreeLocation -Location 'http://w.is74.ru/stepThree') 'absolute stepThree'
-    Assert-True (Test-IS74AlreadyAuthorizedLocation -Location 'https://www.is74.ru/home/connect/formy_connect/landing/pages/prilozheniye/?utm_source=wifi') 'observed authorized landing'
+    Assert-True (Test-IS74AlreadyAuthorizedLocation -Location 'https://www.is74.ru/home/connect/formy_connect/landing/pages/prilozheniye/?utm_source=wifi') 'observed www authorized landing'
+    Assert-True (Test-IS74AlreadyAuthorizedLocation -Location 'https://openwifi.is74.ru/home/connect/formy_connect/landing/pages/wifi/') 'observed openwifi authorized landing'
+    Assert-True (Test-IS74AlreadyAuthorizedLocation -Location 'https://openwifi.is74.ru/home/connect/formy_connect/landing/pages/wifi/?source=portal') 'openwifi authorized landing with query'
     Assert-True (-not (Test-IS74AlreadyAuthorizedLocation -Location 'https://www.is74.ru/some/other/redirect')) 'unknown redirect is not already-authorized'
+    Assert-True (-not (Test-IS74AlreadyAuthorizedLocation -Location 'https://openwifi.is74.ru/home/connect/formy_connect/landing/pages/other/')) 'unknown openwifi redirect is not already-authorized'
 
     $expectedSchedule = @(100,150,200,250,350,500,700,1000,1400,2000,3000,4500,6500,10000)
     Assert-Equal ($expectedSchedule -join ',') ($script:PollScheduleMs -join ',') 'poll schedule contract'

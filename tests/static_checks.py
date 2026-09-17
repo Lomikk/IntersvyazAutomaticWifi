@@ -112,6 +112,7 @@ assert step_two_accept < internet_verify, 'successful stepTwo state must persist
 
 assert 'Test-IS74AlreadyAuthorizedLocation' in module
 assert 'landing/pages/prilozheniye' in module
+assert r'openwifi\.is74\.ru/home/connect/formy_connect/landing/pages/wifi' in module
 assert 'Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue' in module
 assert 'Wait-IS74ScheduledTaskStopped' in module, 'autostart replacement must wait for the old agent to stop'
 assert 'tests\\critical_path_contract.ps1' not in module  # sanity: tests stay outside runtime

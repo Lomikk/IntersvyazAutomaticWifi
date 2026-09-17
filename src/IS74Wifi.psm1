@@ -758,7 +758,17 @@ function Test-IS74StepThreeLocation {
 function Test-IS74AlreadyAuthorizedLocation {
     param([string]$Location)
     if (-not $Location) { return $false }
-    return [bool]($Location -match '(?i)(^https?://(?:www\.)?is74\.ru)?/home/connect/formy_connect/landing/pages/prilozheniye(?:/|\?|$)')
+
+    # Both landing targets below have been observed after stepOne for a client
+    # whose current 24-hour Wi-Fi authorization is still active. Keep this
+    # allow-list narrow: an arbitrary 3xx must never be treated as success.
+    if ($Location -match '(?i)^(?:https?://(?:www\.)?is74\.ru)?/home/connect/formy_connect/landing/pages/prilozheniye(?:/|\?|#|$)') {
+        return $true
+    }
+    if ($Location -match '(?i)^https?://openwifi\.is74\.ru/home/connect/formy_connect/landing/pages/wifi(?:/|\?|#|$)') {
+        return $true
+    }
+    return $false
 }
 
 function Test-IS74PushResponseKnownEmpty {
