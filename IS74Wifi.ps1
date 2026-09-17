@@ -2,7 +2,7 @@
 
 param(
     [Parameter(Position=0)]
-    [ValidateSet('menu','register','connect','status','install','uninstall','reset','purge','toast-test','logs')]
+    [ValidateSet('menu','register','connect','status','install','uninstall','reset','purge','logs')]
     [string]$Command = 'menu'
 )
 
@@ -60,11 +60,6 @@ function Invoke-CommandMode {
             Write-Host 'Автозапуск отключён, папка данных приложения удалена.' -ForegroundColor Green
             return
         }
-        'toast-test' {
-            $shown = Show-IS74Toast -Title 'Интерсвязь Wi-Fi' -Message 'Тестовое уведомление IS74 Automatic Wi-Fi.' -Diagnostic
-            if (-not $shown) { Write-Host 'Автоматическая Wi-Fi авторизация от уведомлений не зависит.' -ForegroundColor DarkGray }
-            return
-        }
         'logs' {
             $logPath = Get-IS74DiagnosticLogPath
             $logDir = Split-Path -Parent $logPath
@@ -90,8 +85,7 @@ while ($true) {
     Write-Host '5. Показать статус'
     Write-Host '6. Сбросить регистрацию'
     Write-Host '7. Удалить все данные приложения'
-    Write-Host '8. Проверить уведомление'
-    Write-Host '9. Открыть диагностические логи'
+    Write-Host '8. Открыть диагностические логи'
     Write-Host '0. Выход'
     Write-Host ''
     $choice = Read-Host 'Выберите действие'
@@ -116,8 +110,7 @@ while ($true) {
                     Write-Host 'Данные удалены.' -ForegroundColor Green
                 }
             }
-            '8' { Invoke-CommandMode -Name 'toast-test' }
-            '9' { Invoke-CommandMode -Name 'logs' }
+            '8' { Invoke-CommandMode -Name 'logs' }
             '0' { break }
             default { Write-Host 'Неизвестный пункт.' -ForegroundColor Yellow }
         }

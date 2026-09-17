@@ -11,10 +11,8 @@ for text, name in [(module, 'module'), (cli, 'cli'), (agent, 'agent')]:
 assert '-SkipHttpErrorCheck' not in module
 assert 'ForEach-Object -Parallel' not in module
 assert '??' not in module
-assert 'Show-IS74Toast' in module
-assert 'Начинаю автоматическую авторизацию Wi-Fi.' in module
-assert 'Авторизация завершена.' in module
-assert 'preExpiryMinutes = 10' in module
+assert 'Show-IS74Toast' not in module
+assert 'preExpiryMinutes' not in module
 assert 'maxAutomaticStepOneAttempts = 4' in module
 assert 'automaticRetryDelaysSeconds = @(15, 30, 60)' in module
 assert 'internetProbeConfirmDelaySeconds = 2' in module
@@ -51,19 +49,9 @@ assert "Get-IS74DiagnosticLogPath" in module
 assert "'logs'" in cli
 assert "agent.start" in agent
 assert "agent.tick error=" in agent
-assert "ToastAppId     = 'IS74.AutomaticWifi'" in module
-assert 'Install-IS74NotificationShortcut' in module
-assert 'System.AppUserModel.ID' not in module  # encoded through the documented property key
 
-# Desktop toast shortcut is created with AppUserModelID before the first Save,
-# and PowerShell 7 bridges toast delivery through Windows PowerShell 5.1.
-assert '[IS74.ToastShortcut]::Create(' in module
-assert 'persist.Load(shortcutPath, 0)' not in module
-assert "$PSVersionTable.PSEdition -eq 'Core'" in module
-assert '-EncodedCommand $encoded' in module
-assert '-NativeOnly' in module
-assert '9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3' in module
 assert "System32\\WindowsPowerShell\\v1.0\\powershell.exe" in module
-assert 'Get-StartApps' not in module
-assert '-Diagnostic' in cli
+assert 'toast-test' not in cli
+assert 'AppUserModelID' not in module
+assert 'Windows.UI.Notifications' not in module
 print('static checks: OK')
