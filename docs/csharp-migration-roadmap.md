@@ -139,7 +139,7 @@ Exit gate: deterministic tests cover unauthenticated redirect, both already-auth
 
 ### Phase 5 — critical polling engine and authorization state machine
 
-Status: **implementation complete; Windows CI pending**. The C# flow now preserves the absolute polling schedule, launches independent push GETs, uses a one-shot non-blocking `pageSize=5` fallback, sends `stepTwo` immediately on a fresh code, persists the four-attempt budget before the network side effect, performs lost-`stepTwo` Internet recovery without resending the code, and emits sanitized critical timing telemetry after the fast phase. The async cross-process authorization gate uses a C#-specific named semaphore so ownership is not thread-affine and it can coexist with the legacy PowerShell mutex during migration.
+Status: **complete**. Windows CI covers the absolute polling schedule, independent push GETs, one-shot non-blocking `pageSize=5` fallback, immediate `stepTwo` on a fresh code, persisted four-attempt budget, lost-`stepTwo` Internet recovery without resending the code, and sanitized critical timing telemetry. The async cross-process authorization gate uses a C#-specific named semaphore so ownership is not thread-affine and it can coexist with the legacy PowerShell mutex during migration.
 
 - Monotonic stopwatch and absolute-offset scheduling.
 - Independent concurrent GETs.
@@ -152,6 +152,8 @@ Status: **implementation complete; Windows CI pending**. The C# flow now preserv
 Exit gate: C# tests reproduce the existing PowerShell critical-path scenarios, including a deliberately stalled `stepOne` response that must not delay code → `stepTwo`.
 
 ### Phase 6 — agent and autostart
+
+Status: **implementation complete; Windows CI and field validation pending**. The executable now owns registration/connect/status/reset/purge/log commands, a long-running consoleless agent, the 24-hour expiry/guard policy, a named stop signal, and per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` autostart. The first C# registration remains an explicit one-time action and the first Wi-Fi `connect` establishes the trusted 24-hour reference.
 
 - Long-running consoleless `agent` mode.
 - Dynamic sleeping outside the expiry guard.

@@ -15,6 +15,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("is74-api", TestIs74ApiAsync),
     ("captive-portal", TestCaptivePortalAsync),
     ("authorization-flow", AuthorizationFlowContractTests.RunAsync),
+    ("agent-policy", AgentContractTests.RunAsync),
     ("internet-probe", TestInternetProbeAsync)
 };
 

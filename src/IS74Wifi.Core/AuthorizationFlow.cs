@@ -10,7 +10,7 @@ public sealed class AuthorizationFlow(
     PushPollingEngine polling,
     AuthorizationStateManager state,
     DiagnosticLogger logger,
-    AuthorizationFlowOptions? options = null)
+    AuthorizationFlowOptions? options = null) : IAuthorizationRunner
 {
     private readonly AuthorizationFlowOptions options = options ?? new AuthorizationFlowOptions();
 

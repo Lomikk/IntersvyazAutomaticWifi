@@ -1,5 +1,12 @@
 namespace IS74Wifi.Core;
 
+public interface IAuthorizationRunner
+{
+    Task<AuthorizationOutcome> RunAsync(
+        AuthorizationRequest request,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IIs74PushClient
 {
     Task<Is74ApiResult<PushBaseline>> GetBaselineAsync(

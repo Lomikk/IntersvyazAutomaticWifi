@@ -137,6 +137,17 @@ public sealed class AuthorizationStateManager(
         });
     }
 
+    public void ScheduleAutomaticRetry(TimeSpan delay)
+    {
+        if (delay < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(delay));
+        }
+
+        var state = store.Load();
+        store.Save(state with { NextAutomaticRetryUtc = clock.GetUtcNow().Add(delay) });
+    }
+
     public void MarkAlreadyAuthorized(AuthorizationAttemptReason reason)
     {
         var state = store.Load() with
