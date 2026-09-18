@@ -1,0 +1,51 @@
+name: .NET migration
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'IS74Wifi.slnx'
+      - 'src/IS74Wifi.App/**'
+      - 'src/IS74Wifi.Core/**'
+      - '.github/workflows/dotnet.yml'
+  pull_request:
+    paths:
+      - 'IS74Wifi.slnx'
+      - 'src/IS74Wifi.App/**'
+      - 'src/IS74Wifi.Core/**'
+      - '.github/workflows/dotnet.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore .\IS74Wifi.slnx
+
+      - name: Build
+        run: dotnet build .\IS74Wifi.slnx --configuration Release --no-restore
+
+      - name: Smoke test CLI
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '.\src\IS74Wifi.App\bin\Release\net10.0-windows10.0.19041.0\IS74Wifi.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList 'version' -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "version smoke test failed with exit code $($process.ExitCode)"
+          }
+
+      - name: Verify agent mode is consoleless and non-production
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '.\src\IS74Wifi.App\bin\Release\net10.0-windows10.0.19041.0\IS74Wifi.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList 'agent' -Wait -PassThru
+          if ($process.ExitCode -ne 3) {
+            throw "migration agent placeholder returned unexpected exit code $($process.ExitCode)"
+          }
