@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using IS74Wifi.Core;
 
 var tests = new (string Name, Func<Task> Run)[]
@@ -84,6 +86,13 @@ static Task TestDpapiAsync()
             ["IS74_PLAIN"] = legacyJson,
             ["IS74_PATH"] = paths.SecretsFile
         });
+    var legacyCiphertext = File.ReadAllText(paths.SecretsFile).Trim();
+    var legacyProtected = Convert.FromHexString(legacyCiphertext);
+    var legacyPlainBytes = ProtectedData.Unprotect(legacyProtected, optionalEntropy: null, DataProtectionScope.CurrentUser);
+    var legacyPlaintext = Encoding.Unicode.GetString(legacyPlainBytes);
+    Assert(legacyPlaintext == legacyJson, $"PowerShell 5.1 DPAPI plaintext mismatch: expectedLen={legacyJson.Length} actualLen={legacyPlaintext.Length}");
+    var legacyParsed = JsonSerializer.Deserialize<StoredSecrets>(legacyPlaintext, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    Assert(legacyParsed == legacy, "System.Text.Json could not parse legacy PowerShell secret JSON");
     Assert(store.Load() == legacy, "C# could not read PowerShell 5.1 DPAPI secret format");
 
     var reverse = new StoredSecrets("csharp-token", "9876543210");
