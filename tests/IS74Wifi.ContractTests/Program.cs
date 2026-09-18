@@ -12,6 +12,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("windows-wlan", TestWindowsWlanAsync),
     ("named-mutex", TestMutexAsync),
     ("http-transport", TestHttpTransportAsync),
+    ("is74-api", TestIs74ApiAsync),
     ("internet-probe", TestInternetProbeAsync)
 };
 
@@ -160,6 +161,92 @@ static async Task TestHttpTransportAsync()
     Assert(dns.FailureKind == TransportFailureKind.DnsUnavailable, "DNS failure was not mapped to DnsUnavailable");
 }
 
+static async Task TestIs74ApiAsync()
+{
+    var seen = new List<(string Path, string Method, string Body, string? Authorization, bool NoCache)>();
+    using var client = new HttpClient(new DelegateHandler(async (request, cancellationToken) =>
+    {
+        var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+        var auth = request.Headers.TryGetValues("Authorization", out var authValues) ? authValues.Single() : null;
+        seen.Add((request.RequestUri!.PathAndQuery, request.Method.Method, body, auth, request.Headers.CacheControl?.NoCache == true));
+
+        return request.RequestUri.AbsolutePath switch
+        {
+            "/mobile/auth/get-confirm" => JsonResponse("{}"),
+            "/mobile/auth/check-confirm" => JsonResponse("{\"authId\":\"auth-123\",\"addresses\":[]}"),
+            "/mobile/auth/get-token" => JsonResponse("{\"TOKEN\":\"bearer-xyz\",\"USER_ID\":17,\"PROFILE_ID\":\"p1\",\"ACCESS_BEGIN\":\"2026-09-18 05:35:51\",\"ACCESS_END\":\"2027-09-18 05:35:51\"}"),
+            "/mobile/pushtoken/add-with-device-id" => JsonResponse("{}"),
+            "/mobile/pushmessages" => JsonResponse("{\"data\":[{\"id\":\"42\",\"subject\":\"notice\",\"push_message\":\"text\"}]}"),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+        };
+    }));
+    var api = new Is74ApiClient(new HttpTransport(client));
+
+    var confirm = await api.RequestConfirmationAsync("9123456789", "device-1");
+    Assert(confirm.IsSuccess, "get-confirm success was rejected");
+
+    var checkedCode = await api.CheckConfirmationAsync("9123456789", "123456", "device-1");
+    Assert(checkedCode.IsSuccess && checkedCode.Value?.AuthId == "auth-123", "check-confirm authId was not parsed");
+
+    var token = await api.GetTokenAsync("auth-123", "device-1");
+    Assert(token.IsSuccess && token.Value?.Token == "bearer-xyz", "get-token TOKEN was not parsed");
+    Assert(token.Value?.UserId == "17" && token.Value?.ProfileId == "p1", "get-token identity fields were not preserved");
+
+    var metadata = await api.RegisterDeviceMetadataAsync(
+        "bearer-xyz",
+        new DeviceMetadataRegistration("device-1", "9123456789", "Windows 11", "TEST-PC"));
+    Assert(metadata.IsSuccess, "device metadata success was rejected");
+
+    var baseline = await api.GetBaselineAsync("bearer-xyz", "device-1");
+    Assert(baseline.IsSuccess && baseline.Value?.Id == 42, "baseline top ID was not parsed");
+
+    Assert(seen.Any(x => x.Path == "/mobile/auth/get-confirm" && x.Method == "POST" && x.Body.Contains("\"authType\":0", StringComparison.Ordinal)), "get-confirm request contract changed");
+    Assert(seen.Any(x => x.Path == "/mobile/auth/check-confirm" && x.Body.Contains("authId=", StringComparison.Ordinal)), "check-confirm empty authId contract changed");
+    Assert(seen.Any(x => x.Path == "/mobile/auth/get-token" && x.Body.Contains("uniqueDeviceId=device-1", StringComparison.Ordinal)), "get-token uniqueDeviceId contract changed");
+    Assert(seen.Any(x => x.Path == "/mobile/pushtoken/add-with-device-id" && x.Authorization == "Bearer bearer-xyz"), "metadata Bearer header missing");
+    Assert(seen.Any(x => x.Path.StartsWith("/mobile/pushmessages?", StringComparison.Ordinal) && x.NoCache), "pushmessages no-cache header missing");
+
+    var rootArrayStatus = PushMessageParser.ParsePage(
+        "[{\"id\":100,\"subject\":\"other\",\"push_message\":\"other\"},{\"id\":101,\"subject\":\"Ваш код авторизации\",\"push_message\":\"4321 код авторизации в приложении \\\"Интерсвязь\\\"\"}]",
+        out var rootArrayPage);
+    Assert(rootArrayStatus == PushPageParseStatus.Success && rootArrayPage.Messages.Count == 2, "root-array push schema was not parsed");
+    var candidate = PushMessageParser.FindWifiCodeAfterBaseline(rootArrayPage, 100);
+    Assert(candidate == new WifiCodeCandidate("4321", 101), "fresh Wi-Fi code signature was not recognized");
+    Assert(PushMessageParser.FindWifiCodeAfterBaseline(rootArrayPage, 101) is null, "baseline freshness rule regressed");
+
+    var objectStatus = PushMessageParser.ParsePage("{\"result\":{\"messages\":[]}}", out var emptyPage);
+    Assert(objectStatus == PushPageParseStatus.Success && emptyPage.KnownEmpty, "known empty object push schema was rejected");
+    Assert(PushMessageParser.ParsePage("{\"unexpected\":123}", out _) == PushPageParseStatus.UnrecognizedSchema, "unknown push schema was accepted");
+    Assert(PushMessageParser.ParsePage("{", out _) == PushPageParseStatus.InvalidJson, "malformed push JSON was not classified");
+
+    using var multipleClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(JsonResponse("{\"authId\":\"a\",\"addresses\":[{},{}]}"))));
+    var multiple = await new Is74ApiClient(new HttpTransport(multipleClient))
+        .CheckConfirmationAsync("9123456789", "123456", "device-1");
+    Assert(multiple.Failure?.Kind == Is74ApiFailureKind.MultipleAddresses, "multiple-address registration was not stopped");
+
+    using var unauthorizedClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized))));
+    var unauthorized = await new Is74ApiClient(new HttpTransport(unauthorizedClient))
+        .GetBaselineAsync("expired", "device-1");
+    Assert(unauthorized.Failure?.Kind == Is74ApiFailureKind.Unauthorized, "HTTP 401 was not terminal bearer-invalid class");
+
+    using var malformedClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(JsonResponse("{"))));
+    var malformed = await new Is74ApiClient(new HttpTransport(malformedClient))
+        .GetPushMessagesAsync("bearer", "device-1", 1);
+    Assert(malformed.Failure?.Kind == Is74ApiFailureKind.InvalidJson, "malformed push JSON lost classification");
+
+    using var dnsClient = new HttpClient(new DelegateHandler((_, _) =>
+        throw new HttpRequestException(HttpRequestError.NameResolutionError, "host unknown", null, null)));
+    var dns = await new Is74ApiClient(new HttpTransport(dnsClient))
+        .GetBaselineAsync("bearer", "device-1");
+    Assert(dns.Failure?.Kind == Is74ApiFailureKind.Transport && dns.Failure.TransportFailure == TransportFailureKind.DnsUnavailable,
+        "API client lost DNS failure classification");
+}
+
+static HttpResponseMessage JsonResponse(string body) => new(HttpStatusCode.OK)
+{
+    Content = new StringContent(body, Encoding.UTF8, "application/json")
+};
+
 static async Task TestInternetProbeAsync()
 {
     using var onlineClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -186,33 +273,6 @@ static async Task TestInternetProbeAsync()
         .ProbeAsync(TimeSpan.FromSeconds(1));
     Assert(!dns.Online && !dns.HttpResponseReceived, "DNS failure was treated as captive HTTP evidence");
     Assert(dns.FailureKind == TransportFailureKind.DnsUnavailable, "probe lost DNS failure classification");
-}
-
-static void RunWindowsPowerShell(string command, IReadOnlyDictionary<string, string> environment)
-{
-    var encodedCommand = Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
-    var startInfo = new ProcessStartInfo
-    {
-        FileName = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.System),
-            "WindowsPowerShell", "v1.0", "powershell.exe"),
-        UseShellExecute = false,
-        CreateNoWindow = true,
-        RedirectStandardError = true
-    };
-    startInfo.ArgumentList.Add("-NoProfile");
-    startInfo.ArgumentList.Add("-NonInteractive");
-    startInfo.ArgumentList.Add("-EncodedCommand");
-    startInfo.ArgumentList.Add(encodedCommand);
-    foreach (var pair in environment)
-    {
-        startInfo.Environment[pair.Key] = pair.Value;
-    }
-
-    using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start Windows PowerShell");
-    var error = process.StandardError.ReadToEnd();
-    process.WaitForExit();
-    Assert(process.ExitCode == 0, $"Windows PowerShell DPAPI compatibility probe failed: {error}");
 }
 
 static void Assert(bool condition, string message)

@@ -1,7 +1,24 @@
+using System.Security.Cryptography.X509Certificates;
+
 namespace IS74Wifi.Core;
 
 public static class HttpClientProfiles
 {
+
+    public static HttpClient CreateApiClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = true,
+            MaxConnectionsPerServer = 16
+        };
+        handler.SslOptions.CertificateRevocationCheckMode = X509RevocationMode.NoCheck;
+
+        return new HttpClient(handler, disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+    }
     public static HttpClient CreateInternetProbeClient()
     {
         var handler = new SocketsHttpHandler
