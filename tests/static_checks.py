@@ -95,13 +95,20 @@ assert 'Get-IS74BaselineId -Client $apiPair.Client -Token $token -DeviceId $devi
 assert 'push.baseline schemaUnrecognized=true' in module, 'unknown baseline schema must fail closed'
 assert "$bodyText.Trim() -eq '[]'" in module, 'empty root-array baseline must be engine independent'
 assert 'IS74UnexpectedAfterStepOne' in module, 'unknown post-stepOne failures must not be blindly retried'
-assert '$stepOneAmbiguous = $true' in module, 'async stepOne transport loss must not cause blind retry'
+assert 'полный polling schedule' in module, 'spent stepOne attempts must be retryable after mailbox polling'
+assert 'stepOne принят сервером, но свежий код не появился за полный polling schedule.' in module
 assert 'Register-IS74PreStepFailure' in module, 'safe pre-step retry state missing'
+assert "-Result 'bearer-invalid'" in module, 'HTTP 401 must become terminal bearer-invalid state'
+assert '$script:AmbiguousStepTwoProbeScheduleMs = @(0, 250, 500, 1000, 2000, 4000)' in module
+assert 'Test-IS74InternetAfterAmbiguousStepTwo' in module
 assert "[Threading.Mutex]::new($false, 'Local\\IS74Wifi.Auth')" in module, 'cross-process auth transaction mutex missing'
 assert 'guardProbeTimeoutMilliseconds = 300' in module, 'guard probe timeout must be explicitly bounded'
 assert 'if (($expiry - $now).TotalMilliseconds -le $guardProbeBudgetMs) { return }' in module, 'pre-expiry probe must not cross T'
 assert 'if (-not $first.HttpResponseReceived) { return $false }' in module, 'transport timeout must not trigger pre-expiry stepOne'
-assert '[Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()' in module, 'Wi-Fi presence check must avoid netsh on the normal path'
+assert "$script:WifiSsidPrefix = 'Campus Wi-Fi'" in module, 'campus SSID prefix gate missing'
+assert 'IS74WifiNative' in module and 'WlanQueryInterface' in module, 'SSID gate must use native WLAN API'
+assert '& netsh.exe' not in module, 'authorization path must not spawn netsh for SSID detection'
+assert 'Test-IS74TargetWifiConnected' in module, 'target Wi-Fi gate missing'
 assert 'Update-IS74InternetProbeAddressCache' in module, 'guard DNS must be warmed outside the critical window'
 assert "$request.Headers.Host = 'www.msftconnecttest.com'" in module, 'cached-IP probe must preserve HTTP Host'
 assert '$first = Invoke-IS74InternetProbe -TimeoutMilliseconds $ProbeTimeoutMilliseconds -UseCachedAddress' in module, 'guard probe must not perform DNS'

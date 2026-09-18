@@ -5,6 +5,141 @@ $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName System.Net.Http
 
+# Query the current SSID through the native Windows WLAN API. This avoids
+# spawning netsh.exe in the authorization critical path.
+if (-not ('IS74WifiNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class IS74WifiNative
+{
+    private const uint WLAN_CLIENT_VERSION_LONGHORN = 2;
+    private const int WLAN_INTF_OPCODE_CURRENT_CONNECTION = 7;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WLAN_INTERFACE_INFO
+    {
+        public Guid InterfaceGuid;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string InterfaceDescription;
+        public int InterfaceState;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DOT11_SSID
+    {
+        public uint SSIDLength;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+        public byte[] SSID;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WLAN_ASSOCIATION_ATTRIBUTES
+    {
+        public DOT11_SSID Dot11Ssid;
+        public int Dot11BssType;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)]
+        public byte[] Dot11Bssid;
+        public int Dot11PhyType;
+        public uint Dot11PhyIndex;
+        public uint WlanSignalQuality;
+        public uint RxRate;
+        public uint TxRate;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WLAN_SECURITY_ATTRIBUTES
+    {
+        [MarshalAs(UnmanagedType.Bool)] public bool SecurityEnabled;
+        [MarshalAs(UnmanagedType.Bool)] public bool OneXEnabled;
+        public int AuthAlgorithm;
+        public int CipherAlgorithm;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WLAN_CONNECTION_ATTRIBUTES
+    {
+        public int InterfaceState;
+        public int ConnectionMode;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string ProfileName;
+        public WLAN_ASSOCIATION_ATTRIBUTES AssociationAttributes;
+        public WLAN_SECURITY_ATTRIBUTES SecurityAttributes;
+    }
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanOpenHandle(uint clientVersion, IntPtr reserved, out uint negotiatedVersion, out IntPtr clientHandle);
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanCloseHandle(IntPtr clientHandle, IntPtr reserved);
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanEnumInterfaces(IntPtr clientHandle, IntPtr reserved, out IntPtr interfaceList);
+
+    [DllImport("wlanapi.dll")]
+    private static extern uint WlanQueryInterface(IntPtr clientHandle, ref Guid interfaceGuid, int opCode, IntPtr reserved, out uint dataSize, out IntPtr data, out int valueType);
+
+    [DllImport("wlanapi.dll")]
+    private static extern void WlanFreeMemory(IntPtr memory);
+
+    public static string[] GetConnectedSsids()
+    {
+        var result = new List<string>();
+        IntPtr client = IntPtr.Zero;
+        IntPtr list = IntPtr.Zero;
+        try
+        {
+            uint negotiated;
+            if (WlanOpenHandle(WLAN_CLIENT_VERSION_LONGHORN, IntPtr.Zero, out negotiated, out client) != 0 || client == IntPtr.Zero)
+                return result.ToArray();
+            if (WlanEnumInterfaces(client, IntPtr.Zero, out list) != 0 || list == IntPtr.Zero)
+                return result.ToArray();
+
+            int count = Marshal.ReadInt32(list, 0);
+            int itemSize = Marshal.SizeOf(typeof(WLAN_INTERFACE_INFO));
+            IntPtr item = IntPtr.Add(list, 8);
+            for (int i = 0; i < count; i++)
+            {
+                var info = (WLAN_INTERFACE_INFO)Marshal.PtrToStructure(item, typeof(WLAN_INTERFACE_INFO));
+                item = IntPtr.Add(item, itemSize);
+
+                IntPtr data = IntPtr.Zero;
+                try
+                {
+                    uint dataSize;
+                    int valueType;
+                    Guid guid = info.InterfaceGuid;
+                    if (WlanQueryInterface(client, ref guid, WLAN_INTF_OPCODE_CURRENT_CONNECTION, IntPtr.Zero, out dataSize, out data, out valueType) != 0 || data == IntPtr.Zero)
+                        continue;
+                    var connection = (WLAN_CONNECTION_ATTRIBUTES)Marshal.PtrToStructure(data, typeof(WLAN_CONNECTION_ATTRIBUTES));
+                    var ssid = connection.AssociationAttributes.Dot11Ssid;
+                    int length = (int)Math.Min(ssid.SSIDLength, 32u);
+                    if (length <= 0 || ssid.SSID == null) continue;
+                    string value = Encoding.UTF8.GetString(ssid.SSID, 0, length);
+                    if (!String.IsNullOrEmpty(value) && !result.Contains(value)) result.Add(value);
+                }
+                finally
+                {
+                    if (data != IntPtr.Zero) WlanFreeMemory(data);
+                }
+            }
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+        finally
+        {
+            if (list != IntPtr.Zero) WlanFreeMemory(list);
+            if (client != IntPtr.Zero) WlanCloseHandle(client, IntPtr.Zero);
+        }
+        return result.ToArray();
+    }
+}
+'@
+}
+
 # Windows PowerShell 5.1 may otherwise inherit an older TLS default on some systems.
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -25,6 +160,8 @@ $script:LogMaxBytes    = 1MB
 $script:LogRetentionFiles = 5
 $script:LogPreviewChars = 1024
 $script:TaskName       = 'IS74WifiAgent'
+$script:WifiSsidPrefix = 'Campus Wi-Fi'
+$script:AmbiguousStepTwoProbeScheduleMs = @(0, 250, 500, 1000, 2000, 4000)
 $script:ProjectRoot    = Split-Path -Parent $PSScriptRoot
 $script:ModulePath      = $PSCommandPath
 $script:CliScriptPath  = Join-Path $script:ProjectRoot 'IS74Wifi.ps1'
@@ -634,27 +771,25 @@ function Test-IS74InternetAccess {
     return [bool]$probe.Online
 }
 
-function Test-IS74WifiConnected {
+function Get-IS74ConnectedWifiSsids {
     try {
-        foreach ($adapter in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
-            if ($adapter.NetworkInterfaceType -eq [Net.NetworkInformation.NetworkInterfaceType]::Wireless80211 -and
-                $adapter.OperationalStatus -eq [Net.NetworkInformation.OperationalStatus]::Up) {
-                return $true
-            }
-        }
-        return $false
+        return @([IS74WifiNative]::GetConnectedSsids())
     } catch {
-        # Only use the slower external command as a compatibility fallback.
-        try {
-            $lines = & netsh.exe wlan show interfaces 2>$null
-            foreach ($line in $lines) {
-                if ($line -match '^\s*SSID\s*:\s*(.+?)\s*$') {
-                    if ($Matches[1] -and $Matches[1] -notmatch '^N/A$') { return $true }
-                }
-            }
-        } catch { }
-        return $false
+        return @()
     }
+}
+
+function Test-IS74TargetWifiSsid {
+    param([AllowNull()][string]$Ssid)
+    if ([string]::IsNullOrWhiteSpace($Ssid)) { return $false }
+    return $Ssid.StartsWith($script:WifiSsidPrefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-IS74TargetWifiConnected {
+    foreach ($ssid in @(Get-IS74ConnectedWifiSsids)) {
+        if (Test-IS74TargetWifiSsid -Ssid ([string]$ssid)) { return $true }
+    }
+    return $false
 }
 
 function New-IS74PushRequest {
@@ -804,7 +939,7 @@ function Get-IS74BaselineId {
     )
     $request = New-IS74PushRequest -Token $Token -DeviceId $DeviceId -PageSize 1
     $result = Send-IS74Request -Client $Client -Request $request -DiagnosticOperation 'push.baseline' -SuppressSuccessLog:$SuppressSuccessLog
-    if ($result.StatusCode -eq 401) { throw 'Bearer отклонён сервером (HTTP 401). Выполните регистрацию заново.' }
+    if ($result.StatusCode -eq 401) { throw (New-IS74ConnectException -Message 'Bearer отклонён сервером (HTTP 401). Выполните регистрацию заново.' -UserActionRequired -Result 'bearer-invalid') }
     if (-not $result.IsSuccess) { throw "Baseline pushmessages HTTP $($result.StatusCode)." }
     $bodyText = [string]$result.Body
     if ($bodyText.Trim() -eq '[]') {
@@ -1008,11 +1143,13 @@ function New-IS74ConnectException {
     param(
         [Parameter(Mandatory=$true)][string]$Message,
         [switch]$RetryableStepOne,
-        [switch]$UserActionRequired
+        [switch]$UserActionRequired,
+        [string]$Result
     )
     $ex = [System.InvalidOperationException]::new($Message)
     if ($RetryableStepOne) { $ex.Data['IS74RetryableStepOne'] = $true }
     if ($UserActionRequired) { $ex.Data['IS74UserActionRequired'] = $true }
+    if ($Result) { $ex.Data['IS74Result'] = $Result }
     return $ex
 }
 
@@ -1040,6 +1177,19 @@ function Test-IS74InternetUnavailableConfirmed {
     return [bool]$second.HttpResponseReceived
 }
 
+function Test-IS74InternetAfterAmbiguousStepTwo {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($targetMs in $script:AmbiguousStepTwoProbeScheduleMs) {
+        while ($clock.Elapsed.TotalMilliseconds -lt $targetMs) {
+            $remaining = $targetMs - $clock.Elapsed.TotalMilliseconds
+            if ($remaining -gt 5) { Start-Sleep -Milliseconds ([Math]::Min(50, [int]$remaining)) }
+            else { [Threading.Thread]::SpinWait(250) }
+        }
+        if (Test-IS74InternetAccess -TimeoutMilliseconds 750) { return $true }
+    }
+    return $false
+}
+
 function Connect-IS74Wifi {
     param(
         [switch]$Force,
@@ -1055,6 +1205,11 @@ function Connect-IS74Wifi {
     $savedPhone = [string](Get-IS74PropertyValue -Object $secrets -Name 'phone')
     if (-not $savedToken -or -not $savedPhone -or -not $deviceId) {
         throw 'Устройство не зарегистрировано. Сначала выполните register.'
+    }
+
+    if (-not (Test-IS74TargetWifiConnected)) {
+        if ($Quiet) { return [pscustomobject]@{ Status='WrongWifi'; InternetConfirmed=$null } }
+        throw ("Wi-Fi авторизация работает только в сети {0}*. Подключитесь к кампусной сети и повторите попытку." -f $script:WifiSsidPrefix)
     }
 
     if (-not $Force -and (Test-IS74InternetAccess)) {
@@ -1280,70 +1435,32 @@ function Connect-IS74Wifi {
             Write-IS74HttpLog -Operation 'portal.stepOne' -Method 'POST' -Uri "$($script:PortalBase)/stepOne" -ElapsedMs ([int]$clock.Elapsed.TotalMilliseconds) -ErrorMessage $stepException.Message
         }
 
-        # A fresh code proves stepOne reached the backend even if the HTTP response
-        # was lost. In that case direct stepTwo is safer than generating another code.
-        $stepOneAccepted = $false
-        $stepOneAmbiguous = $false
-        if ($found) {
-            $stepOneAccepted = $true
-        } elseif ($stepResponse -and $stepStatus -ge 300 -and $stepStatus -lt 400 -and (Test-IS74StepTwoLocation -Location $stepLocation)) {
-            $stepOneAccepted = $true
-        } elseif ($stepException) {
-            # SendAsync was started, so a later transport failure cannot prove that
-            # the backend did not process stepOne. Never issue a blind replacement.
-            $stepOneAccepted = $true
-            $stepOneAmbiguous = $true
-        }
-
+        # A fresh code is sufficient evidence that stepOne reached the backend.
+        # Do not wait for the browser-facing 302 before sending stepTwo. If no
+        # fresh code appears during this attempt's complete polling schedule, the
+        # attempt is considered spent and the automatic state machine may send a
+        # later stepOne, up to the four-attempt budget.
         if ($stepResponse -and $stepStatus -ge 300 -and $stepStatus -lt 400 -and (Test-IS74AlreadyAuthorizedLocation -Location $stepLocation)) {
-            # Experimentally, an already-authorized client is redirected straight
-            # to the landing page and no fresh Wi-Fi code is created. Classify the
-            # portal response itself; do not probe Internet here because the actual
-            # cutoff can happen a few hundred milliseconds after this response.
             Set-IS74AttemptState -Result 'already-authorized' -Reason $AttemptReason
             Write-IS74Log -Message ("portal.stepOne classified=already-authorized reason={0}" -f $AttemptReason)
             if (-not $Quiet) { Write-Host 'Captive portal сообщает, что клиент ещё авторизован.' -ForegroundColor Green }
             return [pscustomobject]@{ Status='AlreadyAuthorized'; InternetConfirmed=$null }
         }
 
-        if (-not $stepOneAccepted) {
+        if (-not $found) {
+            if ($stepException) {
+                throw (New-IS74ConnectException -Message ("Ответ stepOne потерян/оборван, а свежий код не появился за полный polling schedule: " + $stepException.Message) -RetryableStepOne)
+            }
             if ($stepStatus -eq 429) {
                 throw (New-IS74ConnectException -Message 'stepOne вернул HTTP 429. Автоматические повторы остановлены.' -UserActionRequired)
             }
             if ($stepStatus -eq 408 -or $stepStatus -ge 500) {
                 throw (New-IS74ConnectException -Message "stepOne временно недоступен (HTTP $stepStatus)." -RetryableStepOne)
             }
+            if ($stepResponse -and $stepStatus -ge 300 -and $stepStatus -lt 400 -and (Test-IS74StepTwoLocation -Location $stepLocation)) {
+                throw (New-IS74ConnectException -Message 'stepOne принят сервером, но свежий код не появился за полный polling schedule.' -RetryableStepOne)
+            }
             throw (New-IS74ConnectException -Message "stepOne не перевёл клиент на stepTwo (HTTP $stepStatus, Location=$stepLocation)." -UserActionRequired)
-        }
-
-        # If stepOne explicitly accepted the transaction, never create another code
-        # merely because delivery to pushmessages is delayed. Give the existing
-        # transaction up to one minute to appear.
-        if (-not $found) {
-            $slowDeadline = [DateTime]::UtcNow.AddSeconds(50)
-            while (-not $found -and [DateTime]::UtcNow -lt $slowDeadline) {
-                Start-Sleep -Seconds 5
-                $candidate = Find-IS74WifiCodeAfterBaseline -Client $apiPair.Client -Token $token -DeviceId $deviceId -BaselineId $baselineId
-                if ($candidate) {
-                    $found = [pscustomobject]@{
-                        Code = $candidate.Code
-                        Id = $candidate.Id
-                        Source = 'slow'
-                        TargetMs = $null
-                        StartMs = $null
-                        ObservedMs = [int]$clock.Elapsed.TotalMilliseconds
-                    }
-                    break
-                }
-            }
-        }
-        if (-not $found) {
-            $missingCodeMessage = if ($stepOneAmbiguous) {
-                'Ответ stepOne потерян/оборван, а код не появился в pushmessages. Состояние server-side неоднозначно; новый stepOne автоматически не отправляется.'
-            } else {
-                'stepOne принят сервером, но код не появился в pushmessages. Новый stepOne автоматически не отправляется.'
-            }
-            throw (New-IS74ConnectException -Message $missingCodeMessage -UserActionRequired)
         }
 
         $stepTwoUri = $null
@@ -1379,14 +1496,14 @@ function Connect-IS74Wifi {
                     Write-IS74HttpLog -Operation 'portal.stepOne' -Method 'POST' -Uri "$($script:PortalBase)/stepOne" -ElapsedMs $stepTwoStartMs -ErrorMessage $stepException.Message
                 }
             }
-            # A lost HTTP response does not prove stepTwo failed. If Internet is
-            # already back, persist success instead of generating another code.
-            if (Test-IS74InternetAccess) {
+            # A lost HTTP response does not prove stepTwo failed. Never resend the
+            # code blindly; instead give the network a few seconds to become usable.
+            if (Test-IS74InternetAfterAmbiguousStepTwo) {
                 Set-IS74SuccessfulAuthState -InternetConfirmed:$true -AuthorizedAtUtc $stepTwoStartedAtUtc
                 Write-IS74Log -Level WARN -Message 'portal.stepTwo responseLost=true internetConfirmed=true; accepted by side effect.'
                 return [pscustomobject]@{ Status='Success'; InternetConfirmed=$true }
             }
-            throw (New-IS74ConnectException -Message ("stepTwo завершился сетевой ошибкой после отправки кода: " + $stepTwoError.Message) -UserActionRequired)
+            throw (New-IS74ConnectException -Message ("stepTwo завершился сетевой ошибкой после отправки кода, и Интернет не подтвердился в recovery-window: " + $stepTwoError.Message) -UserActionRequired)
         }
         $stepTwoDoneMs = [int]$clock.Elapsed.TotalMilliseconds
         if ($pollErrorCount -gt 0) {
@@ -1436,6 +1553,7 @@ function Connect-IS74Wifi {
         $result = 'error'
         if ($_.Exception.Data['IS74RetryableStepOne']) { $result = 'step-one-retryable-error' }
         if ($_.Exception.Data['IS74UserActionRequired']) { $result = 'user-action-required' }
+        if ($_.Exception.Data['IS74Result']) { $result = [string]$_.Exception.Data['IS74Result'] }
         if ($stepOneStarted -and $result -eq 'error') {
             $_.Exception.Data['IS74UnexpectedAfterStepOne'] = $true
             $result = 'unexpected-error-after-step-one'
@@ -1519,6 +1637,7 @@ function Enable-IS74Autostart {
     Start-ScheduledTask -TaskName $script:TaskName
     Write-IS74Log -Message 'Автозапуск агента включён.'
     Write-Host 'Автозапуск включён. Агент запущен в текущей пользовательской сессии.' -ForegroundColor Green
+    Write-Host 'Перед удалением папки с программой сначала выполните uninstall или пункт меню удаления программы.' -ForegroundColor Yellow
 }
 
 function Disable-IS74Autostart {
@@ -1656,7 +1775,7 @@ function Invoke-IS74AgentTick {
         return
     }
     if ([bool]$state.userActionRequired) { return }
-    if (-not (Test-IS74WifiConnected)) { return }
+    if (-not (Test-IS74TargetWifiConnected)) { return }
 
     # Retryable stepOne failures keep their own backoff. A manual attempt never
     # shifts the 24-hour reference, but an actual failed automatic send should not
@@ -1764,7 +1883,8 @@ function Invoke-IS74AgentTick {
         $attempts = [int]$state.automaticStepOneAttempts
 
         if ($ex.Data['IS74UserActionRequired']) {
-            Set-IS74UserActionRequired
+            $terminalResult = if ($ex.Data['IS74Result']) { [string]$ex.Data['IS74Result'] } else { 'user-action-required' }
+            Set-IS74UserActionRequired -Result $terminalResult
             return
         }
 
