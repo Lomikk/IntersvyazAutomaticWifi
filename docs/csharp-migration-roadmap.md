@@ -114,6 +114,8 @@ Exit gate: unit/contract tests cover state persistence, redaction, SSID gating, 
 
 ### Phase 3 — IS74 API client
 
+Status: **complete**. Registration, device metadata, push parsing, baseline handling, explicit 401, and typed transport failures are covered by the Windows C# contract run.
+
 - Registration endpoints: `get-confirm`, `check-confirm`, `get-token`.
 - Device metadata registration.
 - Typed push-message parsing for both observed root-array and object-shaped responses.
@@ -124,6 +126,8 @@ Exit gate: unit/contract tests cover state persistence, redaction, SSID gating, 
 Exit gate: mocked HTTP contracts reproduce all known registration/push response shapes and failure classes.
 
 ### Phase 4 — captive portal client
+
+Status: **implementation complete; Windows CI pending**. The portal client keeps redirects disabled, classifies the two observed already-authorized landings narrowly, supports direct `stepTwo` without waiting for `stepOne`, and marks transport failures after a POST as potentially side-effectful rather than silently retrying them.
 
 - `stepOne` and `stepTwo` form encoding.
 - No auto-redirect while classifying portal responses.

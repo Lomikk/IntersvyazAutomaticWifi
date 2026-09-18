@@ -19,6 +19,21 @@ public static class HttpClientProfiles
             Timeout = Timeout.InfiniteTimeSpan
         };
     }
+    public static HttpClient CreatePortalClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            MaxConnectionsPerServer = 16
+        };
+        handler.SslOptions.CertificateRevocationCheckMode = X509RevocationMode.NoCheck;
+
+        return new HttpClient(handler, disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+    }
+
     public static HttpClient CreateInternetProbeClient()
     {
         var handler = new SocketsHttpHandler

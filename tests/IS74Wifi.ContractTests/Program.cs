@@ -13,6 +13,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("named-mutex", TestMutexAsync),
     ("http-transport", TestHttpTransportAsync),
     ("is74-api", TestIs74ApiAsync),
+    ("captive-portal", TestCaptivePortalAsync),
     ("internet-probe", TestInternetProbeAsync)
 };
 
@@ -246,6 +247,109 @@ static HttpResponseMessage JsonResponse(string body) => new(HttpStatusCode.OK)
 {
     Content = new StringContent(body, Encoding.UTF8, "application/json")
 };
+
+static async Task TestCaptivePortalAsync()
+{
+    var seen = new List<(string PathAndQuery, string Method, string Body)>();
+    using var happyClient = new HttpClient(new DelegateHandler(async (request, cancellationToken) =>
+    {
+        var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+        seen.Add((request.RequestUri!.PathAndQuery, request.Method.Method, body));
+
+        if (request.RequestUri.AbsolutePath == "/stepOne")
+        {
+            return RedirectResponse(HttpStatusCode.Found, "stepTwo?phone=9123456789&isMp=true");
+        }
+        if (request.RequestUri.AbsolutePath == "/stepTwo")
+        {
+            var response = RedirectResponse(HttpStatusCode.Found, "stepThree");
+            response.Headers.Date = new DateTimeOffset(2026, 9, 18, 11, 0, 0, TimeSpan.Zero);
+            return response;
+        }
+        return new HttpResponseMessage(HttpStatusCode.NotFound);
+    }));
+    var portal = new CaptivePortalClient(new HttpTransport(happyClient));
+
+    var stepOne = await portal.SendStepOneAsync("9123456789");
+    Assert(stepOne.IsSuccess && stepOne.Value?.Disposition == StepOneDisposition.StepTwo, "stepOne redirect to stepTwo was rejected");
+    Assert(stepOne.Value?.StepTwoUri?.AbsoluteUri == "http://w.is74.ru/stepTwo?phone=9123456789&isMp=true", "relative stepTwo redirect was not resolved against w.is74.ru");
+    Assert(seen.Any(x => x.PathAndQuery == "/stepOne" && x.Method == "POST" &&
+                         x.Body.Contains("phone=89123456789", StringComparison.Ordinal) &&
+                         x.Body.Contains("dial_code=7", StringComparison.Ordinal) &&
+                         x.Body.Contains("country_code=ru", StringComparison.Ordinal) &&
+                         x.Body.Contains("sendPush=on", StringComparison.Ordinal)),
+        "stepOne form contract changed");
+
+    var stepTwo = await portal.SendStepTwoAsync("9123456789", "4321");
+    Assert(stepTwo.IsSuccess, "direct stepTwo success redirect was rejected");
+    Assert(stepTwo.Value?.ServerDate == new DateTimeOffset(2026, 9, 18, 11, 0, 0, TimeSpan.Zero), "stepTwo server Date was not preserved");
+    Assert(seen.Any(x => x.PathAndQuery == "/stepTwo?phone=9123456789&isMp=true" && x.Method == "POST" &&
+                         x.Body.Contains("confirmCode=4321", StringComparison.Ordinal) &&
+                         x.Body.Contains("phone=9123456789", StringComparison.Ordinal)),
+        "direct stepTwo form contract changed");
+
+    using var appLandingClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        RedirectResponse(HttpStatusCode.Found, "/home/connect/formy_connect/landing/pages/prilozheniye/?utm_source=wifi"))));
+    var appLanding = await new CaptivePortalClient(new HttpTransport(appLandingClient)).SendStepOneAsync("9123456789");
+    Assert(appLanding.IsSuccess && appLanding.Value?.Disposition == StepOneDisposition.AlreadyAuthorized,
+        "observed application landing was not classified as already authorized");
+
+    using var wifiLandingClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        RedirectResponse(HttpStatusCode.Found, "https://openwifi.is74.ru/home/connect/formy_connect/landing/pages/wifi/"))));
+    var wifiLanding = await new CaptivePortalClient(new HttpTransport(wifiLandingClient)).SendStepOneAsync("9123456789");
+    Assert(wifiLanding.IsSuccess && wifiLanding.Value?.Disposition == StepOneDisposition.AlreadyAuthorized,
+        "observed openwifi landing was not classified as already authorized");
+
+    using var unexpectedRedirectClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        RedirectResponse(HttpStatusCode.Found, "https://example.test/unexpected"))));
+    var unexpectedRedirect = await new CaptivePortalClient(new HttpTransport(unexpectedRedirectClient)).SendStepOneAsync("9123456789");
+    Assert(unexpectedRedirect.Failure?.Kind == CaptivePortalFailureKind.UnexpectedRedirect,
+        "unknown stepOne redirect was not failed closed");
+
+    using var wrongStepThreeClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        RedirectResponse(HttpStatusCode.Found, "stepTwo?phone=9123456789&isMp=true"))));
+    var wrongStepThree = await new CaptivePortalClient(new HttpTransport(wrongStepThreeClient))
+        .SendStepTwoAsync("9123456789", "4321");
+    Assert(wrongStepThree.Failure?.Kind == CaptivePortalFailureKind.UnexpectedRedirect,
+        "stepTwo accepted a redirect other than stepThree");
+
+    using var httpErrorClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        new HttpResponseMessage(HttpStatusCode.ServiceUnavailable))));
+    var httpError = await new CaptivePortalClient(new HttpTransport(httpErrorClient)).SendStepOneAsync("9123456789");
+    Assert(httpError.Failure?.Kind == CaptivePortalFailureKind.HttpStatus && httpError.Failure.StatusCode == 503,
+        "stepOne HTTP failure lost its status");
+
+    using var dnsClient = new HttpClient(new DelegateHandler((_, _) =>
+        throw new HttpRequestException(HttpRequestError.NameResolutionError, "host unknown", null, null)));
+    var dns = await new CaptivePortalClient(new HttpTransport(dnsClient)).SendStepOneAsync("9123456789");
+    Assert(dns.Failure?.Kind == CaptivePortalFailureKind.Transport &&
+           dns.Failure.TransportFailure == TransportFailureKind.DnsUnavailable &&
+           !dns.Failure.SideEffectMayHaveOccurred,
+        "DNS failure was incorrectly treated as an ambiguous POST side effect");
+
+    using var ambiguousClient = new HttpClient(new DelegateHandler(async (_, cancellationToken) =>
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("unreachable");
+    }));
+    var ambiguous = await new CaptivePortalClient(new HttpTransport(ambiguousClient))
+        .SendStepTwoAsync("9123456789", "4321", timeout: TimeSpan.FromMilliseconds(40));
+    Assert(ambiguous.Failure?.Kind == CaptivePortalFailureKind.Transport &&
+           ambiguous.Failure.TransportFailure == TransportFailureKind.Timeout &&
+           ambiguous.Failure.SideEffectMayHaveOccurred,
+        "lost stepTwo response was not marked as potentially side-effectful");
+
+    Assert(CaptivePortalClient.BuildDirectStepTwoUri("9123456789").AbsoluteUri ==
+           "http://w.is74.ru/stepTwo?phone=9123456789&isMp=true",
+        "direct stepTwo URI contract changed");
+}
+
+static HttpResponseMessage RedirectResponse(HttpStatusCode status, string location)
+{
+    var response = new HttpResponseMessage(status);
+    response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
+    return response;
+}
 
 static async Task TestInternetProbeAsync()
 {
