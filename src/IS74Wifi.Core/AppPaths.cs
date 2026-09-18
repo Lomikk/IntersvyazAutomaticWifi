@@ -1,0 +1,27 @@
+namespace IS74Wifi.Core;
+
+public sealed class AppPaths
+{
+    public AppPaths(string? rootOverride = null)
+    {
+        Root = rootOverride ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "IS74Wifi");
+    }
+
+    public string Root { get; }
+    public string DeviceIdFile => Path.Combine(Root, "device-id.txt");
+    public string SecretsFile => Path.Combine(Root, "secrets.dpapi");
+    public string SessionMetaFile => Path.Combine(Root, "session-meta.json");
+    public string RuntimeStateFile => Path.Combine(Root, "runtime-state.json");
+    public string SettingsFile => Path.Combine(Root, "settings.json");
+    public string DeviceMetadataFile => Path.Combine(Root, "device-metadata.json");
+    public string LogDirectory => Path.Combine(Root, "logs");
+    public string DiagnosticLogFile => Path.Combine(LogDirectory, "diagnostic.log");
+
+    public void EnsureDirectories()
+    {
+        Directory.CreateDirectory(Root);
+        Directory.CreateDirectory(LogDirectory);
+    }
+}

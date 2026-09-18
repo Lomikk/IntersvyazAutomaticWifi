@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>IS74Wifi</AssemblyName>
     <RootNamespace>IS74Wifi.App</RootNamespace>
   </PropertyGroup>
