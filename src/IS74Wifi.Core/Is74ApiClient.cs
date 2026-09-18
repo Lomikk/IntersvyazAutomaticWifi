@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace IS74Wifi.Core;
 
-public sealed class Is74ApiClient
+public sealed class Is74ApiClient : IIs74PushClient
 {
     private static readonly Uri ApiBase = new("https://api.is74.ru/");
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);

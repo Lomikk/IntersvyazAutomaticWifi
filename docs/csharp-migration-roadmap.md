@@ -100,7 +100,7 @@ Exit gate: C# solution builds on `windows-latest` and the executable can run `ve
 
 ### Phase 2 — state, secrets, logging, and platform primitives
 
-Status: **implementation complete; Windows CI/field validation pending**. Typed settings/runtime stores, stable device ID, CurrentUser DPAPI secrets, redacted rotating diagnostics, native WLAN enumeration, exact Microsoft Connect Test parsing, named mutexes, and typed asynchronous HTTP transport are implemented. DNS cached-IP resilience remains intentionally deferred to Phase 7. The C# runtime intentionally does not inherit the PowerShell 5.1 `ConvertFrom-SecureString` storage format; the first C# migration requires a one-time account registration instead of carrying PS5-specific secret-format compatibility into the new runtime.
+Status: **complete**. Windows CI covers typed settings/runtime stores, stable device ID, CurrentUser DPAPI secrets, redacted rotating diagnostics, native WLAN enumeration, exact Microsoft Connect Test parsing, named synchronization primitives, and typed asynchronous HTTP transport. DNS cached-IP resilience remains intentionally deferred to Phase 7. The C# runtime intentionally does not inherit the PowerShell 5.1 `ConvertFrom-SecureString` storage format; the first C# migration requires a one-time account registration instead of carrying PS5-specific secret-format compatibility into the new runtime.
 
 - Typed configuration/state model.
 - Stable device ID.
@@ -108,7 +108,7 @@ Status: **implementation complete; Windows CI/field validation pending**. Typed 
 - Rotating/redacted diagnostic logger with the same privacy guarantees as the PowerShell client.
 - WLAN SSID query via Windows WLAN API.
 - Internet connectivity probe with exact `Microsoft Connect Test` validation.
-- Single-instance mutexes for agent and authorization transaction.
+- Cross-process synchronization primitives; async authorization uses a named semaphore because Windows mutex ownership is thread-affine.
 
 Exit gate: unit/contract tests cover state persistence, redaction, SSID gating, connectivity probe parsing, and mutex behavior.
 
@@ -127,7 +127,7 @@ Exit gate: mocked HTTP contracts reproduce all known registration/push response 
 
 ### Phase 4 — captive portal client
 
-Status: **implementation complete; Windows CI pending**. The portal client keeps redirects disabled, classifies the two observed already-authorized landings narrowly, supports direct `stepTwo` without waiting for `stepOne`, and marks transport failures after a POST as potentially side-effectful rather than silently retrying them.
+Status: **complete**. Windows CI covers redirect-disabled portal requests, the two observed already-authorized landings, direct `stepTwo` without waiting for `stepOne`, fail-closed redirects, and explicit lost-response side-effect ambiguity.
 
 - `stepOne` and `stepTwo` form encoding.
 - No auto-redirect while classifying portal responses.
@@ -138,6 +138,8 @@ Status: **implementation complete; Windows CI pending**. The portal client keeps
 Exit gate: deterministic tests cover unauthenticated redirect, both already-authorized redirects, unexpected redirects, success `stepThree`, and lost-response ambiguity.
 
 ### Phase 5 — critical polling engine and authorization state machine
+
+Status: **implementation complete; Windows CI pending**. The C# flow now preserves the absolute polling schedule, launches independent push GETs, uses a one-shot non-blocking `pageSize=5` fallback, sends `stepTwo` immediately on a fresh code, persists the four-attempt budget before the network side effect, performs lost-`stepTwo` Internet recovery without resending the code, and emits sanitized critical timing telemetry after the fast phase. The async cross-process authorization gate uses a C#-specific named semaphore so ownership is not thread-affine and it can coexist with the legacy PowerShell mutex during migration.
 
 - Monotonic stopwatch and absolute-offset scheduling.
 - Independent concurrent GETs.

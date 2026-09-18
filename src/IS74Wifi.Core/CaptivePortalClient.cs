@@ -2,7 +2,7 @@ using System.Net;
 
 namespace IS74Wifi.Core;
 
-public sealed class CaptivePortalClient(HttpTransport transport)
+public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePortalClient
 {
     private static readonly Uri PortalBase = new("http://w.is74.ru/");
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);

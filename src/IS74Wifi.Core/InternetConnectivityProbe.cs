@@ -2,7 +2,7 @@ using System.Net;
 
 namespace IS74Wifi.Core;
 
-public sealed class InternetConnectivityProbe(HttpTransport transport)
+public sealed class InternetConnectivityProbe(HttpTransport transport) : IInternetConnectivityProbe
 {
     public static readonly Uri CanonicalUri = new("http://www.msftconnecttest.com/connecttest.txt");
     public const string ExpectedBody = "Microsoft Connect Test";
