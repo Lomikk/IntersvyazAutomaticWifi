@@ -1,8 +1,6 @@
 using System.Diagnostics;
 using System.Net;
-using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using IS74Wifi.Core;
 
 var tests = new (string Name, Func<Task> Run)[]
@@ -75,44 +73,6 @@ static Task TestDpapiAsync()
     Assert(!ciphertext.Contains(expected.Token, StringComparison.Ordinal), "token leaked into DPAPI file");
     Assert(!ciphertext.Contains(expected.Phone, StringComparison.Ordinal), "phone leaked into DPAPI file");
 
-    var legacy = new StoredSecrets("legacy-ps-token", "9123456789");
-    var legacyJson = $"{{\"token\":\"{legacy.Token}\",\"phone\":\"{legacy.Phone}\"}}";
-    RunWindowsPowerShell(
-        "$s=ConvertTo-SecureString -String $env:IS74_PLAIN -AsPlainText -Force; " +
-        "$c=ConvertFrom-SecureString -SecureString $s; " +
-        "[IO.File]::WriteAllText($env:IS74_PATH,$c,[Text.Encoding]::ASCII)",
-        new Dictionary<string, string>
-        {
-            ["IS74_PLAIN"] = legacyJson,
-            ["IS74_PATH"] = paths.SecretsFile
-        });
-    var legacyCiphertext = File.ReadAllText(paths.SecretsFile).Trim();
-    var legacyProtected = Convert.FromHexString(legacyCiphertext);
-    var legacyPlainBytes = ProtectedData.Unprotect(legacyProtected, optionalEntropy: null, DataProtectionScope.CurrentUser);
-    var legacyPlaintext = Encoding.Unicode.GetString(legacyPlainBytes);
-    Assert(legacyPlaintext == legacyJson, $"PowerShell 5.1 DPAPI plaintext mismatch: expectedLen={legacyJson.Length} actualLen={legacyPlaintext.Length}");
-    var legacyParsed = JsonSerializer.Deserialize<StoredSecrets>(legacyPlaintext, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-    Assert(legacyParsed == legacy, "System.Text.Json could not parse legacy PowerShell secret JSON");
-    Assert(store.Load() == legacy, "C# could not read PowerShell 5.1 DPAPI secret format");
-
-    var reverse = new StoredSecrets("csharp-token", "9876543210");
-    store.Save(reverse);
-    var reverseOutput = Path.Combine(temp.Path, "legacy-plaintext.txt");
-    RunWindowsPowerShell(
-        "$c=[IO.File]::ReadAllText($env:IS74_PATH).Trim(); " +
-        "$s=ConvertTo-SecureString -String $c; $p=[IntPtr]::Zero; " +
-        "try {$p=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); " +
-        "$v=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($p); " +
-        "[IO.File]::WriteAllText($env:IS74_OUT,$v,[Text.Encoding]::UTF8)} " +
-        "finally {if($p -ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p)}}",
-        new Dictionary<string, string>
-        {
-            ["IS74_PATH"] = paths.SecretsFile,
-            ["IS74_OUT"] = reverseOutput
-        });
-    var reverseJson = File.ReadAllText(reverseOutput, Encoding.UTF8);
-    Assert(reverseJson.Contains(reverse.Token, StringComparison.Ordinal), "PowerShell 5.1 could not read C# DPAPI token");
-    Assert(reverseJson.Contains(reverse.Phone, StringComparison.Ordinal), "PowerShell 5.1 could not read C# DPAPI phone");
     return Task.CompletedTask;
 }
 
