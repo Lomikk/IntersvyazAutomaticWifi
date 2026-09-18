@@ -153,7 +153,7 @@ Exit gate: C# tests reproduce the existing PowerShell critical-path scenarios, i
 
 ### Phase 6 — agent and autostart
 
-Status: **implementation complete; Windows CI and field validation pending**. The executable now owns registration/connect/status/reset/purge/log commands, a long-running consoleless agent, the 24-hour expiry/guard policy, a named stop signal, and per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` autostart. The first C# registration remains an explicit one-time action and the first Wi-Fi `connect` establishes the trusted 24-hour reference.
+Status: **implementation complete; field validation pending**. Windows CI builds and runs the C# contracts, CLI smoke test, and clean-state consoleless agent smoke test. The executable now owns registration/connect/status/reset/purge/log commands, a long-running consoleless agent, the 24-hour expiry/guard policy, a named stop signal, and per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` autostart. The first C# registration remains an explicit one-time action and the first Wi-Fi `connect` establishes the trusted 24-hour reference.
 
 - Long-running consoleless `agent` mode.
 - Dynamic sleeping outside the expiry guard.
@@ -165,6 +165,8 @@ Status: **implementation complete; Windows CI and field validation pending**. Th
 Exit gate: Windows 10 and Windows 11 field tests confirm no terminal window remains open and autostart can be enabled/disabled/removed cleanly.
 
 ### Phase 7 — DNS resilience
+
+Status: **implementation complete; Windows CI and field validation pending**. A persisted hostname-to-IP cache and `SocketsHttpHandler.ConnectCallback` now allow API, portal, and Microsoft connectivity-probe TCP connections to use a cached physical address without replacing the request hostname. HTTPS therefore retains the original `api.is74.ru` Host/SNI and normal certificate-name validation. Cached addresses are attempted first; failed cached connections fall back to normal DNS and refresh the persisted cache.
 
 This is intentionally part of the C# rewrite rather than another PowerShell workaround.
 

@@ -49,7 +49,8 @@ public sealed class AgentService(
     IWifiEnvironment wifi,
     AppSettings settings,
     DiagnosticLogger logger,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    IAddressCacheWarmer? addressCacheWarmer = null)
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
 
@@ -76,7 +77,16 @@ public sealed class AgentService(
         var guardStart = expiry.AddSeconds(-guardSeconds);
         var guardEnd = expiry.AddSeconds(guardSeconds);
 
-        if (now < guardStart || runtime.UserActionRequired || !wifi.IsTargetWifiConnected())
+        if (now < guardStart)
+        {
+            if (addressCacheWarmer is not null)
+            {
+                await addressCacheWarmer.WarmKnownHostsAsync(TimeSpan.FromHours(1), cancellationToken).ConfigureAwait(false);
+            }
+            return;
+        }
+
+        if (runtime.UserActionRequired || !wifi.IsTargetWifiConnected())
         {
             return;
         }
