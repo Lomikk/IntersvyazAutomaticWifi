@@ -1,17 +1,11 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace IS74Wifi.Core;
 
 public sealed class JsonFileStore
 {
-    private static readonly JsonSerializerOptions Options = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        WriteIndented = true
-    };
-
-    public T? Read<T>(string path)
+    public T? Read<T>(string path, JsonTypeInfo<T> jsonTypeInfo)
     {
         if (!File.Exists(path))
         {
@@ -20,7 +14,7 @@ public sealed class JsonFileStore
 
         try
         {
-            return JsonSerializer.Deserialize<T>(File.ReadAllText(path), Options);
+            return JsonSerializer.Deserialize(File.ReadAllText(path), jsonTypeInfo);
         }
         catch (JsonException)
         {
@@ -32,7 +26,7 @@ public sealed class JsonFileStore
         }
     }
 
-    public void Write<T>(string path, T value)
+    public void Write<T>(string path, T value, JsonTypeInfo<T> jsonTypeInfo)
     {
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory))
@@ -43,7 +37,7 @@ public sealed class JsonFileStore
         var temporaryPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {
-            var json = JsonSerializer.Serialize(value, Options);
+            var json = JsonSerializer.Serialize(value, jsonTypeInfo);
             File.WriteAllText(temporaryPath, json);
             File.Move(temporaryPath, path, overwrite: true);
         }

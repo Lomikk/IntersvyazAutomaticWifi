@@ -131,13 +131,10 @@ internal static class Program
             new DeviceMetadataRegistration(deviceId, phone, osVersion, deviceModel)).ConfigureAwait(false);
         if (metadata.IsSuccess)
         {
-            app.Json.Write(app.Paths.DeviceMetadataFile, new
-            {
-                deviceId,
-                deviceModel,
-                osVersion,
-                registeredAtUtc = DateTimeOffset.UtcNow
-            });
+            app.Json.Write(
+                app.Paths.DeviceMetadataFile,
+                new DeviceMetadataSnapshot(deviceId, deviceModel, osVersion, DateTimeOffset.UtcNow),
+                AppJsonContext.Default.DeviceMetadataSnapshot);
         }
         else
         {

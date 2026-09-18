@@ -6,15 +6,10 @@ namespace IS74Wifi.Core;
 
 public sealed class DpapiSecretStore(AppPaths paths)
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
-
     public void Save(StoredSecrets secrets)
     {
         paths.EnsureDirectories();
-        var plaintext = JsonSerializer.Serialize(secrets, JsonOptions);
+        var plaintext = JsonSerializer.Serialize(secrets, PersistenceJsonContext.Default.StoredSecrets);
         var plaintextBytes = Encoding.Unicode.GetBytes(plaintext);
         try
         {
@@ -50,7 +45,7 @@ public sealed class DpapiSecretStore(AppPaths paths)
         {
             plaintextBytes = ProtectedData.Unprotect(protectedBytes, optionalEntropy: null, DataProtectionScope.CurrentUser);
             var plaintext = Encoding.Unicode.GetString(plaintextBytes);
-            return JsonSerializer.Deserialize<StoredSecrets>(plaintext, JsonOptions);
+            return JsonSerializer.Deserialize(plaintext, PersistenceJsonContext.Default.StoredSecrets);
         }
         catch (CryptographicException)
         {

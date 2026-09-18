@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace IS74Wifi.Core;
 
 public sealed record ConfirmationRequested();
@@ -32,3 +34,17 @@ public sealed record PushMessagePage(
 public sealed record PushBaseline(long Id);
 
 public sealed record WifiCodeCandidate(string Code, long MessageId);
+
+internal sealed record ConfirmationRequestPayload(
+    string Phone,
+    string DeviceId,
+    int AuthType);
+
+internal sealed record DeviceMetadataRequestPayload(
+    [property: JsonPropertyName("TYPE")] int Type,
+    [property: JsonPropertyName("UNIQUE_DEVICE_ID")] string UniqueDeviceId,
+    [property: JsonPropertyName("AUTHORIZE_PHONE")] string AuthorizePhone,
+    [property: JsonPropertyName("VERS_NAME")] string VersionName,
+    [property: JsonPropertyName("ASSEMBLY_CODE")] int AssemblyCode,
+    [property: JsonPropertyName("OS_VERS")] string OsVersion,
+    [property: JsonPropertyName("DEVICE_MODEL")] string DeviceModel);

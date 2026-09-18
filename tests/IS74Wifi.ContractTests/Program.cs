@@ -208,6 +208,10 @@ static async Task TestIs74ApiAsync()
     Assert(seen.Any(x => x.Path == "/mobile/auth/check-confirm" && x.Body.Contains("authId=", StringComparison.Ordinal)), "check-confirm empty authId contract changed");
     Assert(seen.Any(x => x.Path == "/mobile/auth/get-token" && x.Body.Contains("uniqueDeviceId=device-1", StringComparison.Ordinal)), "get-token uniqueDeviceId contract changed");
     Assert(seen.Any(x => x.Path == "/mobile/pushtoken/add-with-device-id" && x.Authorization == "Bearer bearer-xyz"), "metadata Bearer header missing");
+    Assert(seen.Any(x => x.Path == "/mobile/pushtoken/add-with-device-id" &&
+        x.Body.Contains("\"AUTHORIZE_PHONE\":\"9123456789\"", StringComparison.Ordinal) &&
+        x.Body.Contains("\"ASSEMBLY_CODE\":2026061111", StringComparison.Ordinal)),
+        "device metadata JSON contract changed");
     Assert(seen.Any(x => x.Path.StartsWith("/mobile/pushmessages?", StringComparison.Ordinal) && x.NoCache), "pushmessages no-cache header missing");
 
     var rootArrayStatus = PushMessageParser.ParsePage(
