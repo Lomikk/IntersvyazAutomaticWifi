@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace IS74Wifi.App;
 
-internal static class ConsoleSession
+internal static partial class ConsoleSession
 {
     private const uint AttachParentProcess = 0xFFFFFFFF;
 
@@ -13,7 +13,7 @@ internal static class ConsoleSession
             return;
         }
 
-        if (!AttachConsole(AttachParentProcess))
+        if (AttachConsole(AttachParentProcess) == 0)
         {
             _ = AllocConsole();
         }
@@ -25,14 +25,12 @@ internal static class ConsoleSession
         Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool AttachConsole(uint processId);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial int AttachConsole(uint processId);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool AllocConsole();
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial int AllocConsole();
 
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr GetConsoleWindow();
+    [LibraryImport("kernel32.dll")]
+    private static partial IntPtr GetConsoleWindow();
 }

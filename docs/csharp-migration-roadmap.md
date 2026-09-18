@@ -26,6 +26,7 @@ Primary goals:
 - Storage remains under `%LOCALAPPDATA%\IS74Wifi`.
 - Secrets remain protected for the current Windows user with DPAPI semantics.
 - No heavyweight GUI framework, database, dependency-injection container, or Windows Service in the initial migration.
+- Win32 interop policy: prefer source-generated `LibraryImport` on .NET 10. `AllowUnsafeBlocks=true` is enabled for generated stubs; use legacy `DllImport` only when a specific API cannot be expressed cleanly with `LibraryImport`.
 
 .NET 10 is chosen because the migration starts in 2026 and .NET 8 is near end of support. Packaging policy (framework-dependent vs self-contained vs NativeAOT) is intentionally deferred until the runtime is functionally complete; size and startup measurements will decide it.
 
@@ -87,7 +88,7 @@ Exit gate: the roadmap and C# build skeleton are present in `main`.
 
 ### Phase 1 — C# skeleton and CI
 
-Status: **started**.
+Status: **complete**.
 
 - Add `IS74Wifi.Core` for protocol/state-machine logic.
 - Add `IS74Wifi.App` as the one Windows executable.
@@ -98,6 +99,8 @@ Status: **started**.
 Exit gate: C# solution builds on `windows-latest` and the executable can run `version`/`help` without PowerShell.
 
 ### Phase 2 — state, secrets, logging, and platform primitives
+
+Status: **in progress**. The typed settings/runtime stores, stable device ID, CurrentUser DPAPI secret store, redacted rotating logger, SSID policy, named mutex primitive, and typed asynchronous HTTP transport are now implemented with Windows contract coverage. Native WLAN enumeration and the exact Internet probe remain to be ported.
 
 - Typed configuration/state model.
 - Stable device ID.
