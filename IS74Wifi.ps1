@@ -48,7 +48,7 @@ function Invoke-CommandMode {
         'connect'  { $null = Connect-IS74Wifi -Force; return }
         'status'   { Show-Status; return }
         'install'  { Enable-IS74Autostart -AgentPath (Join-Path $PSScriptRoot 'agent.ps1'); return }
-        'uninstall'{ Disable-IS74Autostart; return }
+        'uninstall'{ Remove-IS74AllData; Write-Host 'Задача автозапуска и данные приложения удалены. Теперь можно удалить папку с программой.' -ForegroundColor Green; return }
         'reset'    {
             Disable-IS74Autostart
             Reset-IS74Registration
@@ -84,7 +84,7 @@ while ($true) {
     Write-Host '4. Отключить автозапуск'
     Write-Host '5. Показать статус'
     Write-Host '6. Сбросить регистрацию'
-    Write-Host '7. Удалить все данные приложения'
+    Write-Host '7. Удалить программу (автозапуск и данные)'
     Write-Host '8. Открыть диагностические логи'
     Write-Host '0. Выход'
     Write-Host ''
@@ -105,9 +105,9 @@ while ($true) {
                 }
             }
             '7' {
-                if ((Read-Host 'Удалить ВСЕ данные приложения? Введите PURGE') -eq 'PURGE') {
+                if ((Read-Host 'Удалить задачу автозапуска и ВСЕ данные приложения? Введите PURGE') -eq 'PURGE') {
                     Remove-IS74AllData
-                    Write-Host 'Данные удалены.' -ForegroundColor Green
+                    Write-Host 'Программа очищена. Теперь можно удалить эту папку с файлами.' -ForegroundColor Green
                 }
             }
             '8' { Invoke-CommandMode -Name 'logs' }

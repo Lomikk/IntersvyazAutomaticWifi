@@ -16,16 +16,20 @@ public sealed class IS74ContractHandler : HttpMessageHandler
 {
     private readonly string _body;
     private readonly bool _withDate;
+    private readonly HttpStatusCode _statusCode;
 
-    public IS74ContractHandler(string body, bool withDate)
+    public IS74ContractHandler(string body, bool withDate) : this(body, withDate, HttpStatusCode.OK) { }
+
+    public IS74ContractHandler(string body, bool withDate, HttpStatusCode statusCode)
     {
         _body = body;
         _withDate = withDate;
+        _statusCode = statusCode;
     }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        var response = new HttpResponseMessage(HttpStatusCode.OK);
+        var response = new HttpResponseMessage(_statusCode);
         response.Content = new StringContent(_body);
         if (_withDate)
             response.Headers.Date = new DateTimeOffset(2026, 9, 17, 21, 51, 52, TimeSpan.Zero);
@@ -101,6 +105,10 @@ public sealed class IS74PortalDelayHandler : HttpMessageHandler
 {
     private int _stepOneCalls;
     private int _stepTwoCalls;
+    private readonly int _stepOneDelayMs;
+
+    public IS74PortalDelayHandler() : this(4500) { }
+    public IS74PortalDelayHandler(int stepOneDelayMs) { _stepOneDelayMs = stepOneDelayMs; }
 
     public int StepOneCalls { get { return _stepOneCalls; } }
     public int StepTwoCalls { get { return _stepTwoCalls; } }
@@ -111,7 +119,7 @@ public sealed class IS74PortalDelayHandler : HttpMessageHandler
         if (path.EndsWith("/stepOne", StringComparison.OrdinalIgnoreCase))
         {
             ++_stepOneCalls;
-            await Task.Delay(4500, cancellationToken).ConfigureAwait(false);
+            if (_stepOneDelayMs > 0) await Task.Delay(_stepOneDelayMs, cancellationToken).ConfigureAwait(false);
             var delayed = new HttpResponseMessage(HttpStatusCode.Found);
             delayed.Headers.Location = new Uri("stepTwo?phone=9000000000&isMp=true", UriKind.Relative);
             return delayed;
@@ -229,6 +237,21 @@ $module = Import-Module $modulePath -Force -PassThru
         $emptyHandler.Dispose()
     }
 
+    $unauthorizedHandler = [IS74ContractHandler]::new('[]', $true, [System.Net.HttpStatusCode]::Unauthorized)
+    $unauthorizedClient = [System.Net.Http.HttpClient]::new($unauthorizedHandler)
+    try {
+        $bearerRejected = $false
+        try {
+            $null = Get-IS74BaselineId -Client $unauthorizedClient -Token 'test-token' -DeviceId 'test-device'
+        } catch {
+            $bearerRejected = [bool]$_.Exception.Data['IS74UserActionRequired'] -and ([string]$_.Exception.Data['IS74Result'] -eq 'bearer-invalid')
+        }
+        Assert-True $bearerRejected 'HTTP 401 must stop automatic retries as bearer-invalid'
+    } finally {
+        $unauthorizedClient.Dispose()
+        $unauthorizedHandler.Dispose()
+    }
+
     $unknownHandler = [IS74ContractHandler]::new('{"meta":{"count":1}}', $true)
     $unknownClient = [System.Net.Http.HttpClient]::new($unknownHandler)
     $unknownFailedClosed = $false
@@ -265,6 +288,15 @@ $module = Import-Module $modulePath -Force -PassThru
         Assert-Equal '1234' (Get-IS74WifiCodeFromMessage -Message $msg) 'supported push shape code'
     }
 
+    # The product is intentionally scoped to campus Wi-Fi only. Prefix matching is
+    # explicit and the native WLAN query must be safe even on a runner with no Wi-Fi.
+    Assert-True (Test-IS74TargetWifiSsid -Ssid 'Campus Wi-Fi') 'base campus SSID accepted'
+    Assert-True (Test-IS74TargetWifiSsid -Ssid 'Campus Wi-Fi 5G') 'campus SSID prefix accepted'
+    Assert-True (-not (Test-IS74TargetWifiSsid -Ssid 'Home Wi-Fi')) 'other SSID rejected'
+    Assert-True (-not (Test-IS74TargetWifiSsid -Ssid $null)) 'missing SSID rejected'
+    $nativeSsids = @(Get-IS74ConnectedWifiSsids)
+    Assert-True ($null -ne $nativeSsids) 'native WLAN query must not throw'
+
     # Missing properties, nulls and unrelated objects must not throw under StrictMode.
     Assert-True ($null -eq (Get-IS74PropertyValue -Object ([pscustomobject]@{}) -Name 'missing')) 'missing property accessor'
     Assert-True ($null -eq (Get-IS74TopMessage -Json ([pscustomobject]@{ meta = [pscustomobject]@{ id = 999 } }))) 'metadata id is not a push message'
@@ -298,6 +330,15 @@ $module = Import-Module $modulePath -Force -PassThru
         $state = Read-IS74RuntimeState
         Assert-Equal 0 $state.preStepFailureCount 'pre-step failure reset'
         Assert-True ($null -eq $state.nextAutomaticRetryUtc) 'pre-step retry timestamp reset'
+
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
+            Assert-Equal $attempt (Register-IS74AutomaticStepOneSend -Reason 'retry') "stepOne budget slot $attempt"
+        }
+        $limitStopped = $false
+        try { $null = Register-IS74AutomaticStepOneSend -Reason 'retry' } catch { $limitStopped = [bool]$_.Exception.Data['IS74UserActionRequired'] }
+        Assert-True $limitStopped 'fifth automatic stepOne must be blocked'
+        $state = Read-IS74RuntimeState
+        Assert-Equal 4 $state.automaticStepOneAttempts 'automatic stepOne budget stays capped at four'
     } finally {
         $script:RuntimeFile = $originalRuntimeFile
         Remove-Item -Path $testRuntimeFile -Force -ErrorAction SilentlyContinue
@@ -334,7 +375,16 @@ $module = Import-Module $modulePath -Force -PassThru
     }
     function script:Get-IS74Secrets { return [pscustomobject]@{ token = 'test-token'; phone = '9000000000' } }
     function script:Get-IS74DeviceId { return 'test-device' }
-    function script:Test-IS74InternetAccess { param([switch]$DiagnosticOnFailure) return $true }
+    function script:Test-IS74TargetWifiConnected { return $true }
+    function script:Test-IS74InternetAccess { param([switch]$DiagnosticOnFailure, [int]$TimeoutMilliseconds = 4000) return $true }
+
+    # Wrong Wi-Fi must stop before any HTTP client is created.
+    function script:Test-IS74TargetWifiConnected { return $false }
+    $script:contractPairIndex = 0
+    $wrongWifi = Connect-IS74Wifi -Force -Quiet -AttemptReason manual
+    Assert-Equal 'WrongWifi' $wrongWifi.Status 'non-campus Wi-Fi is rejected before network work'
+    Assert-Equal 0 $script:contractPairIndex 'wrong Wi-Fi does not create API/portal clients'
+    function script:Test-IS74TargetWifiConnected { return $true }
 
     $savedPaths = @{
         StateDir = $script:StateDir
@@ -405,6 +455,55 @@ $module = Import-Module $modulePath -Force -PassThru
         $script:LogFile = $savedPaths.LogFile
         Remove-Item -Path $contractStateDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+
+    # If a complete attempt produces no fresh code, it is retryable rather than
+    # permanently terminal. This restores the agreed four-stepOne automatic model.
+    $savedPollSchedule = $script:PollScheduleMs
+    $script:PollScheduleMs = @(10, 20, 30)
+    $script:contractApiHandler = [IS74SequenceHandler]::new($contractBaselineBody, $contractBaselineBody)
+    $script:contractPortalHandler = [IS74PortalDelayHandler]::new(0)
+    $script:contractPairIndex = 0
+    $contractStateDir = Join-Path $env:TEMP ('is74-contract-retry-' + [Guid]::NewGuid().ToString('N'))
+    $script:StateDir = $contractStateDir
+    $script:RuntimeFile = Join-Path $contractStateDir 'runtime-state.json'
+    $script:SettingsFile = Join-Path $contractStateDir 'settings.json'
+    $script:LogDir = Join-Path $contractStateDir 'logs'
+    $script:LogFile = Join-Path $script:LogDir 'diagnostic.log'
+    try {
+        $retryable = $false
+        try {
+            $null = Connect-IS74Wifi -Force -Quiet -AttemptReason automatic
+        } catch {
+            $retryable = [bool]$_.Exception.Data['IS74RetryableStepOne']
+        }
+        Assert-True $retryable 'no fresh code after full attempt must be retryable'
+        $retryState = Read-IS74RuntimeState
+        Assert-Equal 1 $retryState.automaticStepOneAttempts 'retryable attempt consumes exactly one stepOne budget slot'
+        Assert-Equal 1 $script:contractPortalHandler.StepOneCalls 'retryable attempt sends one stepOne'
+        Assert-Equal 0 $script:contractPortalHandler.StepTwoCalls 'retryable attempt without code never sends stepTwo'
+    } finally {
+        $script:PollScheduleMs = $savedPollSchedule
+        $script:StateDir = $savedPaths.StateDir
+        $script:RuntimeFile = $savedPaths.RuntimeFile
+        $script:SettingsFile = $savedPaths.SettingsFile
+        $script:LogDir = $savedPaths.LogDir
+        $script:LogFile = $savedPaths.LogFile
+        Remove-Item -Path $contractStateDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # An ambiguous stepTwo response is never resent. Internet recovery is sampled
+    # over the configured window; a delayed side effect is accepted as success.
+    $script:ambiguousProbeCount = 0
+    function script:Test-IS74InternetAccess {
+        param([switch]$DiagnosticOnFailure, [int]$TimeoutMilliseconds = 4000)
+        $script:ambiguousProbeCount++
+        return ($script:ambiguousProbeCount -ge 4)
+    }
+    $recoveryClock = [Diagnostics.Stopwatch]::StartNew()
+    Assert-True (Test-IS74InternetAfterAmbiguousStepTwo) 'ambiguous stepTwo recovery eventually confirms Internet'
+    $recoveryClock.Stop()
+    Assert-Equal 4 $script:ambiguousProbeCount 'ambiguous stepTwo recovery uses scheduled probes'
+    Assert-True ($recoveryClock.Elapsed.TotalMilliseconds -ge 900) 'recovery must wait for delayed network activation'
 
     # Portal redirects are classified narrowly: only the observed landing URL means already-authorized.
     Assert-True (Test-IS74StepTwoLocation -Location 'stepTwo?phone=123&isMp=true') 'relative stepTwo'
