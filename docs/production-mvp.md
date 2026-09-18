@@ -50,6 +50,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\IS74Wifi.ps1 register
 powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File agent.ps1
 ```
 
+После импорта модуля `agent.ps1` вызывает Win32 `FreeConsole()` и отсоединяет долгоживущий процесс от console/pseudoconsole. Это сохраняет сам `powershell.exe` под управлением Task Scheduler, но не оставляет пустую вкладку Windows Terminal на Windows 11.
+
 Windows Service пока не используется. Это сохраняет текущий пользовательский DPAPI `CurrentUser`-контекст без смены модели хранения секретов.
 
 `uninstall` останавливает и удаляет задачу `IS74WifiAgent` и удаляет `%LOCALAPPDATA%\IS74Wifi`; после этого папку с распакованными файлами программы можно удалить вручную. Пункт «Отключить автозапуск» удаляет только задачу и оставляет регистрацию. `reset` удаляет регистрацию и deviceId. `purge` сохранён как CLI-алиас полной очистки.

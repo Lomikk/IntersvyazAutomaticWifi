@@ -3,6 +3,13 @@
 $ErrorActionPreference = 'Stop'
 $modulePath = Join-Path $PSScriptRoot 'src\IS74Wifi.psm1'
 Import-Module $modulePath -Force
+
+# Windows 11 can delegate console applications to Windows Terminal. In that
+# configuration -WindowStyle Hidden may still leave an empty Terminal window
+# attached to this long-running agent. Detach from the console after the native
+# helper type has loaded; the scheduled PowerShell process itself keeps running.
+try { [IS74WifiNative]::DetachConsole() | Out-Null } catch { }
+
 Initialize-IS74Storage
 
 $createdNew = $false

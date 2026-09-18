@@ -48,6 +48,9 @@ assert 'if ($now -lt $guardStart) {' in module and 'Update-IS74InternetProbeAddr
 assert 'At or after the expected 24-hour boundary, the timer itself is enough.' in module
 assert 'Get-IS74AgentSleepMilliseconds' in module
 assert 'Start-Sleep -Milliseconds $delayMs' in agent
+assert '[IS74WifiNative]::DetachConsole() | Out-Null' in agent, 'background agent must detach from Windows Terminal/console'
+assert 'private static extern bool FreeConsole();' in module, 'native FreeConsole binding missing'
+assert 'public static bool DetachConsole()' in module, 'console detach wrapper missing'
 assert "automaticStepOneAttempts" in module
 assert "userActionRequired" in module
 assert "Cache-Control', 'no-cache, no-store'" in module
