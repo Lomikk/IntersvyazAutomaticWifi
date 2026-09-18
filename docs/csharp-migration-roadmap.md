@@ -100,7 +100,7 @@ Exit gate: C# solution builds on `windows-latest` and the executable can run `ve
 
 ### Phase 2 — state, secrets, logging, and platform primitives
 
-Status: **in progress**. The typed settings/runtime stores, stable device ID, CurrentUser DPAPI secret store, redacted rotating logger, SSID policy, named mutex primitive, and typed asynchronous HTTP transport are now implemented with Windows contract coverage. Native WLAN enumeration and the exact Internet probe remain to be ported.
+Status: **implementation complete; Windows CI/field validation pending**. Typed settings/runtime stores, stable device ID, PowerShell-compatible CurrentUser DPAPI secrets, redacted rotating diagnostics, native WLAN enumeration, exact Microsoft Connect Test parsing, named mutexes, and typed asynchronous HTTP transport are implemented. DNS cached-IP resilience remains intentionally deferred to Phase 7.
 
 - Typed configuration/state model.
 - Stable device ID.

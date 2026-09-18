@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Net;
+using System.Text;
 using IS74Wifi.Core;
 
 var tests = new (string Name, Func<Task> Run)[]
@@ -7,8 +9,10 @@ var tests = new (string Name, Func<Task> Run)[]
     ("dpapi-current-user", TestDpapiAsync),
     ("log-redaction-rotation", TestLoggingAsync),
     ("ssid-policy", TestSsidPolicyAsync),
+    ("windows-wlan", TestWindowsWlanAsync),
     ("named-mutex", TestMutexAsync),
-    ("http-transport", TestHttpTransportAsync)
+    ("http-transport", TestHttpTransportAsync),
+    ("internet-probe", TestInternetProbeAsync)
 };
 
 foreach (var test in tests)
@@ -58,15 +62,48 @@ static Task TestStorageAsync()
 static Task TestDpapiAsync()
 {
     using var temp = TempDirectory.Create();
-    var store = new DpapiSecretStore(new AppPaths(temp.Path));
+    var paths = new AppPaths(temp.Path);
+    var store = new DpapiSecretStore(paths);
     var expected = new StoredSecrets("token-value-never-log", "9991234567");
     store.Save(expected);
     var actual = store.Load();
 
     Assert(actual == expected, "DPAPI CurrentUser round-trip failed");
-    var ciphertext = File.ReadAllText(Path.Combine(temp.Path, "secrets.dpapi"));
+    var ciphertext = File.ReadAllText(paths.SecretsFile);
     Assert(!ciphertext.Contains(expected.Token, StringComparison.Ordinal), "token leaked into DPAPI file");
     Assert(!ciphertext.Contains(expected.Phone, StringComparison.Ordinal), "phone leaked into DPAPI file");
+
+    var legacy = new StoredSecrets("legacy-ps-token", "9123456789");
+    var legacyJson = $"{{\"token\":\"{legacy.Token}\",\"phone\":\"{legacy.Phone}\"}}";
+    RunWindowsPowerShell(
+        "$s=ConvertTo-SecureString -String $env:IS74_PLAIN -AsPlainText -Force; " +
+        "$c=ConvertFrom-SecureString -SecureString $s; " +
+        "[IO.File]::WriteAllText($env:IS74_PATH,$c,[Text.Encoding]::ASCII)",
+        new Dictionary<string, string>
+        {
+            ["IS74_PLAIN"] = legacyJson,
+            ["IS74_PATH"] = paths.SecretsFile
+        });
+    Assert(store.Load() == legacy, "C# could not read PowerShell 5.1 DPAPI secret format");
+
+    var reverse = new StoredSecrets("csharp-token", "9876543210");
+    store.Save(reverse);
+    var reverseOutput = Path.Combine(temp.Path, "legacy-plaintext.txt");
+    RunWindowsPowerShell(
+        "$c=[IO.File]::ReadAllText($env:IS74_PATH).Trim(); " +
+        "$s=ConvertTo-SecureString -String $c; $p=[IntPtr]::Zero; " +
+        "try {$p=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); " +
+        "$v=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($p); " +
+        "[IO.File]::WriteAllText($env:IS74_OUT,$v,[Text.Encoding]::UTF8)} " +
+        "finally {if($p -ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p)}}",
+        new Dictionary<string, string>
+        {
+            ["IS74_PATH"] = paths.SecretsFile,
+            ["IS74_OUT"] = reverseOutput
+        });
+    var reverseJson = File.ReadAllText(reverseOutput, Encoding.UTF8);
+    Assert(reverseJson.Contains(reverse.Token, StringComparison.Ordinal), "PowerShell 5.1 could not read C# DPAPI token");
+    Assert(reverseJson.Contains(reverse.Phone, StringComparison.Ordinal), "PowerShell 5.1 could not read C# DPAPI phone");
     return Task.CompletedTask;
 }
 
@@ -97,6 +134,13 @@ static Task TestSsidPolicyAsync()
     Assert(SsidPolicy.IsTarget("campus wi-fi 5G"), "case-insensitive campus SSID rejected");
     Assert(!SsidPolicy.IsTarget("Other Wi-Fi"), "foreign SSID accepted");
     Assert(!SsidPolicy.IsTarget(null), "null SSID accepted");
+    return Task.CompletedTask;
+}
+
+static Task TestWindowsWlanAsync()
+{
+    var ssids = WindowsWifiService.GetConnectedSsids();
+    Assert(ssids.All(ssid => !string.IsNullOrWhiteSpace(ssid)), "WLAN API returned an empty SSID entry");
     return Task.CompletedTask;
 }
 
@@ -145,6 +189,61 @@ static async Task TestHttpTransportAsync()
     using var dnsRequest = new HttpRequestMessage(HttpMethod.Get, "https://example.test/");
     var dns = await dnsTransport.SendAsync(dnsRequest, TimeSpan.FromSeconds(1));
     Assert(dns.FailureKind == TransportFailureKind.DnsUnavailable, "DNS failure was not mapped to DnsUnavailable");
+}
+
+static async Task TestInternetProbeAsync()
+{
+    using var onlineClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+    {
+        Content = new StringContent("Microsoft Connect Test\r\n")
+    })));
+    var online = await new InternetConnectivityProbe(new HttpTransport(onlineClient))
+        .ProbeAsync(TimeSpan.FromSeconds(1));
+    Assert(online.Online, "exact Microsoft Connect Test response was rejected");
+    Assert(online.HttpResponseReceived, "HTTP response was not recorded");
+
+    using var captiveClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+    {
+        Content = new StringContent("<html>captive portal</html>")
+    })));
+    var captive = await new InternetConnectivityProbe(new HttpTransport(captiveClient))
+        .ProbeAsync(TimeSpan.FromSeconds(1));
+    Assert(!captive.Online, "captive HTML was accepted as Internet access");
+    Assert(captive.HttpResponseReceived, "captive HTTP response should remain observable");
+
+    using var dnsClient = new HttpClient(new DelegateHandler((_, _) =>
+        throw new HttpRequestException(HttpRequestError.NameResolutionError, "host unknown", null, null)));
+    var dns = await new InternetConnectivityProbe(new HttpTransport(dnsClient))
+        .ProbeAsync(TimeSpan.FromSeconds(1));
+    Assert(!dns.Online && !dns.HttpResponseReceived, "DNS failure was treated as captive HTTP evidence");
+    Assert(dns.FailureKind == TransportFailureKind.DnsUnavailable, "probe lost DNS failure classification");
+}
+
+static void RunWindowsPowerShell(string command, IReadOnlyDictionary<string, string> environment)
+{
+    var encodedCommand = Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
+    var startInfo = new ProcessStartInfo
+    {
+        FileName = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "WindowsPowerShell", "v1.0", "powershell.exe"),
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardError = true
+    };
+    startInfo.ArgumentList.Add("-NoProfile");
+    startInfo.ArgumentList.Add("-NonInteractive");
+    startInfo.ArgumentList.Add("-EncodedCommand");
+    startInfo.ArgumentList.Add(encodedCommand);
+    foreach (var pair in environment)
+    {
+        startInfo.Environment[pair.Key] = pair.Value;
+    }
+
+    using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start Windows PowerShell");
+    var error = process.StandardError.ReadToEnd();
+    process.WaitForExit();
+    Assert(process.ExitCode == 0, $"Windows PowerShell DPAPI compatibility probe failed: {error}");
 }
 
 static void Assert(bool condition, string message)
