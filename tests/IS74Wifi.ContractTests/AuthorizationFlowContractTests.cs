@@ -69,7 +69,7 @@ internal static class AuthorizationFlowContractTests
         Assert(portal.StepTwoCalls == 1, "stepTwo was not sent exactly once");
         Assert(portal.StepTwoCalledBeforeStepOneCompleted, "stepTwo waited for the stalled stepOne response");
         Assert(outcome.Timing?.CodeObservedMilliseconds is < 150, "fresh code observation was unexpectedly delayed by stalled stepOne");
-        Assert(outcome.Timing?.Polls.Count(observation => observation.Kind == PushPollKind.Primary) >= 2,
+        Assert(api.PrimaryCalls >= 2,
             "later primary poll was not launched while the first GET was stalled");
         var timingLog = File.ReadAllText(new AppPaths(temp.Path).DiagnosticLogFile);
         Assert(timingLog.Contains("critical.timing", StringComparison.Ordinal),
@@ -505,6 +505,7 @@ internal static class AuthorizationFlowContractTests
         public int BaselineCalls { get; private set; }
         public int PushCalls { get; private set; }
         public int PageSize5Calls { get; private set; }
+        public int PrimaryCalls => Volatile.Read(ref primaryCalls);
 
         public Task<Is74ApiResult<PushBaseline>> GetBaselineAsync(
             string bearerToken,
