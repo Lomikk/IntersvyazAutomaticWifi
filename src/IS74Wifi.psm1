@@ -85,6 +85,15 @@ public static class IS74WifiNative
     [DllImport("wlanapi.dll")]
     private static extern void WlanFreeMemory(IntPtr memory);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool FreeConsole();
+
+    public static bool DetachConsole()
+    {
+        return FreeConsole();
+    }
+
     public static string[] GetConnectedSsids()
     {
         var result = new List<string>();

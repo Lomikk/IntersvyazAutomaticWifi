@@ -1,0 +1,133 @@
+name: Release v0.1.0-alpha.6
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/release-v0.1.0-alpha.6.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v0.1.0-alpha.6
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse production scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $files = @(
+            '.\IS74Wifi.ps1',
+            '.\agent.ps1',
+            '.\src\IS74Wifi.psm1'
+          )
+
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            )
+
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "PowerShell parser errors in $file"
+            }
+          }
+
+      - name: Import production module with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Import-Module .\src\IS74Wifi.psm1 -Force
+          Get-Command -Module IS74Wifi | Out-String | Write-Host
+
+      - name: Critical-path contract checks with Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\critical_path_contract.ps1
+
+      - name: Critical-path contract checks with PowerShell 7
+        shell: pwsh
+        run: .\tests\critical_path_contract.ps1
+
+      - name: Static checks
+        shell: powershell
+        run: py -3 .\tests\static_checks.py
+
+      - name: Package runtime files only
+        shell: powershell
+        run: |
+          $version = 'v0.1.0-alpha.6'
+          $runtime = Join-Path $PWD 'dist\runtime'
+          $src = Join-Path $runtime 'src'
+          New-Item -ItemType Directory -Force -Path $src | Out-Null
+
+          Copy-Item .\IS74Wifi.ps1 $runtime
+          Copy-Item .\agent.ps1 $runtime
+          Copy-Item .\src\IS74Wifi.psm1 $src
+
+          $zipPath = Join-Path $PWD "dist\IS74Wifi-$version.zip"
+          Compress-Archive -Path "$runtime\*" -DestinationPath $zipPath -Force
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            $actual = @($zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' } | Sort-Object)
+          }
+          finally {
+            $zip.Dispose()
+          }
+
+          $expected = @(
+            'IS74Wifi.ps1',
+            'agent.ps1',
+            'src/IS74Wifi.psm1'
+          ) | Sort-Object
+
+          $diff = Compare-Object -ReferenceObject $expected -DifferenceObject $actual
+          if ($diff) {
+            $diff | Format-Table | Out-String | Write-Error
+            throw 'Release archive contains unexpected or missing files.'
+          }
+
+          Get-FileHash $zipPath -Algorithm SHA256 | Format-List | Out-String | Write-Host
+
+      - name: Create GitHub prerelease
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'v0.1.0-alpha.6'
+          $repo = '${{ github.repository }}'
+          $asset = ".\dist\IS74Wifi-$tag.zip"
+
+          $notes = @'
+          Audited alpha prerelease of the authorization critical path.
+
+          Runtime archive contents only:
+          - IS74Wifi.ps1
+          - agent.ps1
+          - src/IS74Wifi.psm1
+
+          Includes all alpha.5 reliability fixes plus a Windows 11 background-console fix.
+
+          The long-running Task Scheduler agent now detaches from its console/pseudoconsole with Win32 FreeConsole after startup. This keeps the same PowerShell process and Task Scheduler lifecycle while preventing Windows Terminal from keeping an empty window open.
+
+          Early stepTwo after a fresh mailbox code remains intentional; it does not wait for the browser redirect from stepOne.
+
+          The release workflow executes the critical-path contract under both Windows PowerShell 5.1 and PowerShell 7 before packaging.
+          '@
+
+          gh release create $tag $asset `
+            --repo $repo `
+            --target '${{ github.sha }}' `
+            --title 'IS74Wifi v0.1.0-alpha.6' `
+            --notes $notes `
+            --prerelease
