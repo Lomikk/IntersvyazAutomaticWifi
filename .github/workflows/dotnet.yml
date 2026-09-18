@@ -46,11 +46,11 @@ jobs:
             throw "version smoke test failed with exit code $($process.ExitCode)"
           }
 
-      - name: Verify agent mode is consoleless and non-production
+      - name: Verify real agent mode is consoleless on clean state
         shell: pwsh
         run: |
           $exe = Resolve-Path '.\src\IS74Wifi.App\bin\Release\net10.0-windows10.0.19041.0\IS74Wifi.exe'
           $process = Start-Process -FilePath $exe -ArgumentList 'agent' -Wait -PassThru
-          if ($process.ExitCode -ne 3) {
-            throw "migration agent placeholder returned unexpected exit code $($process.ExitCode)"
+          if ($process.ExitCode -ne 0) {
+            throw "clean-state agent smoke test failed with exit code $($process.ExitCode)"
           }
