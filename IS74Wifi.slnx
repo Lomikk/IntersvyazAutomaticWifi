@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/IS74Wifi.Core/IS74Wifi.Core.csproj" />
+  <Project Path="src/IS74Wifi.App/IS74Wifi.App.csproj" />
+</Solution>

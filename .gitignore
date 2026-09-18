@@ -15,3 +15,7 @@ is-auth-curl/
 .vscode/
 .idea/
 *.log
+
+# .NET build output
+**/bin/
+**/obj/
