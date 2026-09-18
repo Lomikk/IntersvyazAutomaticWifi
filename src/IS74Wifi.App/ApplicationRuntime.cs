@@ -22,6 +22,7 @@ internal sealed class ApplicationRuntime : IDisposable
         InternetConnectivityProbe internet,
         AuthorizationFlow authorization,
         AgentService agent,
+        CachedDnsConnector dns,
         WindowsAutostartService autostart,
         LocalStateMaintenance maintenance,
         HttpClient apiHttp,
@@ -41,6 +42,7 @@ internal sealed class ApplicationRuntime : IDisposable
         Internet = internet;
         Authorization = authorization;
         Agent = agent;
+        Dns = dns;
         Autostart = autostart;
         Maintenance = maintenance;
         this.apiHttp = apiHttp;
@@ -61,6 +63,7 @@ internal sealed class ApplicationRuntime : IDisposable
     public InternetConnectivityProbe Internet { get; }
     public AuthorizationFlow Authorization { get; }
     public AgentService Agent { get; }
+    public CachedDnsConnector Dns { get; }
     public WindowsAutostartService Autostart { get; }
     public LocalStateMaintenance Maintenance { get; }
 
@@ -75,10 +78,12 @@ internal sealed class ApplicationRuntime : IDisposable
         var session = new SessionMetadataStore(paths, json);
         var runtimeState = new RuntimeStateStore(paths, json);
         var authorizationState = new AuthorizationStateManager(runtimeState, settings);
+        var dnsCache = new HostAddressCache(paths, json);
+        var dns = new CachedDnsConnector(dnsCache);
 
-        var apiHttp = HttpClientProfiles.CreateApiClient();
-        var portalHttp = HttpClientProfiles.CreatePortalClient();
-        var internetHttp = HttpClientProfiles.CreateInternetProbeClient();
+        var apiHttp = HttpClientProfiles.CreateApiClient(dns);
+        var portalHttp = HttpClientProfiles.CreatePortalClient(dns);
+        var internetHttp = HttpClientProfiles.CreateInternetProbeClient(dns);
         var api = new Is74ApiClient(new HttpTransport(apiHttp));
         var portal = new CaptivePortalClient(new HttpTransport(portalHttp));
         var internet = new InternetConnectivityProbe(new HttpTransport(internetHttp));
@@ -100,7 +105,8 @@ internal sealed class ApplicationRuntime : IDisposable
             internet,
             wifi,
             settings,
-            logger);
+            logger,
+            addressCacheWarmer: dns);
 
         return new ApplicationRuntime(
             paths,
@@ -116,6 +122,7 @@ internal sealed class ApplicationRuntime : IDisposable
             internet,
             authorization,
             agent,
+            dns,
             new WindowsAutostartService(),
             new LocalStateMaintenance(paths),
             apiHttp,

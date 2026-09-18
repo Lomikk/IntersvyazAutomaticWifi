@@ -38,7 +38,13 @@ public sealed class HttpTransport(HttpClient client)
         {
             return HttpCallResult.Failure(TransportFailureKind.Timeout, null, clock.Elapsed);
         }
-        catch (HttpRequestException exception) when (exception.HttpRequestError == HttpRequestError.NameResolutionError)
+        catch (CachedDnsUnavailableException exception)
+        {
+            return HttpCallResult.Failure(TransportFailureKind.DnsUnavailable, exception.Message, clock.Elapsed);
+        }
+        catch (HttpRequestException exception) when (
+            exception.HttpRequestError == HttpRequestError.NameResolutionError ||
+            ContainsCachedDnsUnavailable(exception))
         {
             return HttpCallResult.Failure(TransportFailureKind.DnsUnavailable, exception.Message, clock.Elapsed);
         }
@@ -50,5 +56,17 @@ public sealed class HttpTransport(HttpClient client)
         {
             return HttpCallResult.Failure(TransportFailureKind.Unexpected, exception.Message, clock.Elapsed);
         }
+    }
+
+    private static bool ContainsCachedDnsUnavailable(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is CachedDnsUnavailableException)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }
