@@ -8,7 +8,8 @@ public sealed class DpapiSecretStore(AppPaths paths)
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true
     };
 
     public void Save(StoredSecrets secrets)
