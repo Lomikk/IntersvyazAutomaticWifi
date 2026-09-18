@@ -20,8 +20,8 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Restore
-        run: dotnet restore .\IS74Wifi.slnx
+      - name: Restore app for win-x64
+        run: dotnet restore .\src\IS74Wifi.App\IS74Wifi.App.csproj --runtime win-x64
 
       - name: Publish framework-dependent single-file
         shell: pwsh
@@ -89,7 +89,6 @@ jobs:
             --configuration Release `
             --runtime win-x64 `
             --self-contained true `
-            --no-restore `
             -p:PublishAot=true `
             -p:StripSymbols=true `
             -p:DebugType=None `
