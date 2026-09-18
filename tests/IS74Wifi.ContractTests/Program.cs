@@ -100,14 +100,19 @@ static Task TestSsidPolicyAsync()
     return Task.CompletedTask;
 }
 
-static Task TestMutexAsync()
+static async Task TestMutexAsync()
 {
     var name = $"Local\\IS74Wifi.Contract.{Guid.NewGuid():N}";
     using var first = NamedMutexLease.TryAcquire(name);
     Assert(first is not null, "first mutex acquisition failed");
-    using var second = NamedMutexLease.TryAcquire(name);
-    Assert(second is null, "second mutex acquisition unexpectedly succeeded");
-    return Task.CompletedTask;
+
+    var blockedOnOtherThread = await Task.Run(() =>
+    {
+        using var second = NamedMutexLease.TryAcquire(name);
+        return second is null;
+    });
+
+    Assert(blockedOnOtherThread, "second mutex acquisition on another thread unexpectedly succeeded");
 }
 
 static async Task TestHttpTransportAsync()
