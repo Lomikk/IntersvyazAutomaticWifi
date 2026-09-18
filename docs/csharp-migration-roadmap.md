@@ -166,7 +166,7 @@ Exit gate: Windows 10 and Windows 11 field tests confirm no terminal window rema
 
 ### Phase 7 — DNS resilience
 
-Status: **implementation complete; Windows CI and field validation pending**. A persisted hostname-to-IP cache and `SocketsHttpHandler.ConnectCallback` now allow API, portal, and Microsoft connectivity-probe TCP connections to use a cached physical address without replacing the request hostname. HTTPS therefore retains the original `api.is74.ru` Host/SNI and normal certificate-name validation. Cached addresses are attempted first; failed cached connections fall back to normal DNS and refresh the persisted cache.
+Status: **implementation complete; field validation pending**. Windows CI covers persisted-cache behavior, cached-IP-first connection order, DNS refresh after a stale cached address, and typed DNS-failure classification. A persisted hostname-to-IP cache and `SocketsHttpHandler.ConnectCallback` allow API, portal, and Microsoft connectivity-probe TCP connections to use a cached physical address without replacing the request hostname. HTTPS therefore retains the original `api.is74.ru` Host/SNI and normal certificate-name validation. Cached addresses are attempted first; failed cached connections fall back to normal DNS and refresh the persisted cache.
 
 This is intentionally part of the C# rewrite rather than another PowerShell workaround.
 
@@ -179,6 +179,8 @@ This is intentionally part of the C# rewrite rather than another PowerShell work
 Exit gate: integration tests prove cached-IP connection behavior and fallback semantics; a field test reproduces captive DNS failure without breaking push polling.
 
 ### Phase 8 — packaging and migration release
+
+Status: **benchmarking in progress**. Windows CI now publishes and smoke-tests framework-dependent single-file, self-contained single-file, and (when supported) NativeAOT candidates, then records executable/output/ZIP sizes. `version` and an isolated-state `status` command are exercised so a package that only compiles but cannot initialize the runtime is rejected.
 
 Compare three packaging modes on real Windows 10/11 machines:
 

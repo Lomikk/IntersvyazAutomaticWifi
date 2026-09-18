@@ -1,0 +1,149 @@
+name: C# packaging benchmark
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/IS74Wifi.App/**'
+      - 'src/IS74Wifi.Core/**'
+      - '.github/workflows/package-benchmark.yml'
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore .\IS74Wifi.slnx
+
+      - name: Publish framework-dependent single-file
+        shell: pwsh
+        run: |
+          dotnet publish .\src\IS74Wifi.App\IS74Wifi.App.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained false `
+            --no-restore `
+            -p:PublishSingleFile=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output .\artifacts\framework-dependent
+
+      - name: Smoke framework-dependent
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '.\artifacts\framework-dependent\IS74Wifi.exe'
+          $p = Start-Process -FilePath $exe -ArgumentList 'version' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "framework-dependent version smoke failed: $($p.ExitCode)" }
+          $old = $env:LOCALAPPDATA
+          try {
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'is74-fdd-state'
+            $p = Start-Process -FilePath $exe -ArgumentList 'status' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "framework-dependent status smoke failed: $($p.ExitCode)" }
+          } finally {
+            $env:LOCALAPPDATA = $old
+          }
+
+      - name: Publish self-contained single-file
+        shell: pwsh
+        run: |
+          dotnet publish .\src\IS74Wifi.App\IS74Wifi.App.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            --no-restore `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output .\artifacts\self-contained
+
+      - name: Smoke self-contained
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '.\artifacts\self-contained\IS74Wifi.exe'
+          $p = Start-Process -FilePath $exe -ArgumentList 'version' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "self-contained version smoke failed: $($p.ExitCode)" }
+          $old = $env:LOCALAPPDATA
+          try {
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'is74-sc-state'
+            $p = Start-Process -FilePath $exe -ArgumentList 'status' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "self-contained status smoke failed: $($p.ExitCode)" }
+          } finally {
+            $env:LOCALAPPDATA = $old
+          }
+
+      - name: Publish NativeAOT single-file candidate
+        id: nativeaot
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          dotnet publish .\src\IS74Wifi.App\IS74Wifi.App.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            --no-restore `
+            -p:PublishAot=true `
+            -p:StripSymbols=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output .\artifacts\nativeaot
+
+      - name: Smoke NativeAOT candidate
+        id: nativeaot_smoke
+        if: steps.nativeaot.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '.\artifacts\nativeaot\IS74Wifi.exe'
+          $p = Start-Process -FilePath $exe -ArgumentList 'version' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "NativeAOT version smoke failed: $($p.ExitCode)" }
+          $old = $env:LOCALAPPDATA
+          try {
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'is74-aot-state'
+            $p = Start-Process -FilePath $exe -ArgumentList 'status' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "NativeAOT status smoke failed: $($p.ExitCode)" }
+          } finally {
+            $env:LOCALAPPDATA = $old
+          }
+
+      - name: Measure packages
+        shell: pwsh
+        run: |
+          function Measure-Package([string]$Name, [string]$Directory) {
+            if (-not (Test-Path $Directory)) {
+              "PACKAGE_METRIC mode=$Name available=false" | Write-Host
+              return
+            }
+            $files = @(Get-ChildItem -Path $Directory -File -Recurse)
+            $total = ($files | Measure-Object Length -Sum).Sum
+            if ($null -eq $total) { $total = 0 }
+            $exe = Join-Path $Directory 'IS74Wifi.exe'
+            $exeBytes = if (Test-Path $exe) { (Get-Item $exe).Length } else { 0 }
+            $zip = Join-Path (Split-Path $Directory -Parent) ($Name + '.zip')
+            if (Test-Path $zip) { Remove-Item $zip -Force }
+            Compress-Archive -Path (Join-Path $Directory '*') -DestinationPath $zip -CompressionLevel Optimal
+            $zipBytes = (Get-Item $zip).Length
+            "PACKAGE_METRIC mode=$Name available=true files=$($files.Count) exeBytes=$exeBytes totalBytes=$total zipBytes=$zipBytes" | Write-Host
+            "| $Name | $($files.Count) | $exeBytes | $total | $zipBytes |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+          "## IS74Wifi packaging benchmark" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "| Mode | Files | EXE bytes | Total bytes | ZIP bytes |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "| --- | ---: | ---: | ---: | ---: |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Measure-Package 'framework-dependent' '.\artifacts\framework-dependent'
+          Measure-Package 'self-contained' '.\artifacts\self-contained'
+          if (Test-Path '.\artifacts\nativeaot\IS74Wifi.exe') {
+            Measure-Package 'nativeaot' '.\artifacts\nativeaot'
+          } else {
+            "PACKAGE_METRIC mode=nativeaot available=false" | Write-Host
+            "| nativeaot | n/a | n/a | n/a | n/a |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+          "NativeAOT publish outcome: ${{ steps.nativeaot.outcome }}; smoke outcome: ${{ steps.nativeaot_smoke.outcome }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
