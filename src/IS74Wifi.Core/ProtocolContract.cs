@@ -8,6 +8,8 @@ public static class ProtocolContract
 {
     public const string CampusSsidPrefix = "Campus Wi-Fi";
     public const int MaxAutomaticStepOneAttempts = 4;
+    public const string AppVersion = "2.18.0-RS-95aa9b78";
+    public const int BuildCode = 2026061111;
 
     public static ReadOnlySpan<int> PushPollOffsetsMilliseconds =>
     [
