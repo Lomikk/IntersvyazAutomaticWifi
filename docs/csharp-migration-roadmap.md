@@ -100,11 +100,11 @@ Exit gate: C# solution builds on `windows-latest` and the executable can run `ve
 
 ### Phase 2 — state, secrets, logging, and platform primitives
 
-Status: **implementation complete; Windows CI/field validation pending**. Typed settings/runtime stores, stable device ID, PowerShell-compatible CurrentUser DPAPI secrets, redacted rotating diagnostics, native WLAN enumeration, exact Microsoft Connect Test parsing, named mutexes, and typed asynchronous HTTP transport are implemented. DNS cached-IP resilience remains intentionally deferred to Phase 7.
+Status: **implementation complete; Windows CI/field validation pending**. Typed settings/runtime stores, stable device ID, CurrentUser DPAPI secrets, redacted rotating diagnostics, native WLAN enumeration, exact Microsoft Connect Test parsing, named mutexes, and typed asynchronous HTTP transport are implemented. DNS cached-IP resilience remains intentionally deferred to Phase 7. The C# runtime intentionally does not inherit the PowerShell 5.1 `ConvertFrom-SecureString` storage format; the first C# migration requires a one-time account registration instead of carrying PS5-specific secret-format compatibility into the new runtime.
 
 - Typed configuration/state model.
 - Stable device ID.
-- DPAPI-compatible per-user secret storage.
+- CurrentUser DPAPI per-user secret storage. PowerShell-alpha secret-file compatibility is explicitly out of scope; migration starts with one fresh registration.
 - Rotating/redacted diagnostic logger with the same privacy guarantees as the PowerShell client.
 - WLAN SSID query via Windows WLAN API.
 - Internet connectivity probe with exact `Microsoft Connect Test` validation.
