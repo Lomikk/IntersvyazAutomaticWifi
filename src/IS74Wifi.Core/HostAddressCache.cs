@@ -59,7 +59,7 @@ public sealed class HostAddressCache(AppPaths paths, JsonFileStore json, TimePro
             var data = LoadLocked();
             data.Hosts[NormalizeHost(host)] = new HostAddressCacheEntry(values, clock.GetUtcNow());
             paths.EnsureDirectories();
-            json.Write(paths.DnsCacheFile, data);
+            json.Write(paths.DnsCacheFile, data, PersistenceJsonContext.Default.HostAddressCacheDocument);
         }
     }
 
@@ -76,7 +76,7 @@ public sealed class HostAddressCache(AppPaths paths, JsonFileStore json, TimePro
             return document;
         }
 
-        document = json.Read<HostAddressCacheDocument>(paths.DnsCacheFile) ?? new HostAddressCacheDocument();
+        document = json.Read(paths.DnsCacheFile, PersistenceJsonContext.Default.HostAddressCacheDocument) ?? new HostAddressCacheDocument();
         return document;
     }
 

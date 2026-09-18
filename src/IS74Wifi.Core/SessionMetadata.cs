@@ -12,11 +12,11 @@ public sealed record SessionMetadata
 
 public sealed class SessionMetadataStore(AppPaths paths, JsonFileStore json)
 {
-    public SessionMetadata? Load() => json.Read<SessionMetadata>(paths.SessionMetaFile);
+    public SessionMetadata? Load() => json.Read(paths.SessionMetaFile, PersistenceJsonContext.Default.SessionMetadata);
 
     public void Save(SessionMetadata metadata)
     {
         paths.EnsureDirectories();
-        json.Write(paths.SessionMetaFile, metadata);
+        json.Write(paths.SessionMetaFile, metadata, PersistenceJsonContext.Default.SessionMetadata);
     }
 }

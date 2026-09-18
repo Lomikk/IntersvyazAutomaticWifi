@@ -25,7 +25,9 @@ public sealed class Is74ApiClient : IIs74PushClient
         const string operation = "auth.get-confirm";
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(ApiBase, "mobile/auth/get-confirm"));
         AddApiHeaders(request, deviceId);
-        request.Content = JsonContent(new { phone, deviceId, authType = 0 });
+        request.Content = JsonContent(
+            new ConfirmationRequestPayload(phone, deviceId, 0),
+            ApiJsonContext.Default.ConfirmationRequestPayload);
 
         var call = await transport.SendAsync(request, DefaultTimeout, cancellationToken).ConfigureAwait(false);
         var failure = ClassifyFailure(call, operation);
@@ -166,16 +168,16 @@ public sealed class Is74ApiClient : IIs74PushClient
         const string operation = "device-metadata";
         using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(ApiBase, "mobile/pushtoken/add-with-device-id"));
         AddApiHeaders(request, metadata.DeviceId, bearerToken);
-        request.Content = JsonContent(new Dictionary<string, object?>
-        {
-            ["TYPE"] = 5,
-            ["UNIQUE_DEVICE_ID"] = metadata.DeviceId,
-            ["AUTHORIZE_PHONE"] = metadata.Phone,
-            ["VERS_NAME"] = ProtocolContract.AppVersion,
-            ["ASSEMBLY_CODE"] = ProtocolContract.BuildCode,
-            ["OS_VERS"] = metadata.OsVersion,
-            ["DEVICE_MODEL"] = metadata.DeviceModel
-        });
+        request.Content = JsonContent(
+            new DeviceMetadataRequestPayload(
+                5,
+                metadata.DeviceId,
+                metadata.Phone,
+                ProtocolContract.AppVersion,
+                ProtocolContract.BuildCode,
+                metadata.OsVersion,
+                metadata.DeviceModel),
+            ApiJsonContext.Default.DeviceMetadataRequestPayload);
 
         var call = await transport.SendAsync(request, DefaultTimeout, cancellationToken).ConfigureAwait(false);
         var failure = ClassifyFailure(call, operation);
@@ -288,8 +290,10 @@ public sealed class Is74ApiClient : IIs74PushClient
         }
     }
 
-    private static StringContent JsonContent<T>(T value) =>
-        new(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json");
+    private static StringContent JsonContent<T>(
+        T value,
+        System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo) =>
+        new(JsonSerializer.Serialize(value, typeInfo), Encoding.UTF8, "application/json");
 
     private static Is74ApiFailure? ClassifyFailure(HttpCallResult call, string operation)
     {
