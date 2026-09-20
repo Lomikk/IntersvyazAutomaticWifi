@@ -5,7 +5,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string MigrationStage = "csharp-alpha-candidate";
+    private const string ProductVersion = "v0.1.0-alpha.7";
 
     [STAThread]
     private static async Task<int> Main(string[] args)
@@ -48,13 +48,13 @@ internal static class Program
 
     private static int PrintVersion()
     {
-        Console.WriteLine($"IS74Wifi {MigrationStage}");
+        Console.WriteLine($"IS74Wifi {ProductVersion}");
         return 0;
     }
 
     private static int PrintHelp()
     {
-        Console.WriteLine("IS74Wifi C# migration client");
+        Console.WriteLine("IS74Wifi C# alpha client");
         Console.WriteLine("Commands: register, connect, status, install, disable-autostart, uninstall, reset, purge, logs, version, help, contract");
         Console.WriteLine("The PowerShell runtime remains the fallback/reference client until field parity is complete.");
         return 0;
