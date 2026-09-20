@@ -5,7 +5,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.9";
+    private const string ProductVersion = "v0.1.0-alpha.10";
 
     [STAThread]
     private static async Task<int> Main(string[] args)
@@ -300,6 +300,7 @@ internal static class Program
         Console.WriteLine($"Регистрация : {(secrets is null ? "нет" : "есть")}");
         Console.WriteLine($"Телефон     : {MaskPhone(secrets?.Phone)}");
         Console.WriteLine($"Автозапуск  : {(app.Autostart.IsEnabled() ? "включён" : "выключен")}");
+        Console.WriteLine($"Агент       : {(AgentProcessControl.IsAgentRunning() ? "запущен" : "остановлен")}");
         Console.WriteLine($"Интернет    : {(internet.Online ? "доступен" : "не подтверждён")}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
         {
@@ -363,7 +364,6 @@ internal static class Program
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
-        _ = AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(5));
         app.Logger.Write(DiagnosticLevel.Info, "autostart.disabled mode=hkcu-run");
         Console.WriteLine("Автозапуск отключён.");
         return 0;
@@ -543,9 +543,7 @@ internal static class Program
                 throw new InvalidOperationException("Не удалось определить текущий IS74Wifi.exe.");
 
             var autostartWasEnabled = app.Autostart.IsEnabled();
-            AgentProcessControl.SignalStop();
-            if (!AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(5)))
-                throw new InvalidOperationException("Фоновый агент не остановился перед обновлением.");
+            AgentProcessControl.StopAgentOrThrow();
 
             var installation = new ProgramInstallation();
             var installedExecutable = installation.InstallFrom(currentExecutable, ProductVersion);
@@ -631,8 +629,11 @@ internal static class Program
         {
             return 3;
         }
-        AgentProcessControl.SignalStop();
-        if (!AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(10)))
+        try
+        {
+            AgentProcessControl.StopAgentOrThrow(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        }
+        catch
         {
             return 3;
         }
@@ -862,6 +863,7 @@ internal static class Program
         }
 
         using var stopEvent = AgentProcessControl.CreateStopEvent();
+        AgentProcessControl.RegisterCurrentAgentProcess();
         using var stopCts = new CancellationTokenSource();
         var stopRegistration = ThreadPool.RegisterWaitForSingleObject(
             stopEvent,
@@ -902,6 +904,7 @@ internal static class Program
         finally
         {
             stopRegistration.Unregister(null);
+            AgentProcessControl.ClearCurrentAgentProcess();
             app.Logger.Write(DiagnosticLevel.Info, "agent.stop runtime=csharp");
         }
 
