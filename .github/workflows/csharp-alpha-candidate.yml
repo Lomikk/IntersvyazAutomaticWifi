@@ -1,0 +1,160 @@
+name: C# alpha candidate
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'IS74Wifi.slnx'
+      - 'src/IS74Wifi.App/**'
+      - 'src/IS74Wifi.Core/**'
+      - 'tests/IS74Wifi.ContractTests/**'
+      - 'IS74Wifi.ps1'
+      - 'agent.ps1'
+      - 'src/IS74Wifi.psm1'
+      - 'tests/critical_path_contract.ps1'
+      - 'tests/static_checks.py'
+      - '.github/workflows/csharp-alpha-candidate.yml'
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore and build C# runtime
+        run: |
+          dotnet restore .\IS74Wifi.slnx
+          dotnet build .\IS74Wifi.slnx --configuration Release --no-restore
+
+      - name: C# contract tests
+        run: dotnet run --project .\tests\IS74Wifi.ContractTests\IS74Wifi.ContractTests.csproj --configuration Release --no-build
+
+      - name: PowerShell reference regression checks
+        shell: powershell
+        run: |
+          $files = @(
+            '.\IS74Wifi.ps1',
+            '.\agent.ps1',
+            '.\src\IS74Wifi.psm1',
+            '.\tests\critical_path_contract.ps1'
+          )
+
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "PowerShell parser errors in $file"
+            }
+          }
+
+          Import-Module .\src\IS74Wifi.psm1 -Force
+          .\tests\critical_path_contract.ps1
+          py -3 .\tests\static_checks.py
+
+      - name: Restore NativeAOT runtime assets
+        run: dotnet restore .\src\IS74Wifi.App\IS74Wifi.App.csproj --runtime win-x64
+
+      - name: Publish NativeAOT win-x64 candidate
+        shell: pwsh
+        run: |
+          dotnet publish .\src\IS74Wifi.App\IS74Wifi.App.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            --no-restore `
+            -p:PublishAot=true `
+            -p:StripSymbols=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output .\artifacts\nativeaot
+
+      - name: Smoke NativeAOT candidate
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '.\artifacts\nativeaot\IS74Wifi.exe'
+
+          $p = Start-Process -FilePath $exe -ArgumentList 'version' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "NativeAOT version smoke failed: $($p.ExitCode)" }
+
+          $old = $env:LOCALAPPDATA
+          try {
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'is74-csharp-alpha-state'
+
+            $p = Start-Process -FilePath $exe -ArgumentList 'status' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "NativeAOT status smoke failed: $($p.ExitCode)" }
+
+            $p = Start-Process -FilePath $exe -ArgumentList 'agent' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "NativeAOT clean-state agent smoke failed: $($p.ExitCode)" }
+          }
+          finally {
+            $env:LOCALAPPDATA = $old
+          }
+
+      - name: Package field-test candidate
+        id: package
+        shell: pwsh
+        run: |
+          $shortSha = '${{ github.sha }}'.Substring(0, 12)
+          $packageBase = "IS74Wifi-csharp-alpha-win-x64-$shortSha"
+          $dist = Join-Path $PWD 'dist'
+          $staging = Join-Path $dist $packageBase
+          New-Item -ItemType Directory -Force $staging | Out-Null
+
+          Copy-Item '.\artifacts\nativeaot\IS74Wifi.exe' $staging
+
+          $files = @(Get-ChildItem -Path $staging -File -Recurse)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'IS74Wifi.exe') {
+            throw 'Alpha candidate must contain exactly one runtime file: IS74Wifi.exe'
+          }
+
+          $zipPath = Join-Path $dist "$packageBase.zip"
+          Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            $entries = @($zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' })
+            if ($entries.Count -ne 1 -or $entries[0] -ne 'IS74Wifi.exe') {
+              throw "Unexpected archive contents: $($entries -join ', ')"
+            }
+          }
+          finally {
+            $zip.Dispose()
+          }
+
+          $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $hashPath = "$zipPath.sha256"
+          "$hash  $([IO.Path]::GetFileName($zipPath))" | Set-Content $hashPath -Encoding ascii -NoNewline
+
+          "artifact_name=$packageBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "hash_path=$hashPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          '## C# alpha field-test candidate' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- Commit: ${{ github.sha }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '- Runtime: NativeAOT, win-x64, self-contained' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- Archive: $([IO.Path]::GetFileName($zipPath))" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- SHA-256: $hash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '- Fresh C# registration is required; PowerShell DPAPI state is intentionally not imported.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload field-test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: |
+            ${{ steps.package.outputs.zip_path }}
+            ${{ steps.package.outputs.hash_path }}
+          if-no-files-found: error
+          retention-days: 30

@@ -5,7 +5,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string MigrationStage = "csharp-phase6";
+    private const string MigrationStage = "csharp-alpha-candidate";
 
     [STAThread]
     private static async Task<int> Main(string[] args)

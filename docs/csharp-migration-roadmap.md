@@ -180,7 +180,9 @@ Exit gate: integration tests prove cached-IP connection behavior and fallback se
 
 ### Phase 8 — packaging and migration release
 
-Status: **benchmarking in progress**. Windows CI now publishes and smoke-tests framework-dependent single-file, self-contained single-file, and (when supported) NativeAOT candidates, then records executable/output/ZIP sizes. `version` and an isolated-state `status` command are exercised so a package that only compiles but cannot initialize the runtime is rejected.
+Status: **field-test candidate ready; validation pending**. Packaging benchmarks are complete enough to select NativeAOT `win-x64` as the first C# field-test candidate. After moving the finite JSON model set to `System.Text.Json` source generation, the NativeAOT package now passes both `version` and isolated-state `status` smoke tests on `windows-latest`. The same run measured approximately 6.63 MB for the NativeAOT executable / 3.01 MB ZIP, versus 25.90 MB / 6.83 MB for framework-dependent single-file and 99.25 MB / 39.76 MB for self-contained single-file. Framework-dependent and ordinary self-contained packaging remain fallback options until field validation is complete.
+
+The dedicated `C# alpha candidate` workflow builds the C# contracts plus the PowerShell reference regression checks, publishes the NativeAOT executable, smoke-tests `version`, `status`, and clean-state `agent`, then uploads a one-file ZIP and matching SHA-256 for field testing. It intentionally does **not** publish a GitHub Release: public release remains gated on real Windows field parity.
 
 Compare three packaging modes on real Windows 10/11 machines:
 
