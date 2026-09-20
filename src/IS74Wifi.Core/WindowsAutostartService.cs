@@ -32,11 +32,7 @@ public sealed class WindowsAutostartService(string valueName = "IS74Wifi")
             throw new FileNotFoundException("IS74Wifi executable was not found.", fullPath);
         }
 
-        AgentProcessControl.SignalStop();
-        if (!AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(5)))
-        {
-            throw new InvalidOperationException("The previous IS74Wifi agent did not stop within 5 seconds.");
-        }
+        AgentProcessControl.StopAgentOrThrow();
 
         using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
                         ?? throw new InvalidOperationException("Could not open the current-user Run registry key.");
@@ -61,7 +57,7 @@ public sealed class WindowsAutostartService(string valueName = "IS74Wifi")
             key?.DeleteValue(valueName, throwOnMissingValue: false);
         }
 
-        AgentProcessControl.SignalStop();
+        AgentProcessControl.StopAgentOrThrow();
     }
 
     public static string BuildCommand(string executablePath) => $"\"{Path.GetFullPath(executablePath)}\" agent";
