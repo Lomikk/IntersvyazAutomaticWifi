@@ -5,7 +5,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.11";
+    private const string ProductVersion = "v0.1.0-alpha.12";
 
     [STAThread]
     private static async Task<int> Main(string[] args)
@@ -36,6 +36,11 @@ internal static class Program
 
         try
         {
+            if (command == "menu" && BootstrapInteractiveLaunch(out var bootstrapExit))
+            {
+                return bootstrapExit;
+            }
+
             if (TryForwardToInstalledCopy(args, command, waitForExit: true, out var forwardedExit))
             {
                 return forwardedExit;
@@ -49,7 +54,8 @@ internal static class Program
                 "register" => await RegisterAsync().ConfigureAwait(false),
                 "connect" => await ConnectAsync().ConfigureAwait(false),
                 "status" => await PrintStatusAsync().ConfigureAwait(false),
-                "install" => InstallAutostart(),
+                "install" => InstallApplication(),
+                "enable-autostart" => EnableAutomaticAuthorization(),
                 "disable-autostart" => DisableAutostart(),
                 "uninstall" => Uninstall(),
                 "reset" => ResetRegistration(),
@@ -79,7 +85,8 @@ internal static class Program
         Console.WriteLine("IS74Wifi — автоматическая авторизация Campus Wi-Fi");
         Console.WriteLine("register           Зарегистрировать устройство");
         Console.WriteLine("connect            Авторизовать Wi-Fi один раз сейчас");
-        Console.WriteLine("install            Включить автоматическую авторизацию");
+        Console.WriteLine("install            Установить программу для текущего пользователя");
+        Console.WriteLine("enable-autostart   Включить автоматическую авторизацию");
         Console.WriteLine("disable-autostart  Отключить автоматическую авторизацию");
         Console.WriteLine("status             Показать состояние");
         Console.WriteLine("update-check       Проверить обновления");
@@ -328,7 +335,31 @@ internal static class Program
         return 0;
     }
 
-    private static int InstallAutostart()
+    private static int InstallApplication()
+    {
+        var current = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(current) || !File.Exists(current))
+        {
+            throw new InvalidOperationException("Не удалось определить путь к IS74Wifi.exe.");
+        }
+
+        var installation = new ProgramInstallation();
+        if (installation.IsInstalledExecutable(current))
+        {
+            new WindowsInstalledAppRegistration().Register(installation, ProductVersion);
+            Console.WriteLine($"IS74Wifi уже установлена: {installation.ExecutablePath}");
+            return 0;
+        }
+
+        InstallOrUpgradeCanonicalCopy(current, installation);
+        Console.WriteLine("IS74Wifi установлена для текущего пользователя Windows.");
+        Console.WriteLine($"Рабочая копия программы: {installation.ExecutablePath}");
+        Console.WriteLine("Автоматическая авторизация пока не включена.");
+        Console.WriteLine("Скачанный EXE теперь можно переместить или удалить.");
+        return 0;
+    }
+
+    private static int EnableAutomaticAuthorization()
     {
         using var app = ApplicationRuntime.Create();
         if (app.Secrets.Load() is null)
@@ -336,27 +367,19 @@ internal static class Program
             throw new InvalidOperationException("Сначала зарегистрируйте устройство.");
         }
 
-        var executable = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(executable))
+        var installation = new ProgramInstallation();
+        if (!installation.IsInstalled)
         {
-            throw new InvalidOperationException("Не удалось определить путь к IS74Wifi.exe.");
+            throw new InvalidOperationException("IS74Wifi не установлена. Сначала запустите программу обычным способом и выполните установку.");
         }
 
-        var installation = new ProgramInstallation();
-        var installedExecutable = installation.InstallFrom(executable, ProductVersion);
-        new WindowsInstalledAppRegistration().Register(installation, ProductVersion);
-        app.Autostart.Enable(installedExecutable, startNow: true);
+        new WindowsInstalledAppRegistration().Register(installation, installation.ReadInstalledVersion() ?? ProductVersion);
+        app.Autostart.Enable(installation.ExecutablePath, startNow: true);
         app.Logger.Write(DiagnosticLevel.Info, "autostart.enabled mode=hkcu-run installed-copy=true");
         Console.WriteLine("Автоматическая авторизация включена.");
         Console.WriteLine("Фоновый агент запущен и сразу проверит текущее подключение.");
         Console.WriteLine("Если вы подключены к Campus Wi-Fi и требуется авторизация, программа попробует выполнить её автоматически.");
         Console.WriteLine("Фоновый агент будет автоматически запускаться при входе в Windows.");
-        Console.WriteLine("IS74Wifi добавлена в список установленных приложений Windows.");
-        Console.WriteLine();
-        Console.WriteLine("Это окно теперь можно закрыть. Для работы программы держать его открытым не требуется.");
-        Console.WriteLine($"Рабочая копия программы: {installedExecutable}");
-        Console.WriteLine("Скачанный EXE можно переместить или удалить.");
-        Console.WriteLine("Удалить программу позже можно через пункт 7 или через Установленные приложения Windows.");
         return 0;
     }
 
@@ -433,6 +456,93 @@ internal static class Program
         {
         }
         return 0;
+    }
+
+    private static bool BootstrapInteractiveLaunch(out int exitCode)
+    {
+        exitCode = 0;
+        var current = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(current) || !File.Exists(current))
+        {
+            throw new InvalidOperationException("Не удалось определить путь к IS74Wifi.exe.");
+        }
+
+        var installation = new ProgramInstallation();
+        if (installation.IsInstalledExecutable(current))
+        {
+            return false;
+        }
+
+        var installedVersionText = installation.ReadInstalledVersion();
+        if (installation.IsInstalled &&
+            SemanticVersion.TryParse(ProductVersion, out var currentVersion) &&
+            SemanticVersion.TryParse(installedVersionText, out var installedVersion) &&
+            installedVersion.CompareTo(currentVersion) >= 0)
+        {
+            return false;
+        }
+
+        Console.WriteLine();
+        if (installation.IsInstalled)
+        {
+            Console.WriteLine($"Установлена версия: {installedVersionText ?? "неизвестно"}");
+            Console.WriteLine($"Запущена версия    : {ProductVersion}");
+            Console.Write("Обновить установленную копию и продолжить? [Y/N]: ");
+        }
+        else
+        {
+            Console.WriteLine("Для обычной работы IS74Wifi должна быть установлена для текущего пользователя Windows.");
+            Console.WriteLine($"Программа будет установлена в: {installation.InstallDirectory}");
+            Console.WriteLine("Права администратора не требуются. Автоматическая авторизация при этом не включается.");
+            Console.Write("Установить IS74Wifi и продолжить? [Y/N]: ");
+        }
+
+        if (!ReadYesAnswer(Console.ReadLine()))
+        {
+            Console.WriteLine(installation.IsInstalled ? "Обновление отменено." : "Установка отменена.");
+            exitCode = 0;
+            return true;
+        }
+
+        InstallOrUpgradeCanonicalCopy(current, installation);
+        Console.WriteLine(installation.IsInstalled
+            ? $"Рабочая копия готова: {installation.ExecutablePath}"
+            : "IS74Wifi установлена.");
+        Console.WriteLine("Открываю установленную копию...");
+        return false;
+    }
+
+    private static void InstallOrUpgradeCanonicalCopy(string sourceExecutable, ProgramInstallation installation)
+    {
+        var autostart = new WindowsAutostartService();
+        var hadInstalledCopy = installation.IsInstalled;
+        var automaticAuthorizationWasEnabled = hadInstalledCopy && autostart.IsEnabledFor(installation.ExecutablePath);
+
+        if (hadInstalledCopy)
+        {
+            AgentProcessControl.StopAgentOrThrow();
+        }
+        else
+        {
+            _ = autostart.RemoveIfStale(installation.ExecutablePath);
+        }
+
+        var installedExecutable = installation.InstallFrom(sourceExecutable, ProductVersion);
+        new WindowsInstalledAppRegistration().Register(installation, ProductVersion);
+
+        if (automaticAuthorizationWasEnabled)
+        {
+            autostart.Enable(installedExecutable, startNow: true);
+        }
+    }
+
+    private static bool ReadYesAnswer(string? value)
+    {
+        var answer = (value ?? string.Empty).Trim();
+        return answer.Equals("Y", StringComparison.OrdinalIgnoreCase) ||
+               answer.Equals("YES", StringComparison.OrdinalIgnoreCase) ||
+               answer.Equals("Д", StringComparison.OrdinalIgnoreCase) ||
+               answer.Equals("ДА", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryForwardToInstalledCopy(
@@ -522,11 +632,7 @@ internal static class Program
         if (askConfirmation)
         {
             Console.Write("Скачать и установить обновление? [Y/N]: ");
-            var answer = (Console.ReadLine() ?? string.Empty).Trim();
-            if (!answer.Equals("Y", StringComparison.OrdinalIgnoreCase) &&
-                !answer.Equals("YES", StringComparison.OrdinalIgnoreCase) &&
-                !answer.Equals("Д", StringComparison.OrdinalIgnoreCase) &&
-                !answer.Equals("ДА", StringComparison.OrdinalIgnoreCase))
+            if (!ReadYesAnswer(Console.ReadLine()))
             {
                 Console.WriteLine("Обновление отменено.");
                 return false;
@@ -818,7 +924,7 @@ internal static class Program
                 {
                     case "1": await RegisterAsync().ConfigureAwait(false); break;
                     case "2": await ConnectAsync().ConfigureAwait(false); break;
-                    case "3": InstallAutostart(); break;
+                    case "3": EnableAutomaticAuthorization(); break;
                     case "4": DisableAutostart(); break;
                     case "5": await PrintStatusAsync().ConfigureAwait(false); break;
                     case "6":
