@@ -64,7 +64,7 @@ jobs:
           py -3 .\tests\static_checks.py
 
       - name: Restore NativeAOT runtime assets
-        run: dotnet restore .\src\IS74Wifi.App\IS74Wifi.App.csproj --runtime win-x64
+        run: dotnet restore .\src\IS74Wifi.App\IS74Wifi.App.csproj --runtime win-x64 -p:PublishAot=true
 
       - name: Publish NativeAOT win-x64 candidate
         shell: pwsh
