@@ -94,7 +94,7 @@ jobs:
           # packaging guard without depending on redirected console output from
           # a WinExe process.
           $program = Get-Content '.\src\IS74Wifi.App\Program.cs' -Raw
-          if ($program -notmatch 'ProductVersion = "v0\.1\.0-alpha\.7"') {
+          if ($program -notmatch 'ProductVersion = "v0\.1\.0-alpha\.8"') {
             throw 'Program.cs does not identify this build as v0.1.0-alpha.8'
           }
 
