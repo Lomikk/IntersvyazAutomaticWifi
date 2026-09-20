@@ -76,9 +76,15 @@ internal static class Program
 
     private static int PrintHelp()
     {
-        Console.WriteLine("IS74Wifi C# alpha client");
-        Console.WriteLine("Commands: register, connect, status, install, disable-autostart, uninstall, reset, purge, logs, update-check, update, version, help, contract");
-        Console.WriteLine("The PowerShell runtime remains the fallback/reference client until field parity is complete.");
+        Console.WriteLine("IS74Wifi — автоматическая авторизация Campus Wi-Fi");
+        Console.WriteLine("register           Зарегистрировать устройство");
+        Console.WriteLine("connect            Авторизовать Wi-Fi один раз сейчас");
+        Console.WriteLine("install            Включить автоматическую авторизацию");
+        Console.WriteLine("disable-autostart  Отключить автоматическую авторизацию");
+        Console.WriteLine("status             Показать состояние");
+        Console.WriteLine("update-check       Проверить обновления");
+        Console.WriteLine("update             Установить доступное обновление");
+        Console.WriteLine("uninstall          Удалить программу и локальные данные");
         return 0;
     }
 
@@ -171,13 +177,13 @@ internal static class Program
 
         app.Logger.Write(DiagnosticLevel.Info,
             $"registration.complete accessBegin={session.AccessBegin ?? ""} accessEnd={session.AccessEnd ?? ""}");
-        Console.WriteLine("Регистрация завершена. Bearer и номер защищены DPAPI текущего пользователя.");
+        Console.WriteLine("Регистрация завершена. Данные авторизации сохранены для текущего пользователя Windows.");
         await app.Dns.WarmKnownHostsAsync(TimeSpan.Zero).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(session.AccessEnd))
         {
             Console.WriteLine($"Сессия API действует до: {session.AccessEnd}");
         }
-        Console.WriteLine("Первую Wi-Fi авторизацию выполните командой connect; она задаст 24-часовую точку отсчёта для агента.");
+        Console.WriteLine("Теперь можно авторизовать Wi-Fi один раз сейчас или включить автоматическую авторизацию.");
         return 0;
     }
 
@@ -190,12 +196,12 @@ internal static class Program
 
         if (profiles.Count == 1)
         {
-            Console.WriteLine($"Найден связанный профиль: {profiles[0].DisplayName}");
+            Console.WriteLine($"Найден связанный аккаунт Интерсвязи: {profiles[0].DisplayName}");
             return profiles[0].UserId;
         }
 
         Console.WriteLine();
-        Console.WriteLine("С номером телефона связано несколько адресов. Выберите профиль:");
+        Console.WriteLine("К этому номеру телефона привязано несколько аккаунтов Интерсвязи. Выберите нужный:");
         for (var i = 0; i < profiles.Count; i++)
         {
             Console.WriteLine($"{i + 1}. {profiles[i].DisplayName}");
@@ -204,11 +210,11 @@ internal static class Program
 
         while (true)
         {
-            Console.Write("Выберите профиль: ");
+            Console.Write("Выберите аккаунт: ");
             var input = (Console.ReadLine() ?? string.Empty).Trim();
             if (input == "0")
             {
-                throw new InvalidOperationException("Регистрация отменена пользователем.");
+                throw new InvalidOperationException("Регистрация отменена.");
             }
 
             if (int.TryParse(input, out var selected) && selected >= 1 && selected <= profiles.Count)
@@ -227,7 +233,7 @@ internal static class Program
         var secrets = app.Secrets.Load() ?? throw new InvalidOperationException("Устройство не зарегистрировано. Сначала выполните register.");
         var deviceId = app.DeviceIdentity.GetOrCreate();
 
-        Console.WriteLine("Начинаю Wi-Fi авторизацию...");
+        Console.WriteLine("Проверяю подключение и выполняю разовую авторизацию Wi-Fi...");
         var outcome = await app.Authorization.RunAsync(new AuthorizationRequest(
             secrets.Token,
             secrets.Phone,
@@ -299,8 +305,11 @@ internal static class Program
         Console.WriteLine($"Установка   : {(installation.IsInstalled ? "есть" : "нет")}");
         Console.WriteLine($"Регистрация : {(secrets is null ? "нет" : "есть")}");
         Console.WriteLine($"Телефон     : {MaskPhone(secrets?.Phone)}");
-        Console.WriteLine($"Автозапуск  : {(app.Autostart.IsEnabled() ? "включён" : "выключен")}");
-        Console.WriteLine($"Агент       : {(AgentProcessControl.IsAgentRunning() ? "запущен" : "остановлен")}");
+        var automaticAuthorizationEnabled = app.Autostart.IsEnabled();
+        var agentRunning = AgentProcessControl.IsAgentRunning();
+        Console.WriteLine($"Автоматическая авторизация : {(automaticAuthorizationEnabled ? "включена" : "выключена")}");
+        Console.WriteLine($"Фоновый агент              : {(agentRunning ? "работает" : "остановлен")}");
+        Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
         Console.WriteLine($"Интернет    : {(internet.Online ? "доступен" : "не подтверждён")}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
         {
@@ -320,7 +329,7 @@ internal static class Program
         }
         if (state.AutomaticStepOneAttempts > 0)
         {
-            Console.WriteLine($"Авто stepOne                 : {state.AutomaticStepOneAttempts}/{app.Settings.MaxAutomaticStepOneAttempts}");
+            Console.WriteLine($"Автоматические попытки       : {state.AutomaticStepOneAttempts}/{app.Settings.MaxAutomaticStepOneAttempts}");
         }
         if (state.UserActionRequired)
         {
@@ -354,9 +363,14 @@ internal static class Program
         var installedExecutable = installation.InstallFrom(executable, ProductVersion);
         app.Autostart.Enable(installedExecutable, startNow: true);
         app.Logger.Write(DiagnosticLevel.Info, "autostart.enabled mode=hkcu-run installed-copy=true");
-        Console.WriteLine("Автозапуск включён через текущего пользователя Windows. Агент запущен без консольного окна.");
+        Console.WriteLine("Автоматическая авторизация включена.");
+        Console.WriteLine("Фоновый агент запущен и сразу проверит текущее подключение.");
+        Console.WriteLine("Если вы подключены к Campus Wi-Fi и требуется авторизация, программа попробует выполнить её автоматически.");
+        Console.WriteLine("Фоновый агент будет автоматически запускаться при входе в Windows.");
+        Console.WriteLine();
+        Console.WriteLine("Это окно теперь можно закрыть. Для работы программы держать его открытым не требуется.");
         Console.WriteLine($"Рабочая копия программы: {installedExecutable}");
-        Console.WriteLine("Скачанный EXE теперь можно переместить или удалить: автозапуск использует установленную копию.");
+        Console.WriteLine("Скачанный EXE можно переместить или удалить.");
         return 0;
     }
 
@@ -365,7 +379,10 @@ internal static class Program
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
         app.Logger.Write(DiagnosticLevel.Info, "autostart.disabled mode=hkcu-run");
-        Console.WriteLine("Автозапуск отключён.");
+        Console.WriteLine("Автоматическая авторизация отключена.");
+        Console.WriteLine("Фоновый агент остановлен.");
+        Console.WriteLine("Программа больше не будет запускаться автоматически вместе с Windows.");
+        Console.WriteLine("Разовая авторизация Wi-Fi по-прежнему доступна через пункт 2.");
         return 0;
     }
 
@@ -373,7 +390,6 @@ internal static class Program
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
-        _ = AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(5));
         app.Maintenance.ResetRegistration();
         app.Logger.Write(DiagnosticLevel.Info, "registration.reset");
         Console.WriteLine("Регистрация и локальная Wi-Fi сессия удалены. Настройки и диагностические логи сохранены.");
@@ -384,7 +400,6 @@ internal static class Program
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
-        _ = AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(5));
         app.Maintenance.PurgeAllData();
         Console.WriteLine("Автозапуск отключён, все локальные данные приложения удалены.");
         return 0;
@@ -394,7 +409,6 @@ internal static class Program
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
-        _ = AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(5));
         app.Maintenance.PurgeAllData();
 
         var installation = new ProgramInstallation();
@@ -795,12 +809,12 @@ internal static class Program
         {
             await PrintStatusAsync().ConfigureAwait(false);
             Console.WriteLine("1. Зарегистрировать устройство");
-            Console.WriteLine("2. Авторизовать Wi-Fi сейчас");
-            Console.WriteLine("3. Включить автозапуск");
-            Console.WriteLine("4. Отключить автозапуск");
-            Console.WriteLine("5. Показать статус");
+            Console.WriteLine("2. Авторизовать Wi-Fi один раз сейчас");
+            Console.WriteLine("3. Включить автоматическую авторизацию");
+            Console.WriteLine("4. Отключить автоматическую авторизацию");
+            Console.WriteLine("5. Показать состояние");
             Console.WriteLine("6. Сбросить регистрацию");
-            Console.WriteLine("7. Удалить программу (автозапуск и данные)");
+            Console.WriteLine("7. Удалить программу и все локальные данные");
             Console.WriteLine("8. Открыть диагностические логи");
             Console.WriteLine("9. Проверить обновления");
             Console.WriteLine("0. Выход");
@@ -821,8 +835,8 @@ internal static class Program
                         if (Console.ReadLine() == "YES") ResetRegistration();
                         break;
                     case "7":
-                        Console.Write("Удалить автозапуск, ВСЕ данные и установленную копию программы? Введите PURGE: ");
-                        if (Console.ReadLine() == "PURGE")
+                        Console.Write("Остановить автоматическую авторизацию, удалить программу и ВСЕ локальные данные? Введите УДАЛИТЬ: ");
+                        if (Console.ReadLine() == "УДАЛИТЬ")
                         {
                             Uninstall();
                             return 0;
