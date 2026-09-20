@@ -7,6 +7,7 @@ internal static class AgentContractTests
     {
         TestSleepPolicy();
         TestAutostartCommand();
+        TestAgentPidRecord();
         await TestExpiryIsAuthoritativeAsync();
         await TestPreExpiryNeedsTwoCaptiveResponsesAsync();
         await TestPreExpiryTransportFailureDoesNotAuthorizeAsync();
@@ -42,6 +43,31 @@ internal static class AgentContractTests
         var path = Path.Combine("C:\\Program Files", "IS74 Wifi", "IS74Wifi.exe");
         var command = WindowsAutostartService.BuildCommand(path);
         Assert(command == $"\"{Path.GetFullPath(path)}\" agent", "HKCU Run command quoting changed");
+    }
+
+    private static void TestAgentPidRecord()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "IS74Wifi-agent-pid-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            AgentProcessControl.RegisterCurrentAgentProcess(root);
+            var path = AgentProcessControl.GetPidFilePath(root);
+            Assert(File.Exists(path), "agent PID file was not created");
+
+            var lines = File.ReadAllLines(path);
+            Assert(lines.Length >= 2, "agent PID file format changed");
+            Assert(lines[0] == Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "agent PID file did not record the current process");
+            Assert(ProgramInstallation.PathsEqual(lines[1], Environment.ProcessPath!),
+                "agent PID file did not record the current executable");
+
+            AgentProcessControl.ClearCurrentAgentProcess(root);
+            Assert(!File.Exists(path), "agent PID file was not cleared by its owner");
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
     }
 
     private static async Task TestExpiryIsAuthoritativeAsync()
