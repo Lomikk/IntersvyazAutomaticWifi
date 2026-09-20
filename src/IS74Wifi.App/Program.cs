@@ -5,22 +5,42 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.8";
+    private const string ProductVersion = "v0.1.0-alpha.9";
 
     [STAThread]
     private static async Task<int> Main(string[] args)
     {
         var command = args.FirstOrDefault()?.Trim().ToLowerInvariant() ?? "menu";
 
+        if (command == "update-apply")
+        {
+            return ApplyPreparedUpdate(args.Skip(1).ToArray());
+        }
+
+        if (command == "uninstall-apply")
+        {
+            return ApplyDeferredUninstall(args.Skip(1).ToArray());
+        }
+
         if (command == "agent")
         {
+            if (TryForwardToInstalledCopy(args, command, waitForExit: false, out var forwardedAgentExit))
+            {
+                return forwardedAgentExit;
+            }
             return await RunAgentAsync().ConfigureAwait(false);
         }
 
+        CleanupStaleUpdateDirectories();
         ConsoleSession.EnsureInteractiveConsole();
 
         try
         {
+            if (TryForwardToInstalledCopy(args, command, waitForExit: true, out var forwardedExit))
+            {
+                return forwardedExit;
+            }
+
             return command switch
             {
                 "version" or "--version" or "-v" => PrintVersion(),
@@ -35,6 +55,8 @@ internal static class Program
                 "reset" => ResetRegistration(),
                 "purge" => Purge(),
                 "logs" => OpenLogs(),
+                "update-check" => await CheckForUpdatesAsync().ConfigureAwait(false),
+                "update" => await UpdateCommandAsync().ConfigureAwait(false),
                 "menu" => await RunMenuAsync().ConfigureAwait(false),
                 _ => UnknownCommand(command)
             };
@@ -55,7 +77,7 @@ internal static class Program
     private static int PrintHelp()
     {
         Console.WriteLine("IS74Wifi C# alpha client");
-        Console.WriteLine("Commands: register, connect, status, install, disable-autostart, uninstall, reset, purge, logs, version, help, contract");
+        Console.WriteLine("Commands: register, connect, status, install, disable-autostart, uninstall, reset, purge, logs, update-check, update, version, help, contract");
         Console.WriteLine("The PowerShell runtime remains the fallback/reference client until field parity is complete.");
         return 0;
     }
@@ -272,6 +294,9 @@ internal static class Program
 
         Console.WriteLine();
         Console.WriteLine("=== IS74 Automatic Wi-Fi ===");
+        var installation = new ProgramInstallation();
+        Console.WriteLine($"Версия      : {ProductVersion}");
+        Console.WriteLine($"Установка   : {(installation.IsInstalled ? "есть" : "нет")}");
         Console.WriteLine($"Регистрация : {(secrets is null ? "нет" : "есть")}");
         Console.WriteLine($"Телефон     : {MaskPhone(secrets?.Phone)}");
         Console.WriteLine($"Автозапуск  : {(app.Autostart.IsEnabled() ? "включён" : "выключен")}");
@@ -300,6 +325,10 @@ internal static class Program
         {
             Console.WriteLine("Требуется действие           : да — автоматические попытки остановлены");
         }
+        if (installation.IsInstalled)
+        {
+            Console.WriteLine($"Установленная программа      : {installation.ExecutablePath}");
+        }
         Console.WriteLine($"Данные приложения            : {app.Paths.Root}");
         Console.WriteLine($"Диагностический журнал       : {app.Paths.DiagnosticLogFile}");
         Console.WriteLine();
@@ -320,10 +349,13 @@ internal static class Program
             throw new InvalidOperationException("Не удалось определить путь к IS74Wifi.exe.");
         }
 
-        app.Autostart.Enable(executable, startNow: true);
-        app.Logger.Write(DiagnosticLevel.Info, "autostart.enabled mode=hkcu-run");
+        var installation = new ProgramInstallation();
+        var installedExecutable = installation.InstallFrom(executable, ProductVersion);
+        app.Autostart.Enable(installedExecutable, startNow: true);
+        app.Logger.Write(DiagnosticLevel.Info, "autostart.enabled mode=hkcu-run installed-copy=true");
         Console.WriteLine("Автозапуск включён через текущего пользователя Windows. Агент запущен без консольного окна.");
-        Console.WriteLine("Перед удалением папки программы выполните uninstall или disable-autostart.");
+        Console.WriteLine($"Рабочая копия программы: {installedExecutable}");
+        Console.WriteLine("Скачанный EXE теперь можно переместить или удалить: автозапуск использует установленную копию.");
         return 0;
     }
 
@@ -360,8 +392,28 @@ internal static class Program
 
     private static int Uninstall()
     {
-        Purge();
-        Console.WriteLine("Теперь можно удалить папку с IS74Wifi.exe.");
+        using var app = ApplicationRuntime.Create();
+        app.Autostart.Disable();
+        _ = AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(5));
+        app.Maintenance.PurgeAllData();
+
+        var installation = new ProgramInstallation();
+        var current = Environment.ProcessPath;
+        if (!installation.IsInstalled)
+        {
+            Console.WriteLine("Автозапуск отключён, все локальные данные приложения удалены.");
+            return 0;
+        }
+
+        if (!installation.IsInstalledExecutable(current))
+        {
+            installation.DeleteInstalledFilesIfNotRunning(current);
+            Console.WriteLine("Автозапуск, данные и установленная копия программы удалены.");
+            return 0;
+        }
+
+        ScheduleDeferredUninstall(installation);
+        Console.WriteLine("Автозапуск и данные удалены. Установленная копия программы будет удалена после закрытия текущего процесса.");
         return 0;
     }
 
@@ -381,6 +433,361 @@ internal static class Program
         return 0;
     }
 
+    private static bool TryForwardToInstalledCopy(
+        string[] args,
+        string command,
+        bool waitForExit,
+        out int exitCode)
+    {
+        exitCode = 0;
+        var current = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(current)) return false;
+
+        var installation = new ProgramInstallation();
+        if (!installation.IsInstalled || installation.IsInstalledExecutable(current)) return false;
+        if (!SemanticVersion.TryParse(ProductVersion, out var currentVersion) ||
+            !SemanticVersion.TryParse(installation.ReadInstalledVersion(), out var installedVersion) ||
+            installedVersion.CompareTo(currentVersion) < 0)
+        {
+            return false;
+        }
+
+        var startInfo = new ProcessStartInfo(installation.ExecutablePath)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = command == "agent"
+        };
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+        if (args.Length == 0)
+        {
+            startInfo.ArgumentList.Add("menu");
+        }
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Не удалось запустить установленную копию IS74Wifi.");
+        if (waitForExit)
+        {
+            process.WaitForExit();
+            exitCode = process.ExitCode;
+        }
+        return true;
+    }
+
+    private static async Task<int> CheckForUpdatesAsync()
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        var updater = new GitHubUpdateClient(http);
+        var update = await updater.CheckForUpdateAsync(
+            ProductVersion,
+            includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
+
+        if (update is null)
+        {
+            Console.WriteLine($"Обновлений нет. Текущая версия: {ProductVersion}");
+            return 0;
+        }
+
+        Console.WriteLine($"Доступна новая версия: {update.TagName}");
+        Console.WriteLine($"Текущая версия       : {ProductVersion}");
+        Console.WriteLine($"Страница релиза      : {update.ReleasePageUrl}");
+        return 0;
+    }
+
+    private static async Task<int> UpdateCommandAsync()
+    {
+        await UpdateAsync(restartMenu: false, askConfirmation: false).ConfigureAwait(false);
+        return 0;
+    }
+
+    private static async Task<bool> UpdateAsync(bool restartMenu, bool askConfirmation = true)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        var updater = new GitHubUpdateClient(http);
+        var update = await updater.CheckForUpdateAsync(
+            ProductVersion,
+            includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
+
+        if (update is null)
+        {
+            Console.WriteLine($"Обновлений нет. Текущая версия: {ProductVersion}");
+            return false;
+        }
+
+        Console.WriteLine($"Доступна новая версия: {update.TagName}");
+        Console.WriteLine($"Текущая версия       : {ProductVersion}");
+        if (askConfirmation)
+        {
+            Console.Write("Скачать и установить обновление? [Y/N]: ");
+            var answer = (Console.ReadLine() ?? string.Empty).Trim();
+            if (!answer.Equals("Y", StringComparison.OrdinalIgnoreCase) &&
+                !answer.Equals("YES", StringComparison.OrdinalIgnoreCase) &&
+                !answer.Equals("Д", StringComparison.OrdinalIgnoreCase) &&
+                !answer.Equals("ДА", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("Обновление отменено.");
+                return false;
+            }
+        }
+
+        Console.WriteLine("Скачиваю обновление с GitHub Releases и проверяю SHA-256...");
+        var prepared = await updater.DownloadAndVerifyAsync(update).ConfigureAwait(false);
+
+        try
+        {
+            ValidatePreparedExecutable(prepared.ExecutablePath);
+            using var app = ApplicationRuntime.Create();
+            var currentExecutable = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(currentExecutable) || !File.Exists(currentExecutable))
+                throw new InvalidOperationException("Не удалось определить текущий IS74Wifi.exe.");
+
+            var autostartWasEnabled = app.Autostart.IsEnabled();
+            AgentProcessControl.SignalStop();
+            if (!AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(5)))
+                throw new InvalidOperationException("Фоновый агент не остановился перед обновлением.");
+
+            var installation = new ProgramInstallation();
+            var installedExecutable = installation.InstallFrom(currentExecutable, ProductVersion);
+            if (autostartWasEnabled)
+            {
+                app.Autostart.Enable(installedExecutable, startNow: false);
+            }
+
+            var helperPath = Path.Combine(prepared.WorkingDirectory, "IS74Wifi-updater.exe");
+            File.Copy(currentExecutable, helperPath, overwrite: true);
+
+            var startInfo = new ProcessStartInfo(helperPath)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("update-apply");
+            startInfo.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add(prepared.ExecutablePath);
+            startInfo.ArgumentList.Add(installedExecutable);
+            startInfo.ArgumentList.Add(update.TagName);
+            startInfo.ArgumentList.Add(prepared.WorkingDirectory);
+            startInfo.ArgumentList.Add(autostartWasEnabled ? "1" : "0");
+            startInfo.ArgumentList.Add(restartMenu ? "1" : "0");
+
+            _ = Process.Start(startInfo) ?? throw new InvalidOperationException("Не удалось запустить процесс применения обновления.");
+            app.Logger.Write(DiagnosticLevel.Info,
+                $"update.scheduled from={ProductVersion} to={update.TagName} autostart={autostartWasEnabled}");
+
+            Console.WriteLine($"Обновление {update.TagName} проверено и подготовлено.");
+            Console.WriteLine($"Установленная программа: {installedExecutable}");
+            Console.WriteLine("Текущий процесс завершится, после чего EXE будет заменён.");
+            return true;
+        }
+        catch
+        {
+            GitHubUpdateClient.TryDeleteDirectory(prepared.WorkingDirectory);
+            throw;
+        }
+    }
+
+    private static void ValidatePreparedExecutable(string executablePath)
+    {
+        var startInfo = new ProcessStartInfo(executablePath)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("version");
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Не удалось запустить скачанную версию IS74Wifi.");
+        if (!process.WaitForExit(15000))
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+            throw new InvalidOperationException("Скачанная версия IS74Wifi не завершила проверочный запуск.");
+        }
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"Скачанная версия IS74Wifi не прошла проверочный запуск (код {process.ExitCode}).");
+    }
+
+    private static int ApplyPreparedUpdate(string[] args)
+    {
+        if (args.Length != 7 ||
+            !int.TryParse(args[0], out var parentPid))
+        {
+            return 2;
+        }
+
+        var source = Path.GetFullPath(args[1]);
+        var target = Path.GetFullPath(args[2]);
+        var version = args[3];
+        var workingDirectory = Path.GetFullPath(args[4]);
+        var restartAgent = args[5] == "1";
+        var restartMenu = args[6] == "1";
+        var installation = new ProgramInstallation();
+
+        if (!ProgramInstallation.PathsEqual(target, installation.ExecutablePath) ||
+            !IsPathInside(source, workingDirectory))
+        {
+            return 2;
+        }
+
+        if (!WaitForProcessExit(parentPid, TimeSpan.FromSeconds(30)))
+        {
+            return 3;
+        }
+        AgentProcessControl.SignalStop();
+        if (!AgentProcessControl.WaitForAgentExit(TimeSpan.FromSeconds(10)))
+        {
+            return 3;
+        }
+
+        Directory.CreateDirectory(installation.InstallDirectory);
+        var staged = installation.ExecutablePath + ".new";
+        File.Copy(source, staged, overwrite: true);
+        File.Move(staged, installation.ExecutablePath, overwrite: true);
+        installation.WriteVersionMarker(version);
+
+        if (restartAgent)
+        {
+            var agent = new ProcessStartInfo(installation.ExecutablePath)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            agent.ArgumentList.Add("agent");
+            _ = Process.Start(agent);
+        }
+
+        if (restartMenu)
+        {
+            var menu = new ProcessStartInfo(installation.ExecutablePath)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = false
+            };
+            menu.ArgumentList.Add("menu");
+            _ = Process.Start(menu);
+        }
+
+        ScheduleDirectoryCleanup(workingDirectory);
+        return 0;
+    }
+
+    private static void ScheduleDeferredUninstall(ProgramInstallation installation)
+    {
+        var current = Environment.ProcessPath ?? throw new InvalidOperationException("Не удалось определить путь к IS74Wifi.exe.");
+        var work = Path.Combine(Path.GetTempPath(), "IS74Wifi-uninstall-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+        var helper = Path.Combine(work, "IS74Wifi-uninstaller.exe");
+        File.Copy(current, helper, overwrite: true);
+
+        var startInfo = new ProcessStartInfo(helper)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("uninstall-apply");
+        startInfo.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add(installation.InstallDirectory);
+        startInfo.ArgumentList.Add(work);
+        _ = Process.Start(startInfo) ?? throw new InvalidOperationException("Не удалось запустить завершение удаления программы.");
+    }
+
+    private static int ApplyDeferredUninstall(string[] args)
+    {
+        if (args.Length != 3 || !int.TryParse(args[0], out var parentPid))
+            return 2;
+
+        var installDirectory = Path.GetFullPath(args[1]);
+        var work = Path.GetFullPath(args[2]);
+        var installation = new ProgramInstallation();
+        if (!ProgramInstallation.PathsEqual(installDirectory, installation.InstallDirectory))
+            return 2;
+
+        if (!WaitForProcessExit(parentPid, TimeSpan.FromSeconds(30)))
+            return 3;
+
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            try
+            {
+                if (Directory.Exists(installDirectory)) Directory.Delete(installDirectory, recursive: true);
+                break;
+            }
+            catch (IOException)
+            {
+                Thread.Sleep(250);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                Thread.Sleep(250);
+            }
+        }
+
+        ScheduleDirectoryCleanup(work);
+        return Directory.Exists(installDirectory) ? 3 : 0;
+    }
+
+    private static bool WaitForProcessExit(int processId, TimeSpan timeout)
+    {
+        if (processId <= 0 || processId == Environment.ProcessId) return true;
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.WaitForExit((int)Math.Min(timeout.TotalMilliseconds, int.MaxValue));
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
+    }
+
+    private static bool IsPathInside(string candidate, string directory)
+    {
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory)) + Path.DirectorySeparatorChar;
+        var path = Path.GetFullPath(candidate);
+        return path.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void CleanupStaleUpdateDirectories()
+    {
+        try
+        {
+            var temp = Path.GetTempPath();
+            foreach (var directory in Directory.EnumerateDirectories(temp, "IS74Wifi-update-*"))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(directory) < DateTime.UtcNow.AddHours(-1))
+                        Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void ScheduleDirectoryCleanup(string directory)
+    {
+        try
+        {
+            var command = $"ping 127.0.0.1 -n 3 >nul & rmdir /s /q \"{directory}\"";
+            var startInfo = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("/d");
+            startInfo.ArgumentList.Add("/s");
+            startInfo.ArgumentList.Add("/c");
+            startInfo.ArgumentList.Add(command);
+            _ = Process.Start(startInfo);
+        }
+        catch
+        {
+        }
+    }
+
     private static async Task<int> RunMenuAsync()
     {
         while (true)
@@ -394,6 +801,7 @@ internal static class Program
             Console.WriteLine("6. Сбросить регистрацию");
             Console.WriteLine("7. Удалить программу (автозапуск и данные)");
             Console.WriteLine("8. Открыть диагностические логи");
+            Console.WriteLine("9. Проверить обновления");
             Console.WriteLine("0. Выход");
             Console.Write("Выберите действие: ");
             var choice = Console.ReadLine()?.Trim();
@@ -412,10 +820,17 @@ internal static class Program
                         if (Console.ReadLine() == "YES") ResetRegistration();
                         break;
                     case "7":
-                        Console.Write("Удалить автозапуск и ВСЕ данные приложения? Введите PURGE: ");
-                        if (Console.ReadLine() == "PURGE") Uninstall();
+                        Console.Write("Удалить автозапуск, ВСЕ данные и установленную копию программы? Введите PURGE: ");
+                        if (Console.ReadLine() == "PURGE")
+                        {
+                            Uninstall();
+                            return 0;
+                        }
                         break;
                     case "8": OpenLogs(); break;
+                    case "9":
+                        if (await UpdateAsync(restartMenu: true).ConfigureAwait(false)) return 0;
+                        break;
                     case "0": return 0;
                     default: Console.WriteLine("Неизвестный пункт."); break;
                 }

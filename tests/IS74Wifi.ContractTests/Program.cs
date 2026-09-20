@@ -17,7 +17,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("authorization-flow", AuthorizationFlowContractTests.RunAsync),
     ("agent-policy", AgentContractTests.RunAsync),
     ("cached-dns", DnsContractTests.RunAsync),
-    ("internet-probe", TestInternetProbeAsync)
+    ("internet-probe", TestInternetProbeAsync),
+    ("self-update", UpdateContractTests.RunAsync)
 };
 
 foreach (var test in tests)

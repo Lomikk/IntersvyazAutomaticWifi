@@ -12,7 +12,7 @@ Primary goals:
 - remove PowerShell 5.1/7 compatibility work, StrictMode workarounds, BOM requirements, and PowerShell-specific async/error glue;
 - run a true background agent without Console Host / Windows Terminal artifacts;
 - classify DNS, timeout, HTTP, authentication, and ambiguous-side-effect failures explicitly instead of surfacing wrapper exceptions;
-- keep distribution simple: a small portable Windows utility, no GUI framework and no installer requirement;
+- keep distribution simple: a single-file Windows utility with per-user installation when autostart is enabled; no GUI framework and no elevated MSI installer requirement;
 - preserve the existing protocol timings and safety limits unless a separate field experiment justifies a change.
 
 ## Technology baseline
@@ -159,8 +159,9 @@ Status: **implementation complete; field validation pending**. Windows CI builds
 - Long-running consoleless `agent` mode.
 - Dynamic sleeping outside the expiry guard.
 - 24-hour predicted expiry scheduling and guard behavior.
-- Per-user `HKCU ...\Run` install/disable/uninstall operations.
-- `uninstall` removes the Run entry and local app data; portable program files remain user-managed.
+- Per-user `HKCU ...\Run` install/disable/uninstall operations. `install` copies the working EXE to `%LOCALAPPDATA%\Programs\IS74Wifi\IS74Wifi.exe` and points Run at that stable path.
+- `update-check` / `update` use public GitHub Releases, verify the release ZIP against its published SHA-256, then replace the installed EXE only after the running process exits.
+- `uninstall` removes the Run entry, local app data, and the installed per-user program copy; the original downloaded EXE remains user-managed if it still exists elsewhere.
 - Manual `connect`, `status`, `logs`, `reset`, and `purge` commands.
 
 Exit gate: Windows 10 and Windows 11 field tests confirm no terminal window remains open and autostart can be enabled/disabled/removed cleanly.

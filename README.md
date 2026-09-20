@@ -4,7 +4,17 @@
 
 ## Миграция на C#
 
-Типизированная реализация на C#/.NET 10 дошла до полевого alpha-кандидата. Для первого кандидата выбран NativeAOT `win-x64`: после перехода JSON-моделей на source generation пакет проходит `version`/`status` smoke-тесты и остаётся одним самодостаточным `IS74Wifi.exe`. Workflow `C# alpha candidate` дополнительно прогоняет C# contracts и PowerShell reference regressions, формирует ZIP + SHA-256 и публикует их как Actions artifact для полевой проверки. PowerShell-клиент остаётся production/reference реализацией, пока C#-версия не подтвердит поведенческий паритет на Windows 10/11. Рабочая дорожная карта: [`docs/csharp-migration-roadmap.md`](docs/csharp-migration-roadmap.md).
+Типизированная реализация на C#/.NET 10 дошла до полевого alpha-кандидата. Для C#-кандидатов выбран NativeAOT `win-x64`: после перехода JSON-моделей на source generation пакет проходит `version`/`status` smoke-тесты и остаётся одним самодостаточным `IS74Wifi.exe`. Workflow `C# alpha candidate` дополнительно прогоняет C# contracts и PowerShell reference regressions, формирует ZIP + SHA-256 и публикует их как Actions artifact для полевой проверки. C# alpha.9 добавляет per-user установку рабочей копии в `%LOCALAPPDATA%\Programs\IS74Wifi`, перенос автозапуска на этот стабильный путь и self-update через публичные GitHub Releases (`update-check` / `update`) с обязательной проверкой опубликованного SHA-256 перед заменой EXE. Данные и DPAPI-секреты остаются отдельно в `%LOCALAPPDATA%\IS74Wifi`. PowerShell-клиент остаётся production/reference реализацией, пока C#-версия не подтвердит поведенческий паритет на Windows 10/11. Рабочая дорожная карта: [`docs/csharp-migration-roadmap.md`](docs/csharp-migration-roadmap.md).
+
+### C# установка и обновление
+
+C#-клиент поставляется одним self-contained EXE, но после команды `install` рабочая копия хранится по стабильному per-user пути:
+
+```text
+%LOCALAPPDATA%\Programs\IS74Wifi\IS74Wifi.exe
+```
+
+Состояние приложения при этом остаётся отдельно в `%LOCALAPPDATA%\IS74Wifi`. Запись `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` указывает на установленную копию, поэтому перемещение или удаление первоначально скачанного EXE больше не ломает автозапуск. Команды `update-check` и `update` читают публичные GitHub Releases без пользовательского токена, выбирают более новую подходящую версию, скачивают `IS74Wifi-<tag>-win-x64.zip` и соответствующий `.sha256`, проверяют SHA-256 и только после этого заменяют установленный EXE через отдельный временный процесс. `uninstall` удаляет Run-запись, локальные данные и установленную копию.
 
 ## Production MVP
 
