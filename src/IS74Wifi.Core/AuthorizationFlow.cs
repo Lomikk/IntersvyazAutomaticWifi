@@ -73,7 +73,6 @@ public sealed class AuthorizationFlow(
             return HandleBaselineFailure(baseline.Failure!, request.Reason);
         }
 
-        state.ClearPreStepFailure();
         var budget = state.RegisterStepOneSend(request.Reason);
         if (!budget.Allowed)
         {
@@ -114,11 +113,42 @@ public sealed class AuthorizationFlow(
                         return Cancel(request.Reason);
                     }
 
+                    if (IsGuaranteedNoStepOneSideEffect(stepOne))
+                    {
+                        pollCts.Cancel();
+                        var retryAfter = state.MarkReservedStepOneNotSent(request.Reason);
+                        return new AuthorizationOutcome(
+                            AuthorizationOutcomeKind.RetryableBeforeStepOne,
+                            InternetConfirmed: null,
+                            AuthorizedAtUtc: null,
+                            RetryAfter: retryAfter,
+                            Timing: null);
+                    }
+
+                    // From this point the request either reached the portal or its
+                    // side effect is ambiguous. Previous pre-step failures no longer
+                    // belong to this attempt's retry history.
+                    state.ClearPreStepFailure();
+
                     if (stepOne.IsSuccess && stepOne.Value!.Disposition == StepOneDisposition.AlreadyAuthorized)
                     {
                         pollCts.Cancel();
                         state.MarkAlreadyAuthorized(request.Reason);
                         return Outcome(AuthorizationOutcomeKind.AlreadyAuthorized);
+                    }
+
+                    if (stepOne.Failure is { Kind: CaptivePortalFailureKind.HttpStatus } httpFailure &&
+                        httpFailure.StatusCode is { } statusCode &&
+                        statusCode != 408 && statusCode < 500)
+                    {
+                        // A terminal 4xx (especially 429) is an explicit server
+                        // rejection, not an ambiguous lost response. Waiting through
+                        // the full 10 s mailbox schedule only delays the final state.
+                        pollCts.Cancel();
+                        state.MarkUserActionRequired(
+                            statusCode == 429 ? "step-one-rate-limited" : "step-one-rejected",
+                            request.Reason);
+                        return Outcome(AuthorizationOutcomeKind.UserActionRequired);
                     }
 
                     if (stepOne.Failure?.Kind == CaptivePortalFailureKind.UnexpectedRedirect)
@@ -157,6 +187,19 @@ public sealed class AuthorizationFlow(
             {
                 stepOne = await stepOneTask.ConfigureAwait(false);
             }
+
+            if (IsGuaranteedNoStepOneSideEffect(stepOne))
+            {
+                var retryAfter = state.MarkReservedStepOneNotSent(request.Reason);
+                return new AuthorizationOutcome(
+                    AuthorizationOutcomeKind.RetryableBeforeStepOne,
+                    InternetConfirmed: null,
+                    AuthorizedAtUtc: null,
+                    RetryAfter: retryAfter,
+                    Timing: null);
+            }
+
+            state.ClearPreStepFailure();
             return HandleNoCode(
                 stepOne,
                 request.Reason,
@@ -165,6 +208,10 @@ public sealed class AuthorizationFlow(
                 baselineId,
                 pollResult.Observations);
         }
+
+        // A fresh code is positive evidence that stepOne reached the backend even
+        // when its browser-facing response is still pending or was lost.
+        state.ClearPreStepFailure();
 
         var candidate = pollResult.Candidate!;
         var codeObservation = pollResult.Observations
@@ -365,8 +412,9 @@ public sealed class AuthorizationFlow(
         }
 
         var clock = Stopwatch.StartNew();
-        foreach (var targetMilliseconds in offsetsMilliseconds)
+        for (var index = 0; index < offsetsMilliseconds.Count; index++)
         {
+            var targetMilliseconds = offsetsMilliseconds[index];
             var remaining = targetMilliseconds - clock.Elapsed.TotalMilliseconds;
             if (remaining > 0)
             {
@@ -380,7 +428,24 @@ public sealed class AuthorizationFlow(
                 }
             }
 
-            var probe = await internet.ProbeAsync(probeTimeout, cancellationToken).ConfigureAwait(false);
+            // Keep the offsets absolute even when a probe endpoint stalls. Without
+            // this cap, eight nominal 0..3500 ms checks can serialize into >30 s
+            // because every individual probe has its own multi-second timeout.
+            var effectiveTimeout = probeTimeout;
+            if (index + 1 < offsetsMilliseconds.Count)
+            {
+                var untilNext = offsetsMilliseconds[index + 1] - clock.Elapsed.TotalMilliseconds;
+                if (untilNext > 0)
+                {
+                    var slot = TimeSpan.FromMilliseconds(Math.Max(100, untilNext));
+                    if (slot < effectiveTimeout)
+                    {
+                        effectiveTimeout = slot;
+                    }
+                }
+            }
+
+            var probe = await internet.ProbeAsync(effectiveTimeout, cancellationToken).ConfigureAwait(false);
             if (probe.Online)
             {
                 return true;
@@ -393,6 +458,10 @@ public sealed class AuthorizationFlow(
 
         return false;
     }
+
+    private static bool IsGuaranteedNoStepOneSideEffect(CaptivePortalResult<StepOneResponse> stepOne) =>
+        !stepOne.IsSuccess &&
+        stepOne.Failure is { Kind: CaptivePortalFailureKind.Transport, SideEffectMayHaveOccurred: false };
 
     private void LogTiming(AuthorizationTiming timing)
     {

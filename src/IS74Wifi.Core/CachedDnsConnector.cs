@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
@@ -23,6 +24,7 @@ public sealed class CachedDnsConnector : IAddressCacheWarmer
     private readonly HostAddressCache cache;
     private readonly HashSet<string> trackedHosts;
     private readonly TimeSpan cachedConnectTimeout;
+    private readonly TimeSpan warmResolveTimeout;
     private readonly Func<string, CancellationToken, Task<IPAddress[]>> resolver;
     private readonly Func<IPAddress, int, TimeSpan, CancellationToken, ValueTask<Stream>> dialer;
 
@@ -31,13 +33,15 @@ public sealed class CachedDnsConnector : IAddressCacheWarmer
         IEnumerable<string>? trackedHosts = null,
         TimeSpan? cachedConnectTimeout = null,
         Func<string, CancellationToken, Task<IPAddress[]>>? resolver = null,
-        Func<IPAddress, int, TimeSpan, CancellationToken, ValueTask<Stream>>? dialer = null)
+        Func<IPAddress, int, TimeSpan, CancellationToken, ValueTask<Stream>>? dialer = null,
+        TimeSpan? warmResolveTimeout = null)
     {
         this.cache = cache;
         this.trackedHosts = new HashSet<string>(
             trackedHosts ?? DefaultHosts,
             StringComparer.OrdinalIgnoreCase);
         this.cachedConnectTimeout = cachedConnectTimeout ?? TimeSpan.FromMilliseconds(700);
+        this.warmResolveTimeout = warmResolveTimeout ?? TimeSpan.FromSeconds(1);
         this.resolver = resolver ?? ResolveAsync;
         this.dialer = dialer ?? DialAsync;
     }
@@ -57,12 +61,23 @@ public sealed class CachedDnsConnector : IAddressCacheWarmer
 
         if (trackedHosts.Contains(host))
         {
+            // cachedConnectTimeout is a budget for the cached phase as a whole,
+            // not for every stale address. Otherwise a multi-address stale cache
+            // can consume most/all of the caller's baseline timeout before DNS is
+            // even attempted.
+            var cachedClock = Stopwatch.StartNew();
             foreach (var address in cache.GetAddresses(host))
             {
+                var remaining = cachedConnectTimeout - cachedClock.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
                 attempted.Add(address);
                 try
                 {
-                    return await dialer(address, port, cachedConnectTimeout, cancellationToken).ConfigureAwait(false);
+                    return await dialer(address, port, remaining, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -101,11 +116,6 @@ public sealed class CachedDnsConnector : IAddressCacheWarmer
             throw new CachedDnsUnavailableException(host);
         }
 
-        if (trackedHosts.Contains(host))
-        {
-            cache.Set(host, resolved);
-        }
-
         foreach (var address in resolved)
         {
             if (!attempted.Add(address))
@@ -115,7 +125,12 @@ public sealed class CachedDnsConnector : IAddressCacheWarmer
 
             try
             {
-                return await dialer(address, port, cachedConnectTimeout, cancellationToken).ConfigureAwait(false);
+                var stream = await dialer(address, port, cachedConnectTimeout, cancellationToken).ConfigureAwait(false);
+                if (trackedHosts.Contains(host))
+                {
+                    TrySetCache(host, resolved);
+                }
+                return stream;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -132,26 +147,52 @@ public sealed class CachedDnsConnector : IAddressCacheWarmer
 
     public async Task WarmKnownHostsAsync(TimeSpan maxAge, CancellationToken cancellationToken = default)
     {
-        foreach (var host in trackedHosts)
+        var staleHosts = trackedHosts
+            .Where(host => !cache.IsFresh(host, maxAge))
+            .ToArray();
+        if (staleHosts.Length == 0 || cancellationToken.IsCancellationRequested)
         {
-            if (cache.IsFresh(host, maxAge))
-            {
-                continue;
-            }
+            return;
+        }
 
-            try
-            {
-                var addresses = await resolver(host, cancellationToken).ConfigureAwait(false);
-                cache.Set(host, addresses);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch
-            {
-                // Warming is an optimization. A failed refresh must never break the agent.
-            }
+        // Warming is only an optimization. Resolve stale hosts in parallel and
+        // bound every lookup so a wedged system DNS resolver cannot block the
+        // single agent loop long enough to miss the expiry edge.
+        var tasks = staleHosts.Select(host => WarmHostAsync(host, cancellationToken)).ToArray();
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    private async Task WarmHostAsync(string host, CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(warmResolveTimeout);
+        try
+        {
+            var addresses = await resolver(host, timeoutCts.Token).ConfigureAwait(false);
+            cache.Set(host, addresses);
+        }
+        catch (OperationCanceledException)
+        {
+            // Caller cancellation or the small warm-only timeout both stop this
+            // optimization silently. The real request path still has its own DNS
+            // fallback and typed failure handling.
+        }
+        catch
+        {
+            // Warming is an optimization. A failed refresh must never break the agent.
+        }
+    }
+
+    private void TrySetCache(string host, IEnumerable<IPAddress> addresses)
+    {
+        try
+        {
+            cache.Set(host, addresses);
+        }
+        catch
+        {
+            // The persisted cache is an optimization. A successful live connection
+            // must not be failed just because the cache file cannot be updated.
         }
     }
 

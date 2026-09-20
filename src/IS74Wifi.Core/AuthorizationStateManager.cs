@@ -53,7 +53,9 @@ public sealed class AuthorizationStateManager(
         store.Save(state with
         {
             AutomaticStepOneAttempts = attempt,
-            PreStepFailureCount = 0,
+            // Keep the pre-step failure streak until we have evidence that this
+            // reserved stepOne actually reached the portal. A DNS failure in the
+            // portal connection can still prove that no send happened.
             NextAutomaticRetryUtc = null,
             LastAttemptUtc = clock.GetUtcNow(),
             LastAttemptReason = reason == AuthorizationAttemptReason.Retry ? "retry" : "automatic",
@@ -97,9 +99,28 @@ public sealed class AuthorizationStateManager(
         return TimeSpan.FromSeconds(delaySeconds);
     }
 
-    public TimeSpan? MarkPreStepFailure(AuthorizationAttemptReason reason)
+    public TimeSpan? MarkPreStepFailure(AuthorizationAttemptReason reason) =>
+        SavePreStepFailure(store.Load(), reason);
+
+    /// <summary>
+    /// Rolls back the pre-send reservation when transport proves that stepOne
+    /// could not have reached the portal (currently a DNS-unavailable failure).
+    /// This preserves the four-attempt budget for actual portal sends.
+    /// </summary>
+    public TimeSpan? MarkReservedStepOneNotSent(AuthorizationAttemptReason reason)
     {
-        var state = store.Load() with
+        var state = store.Load();
+        if (reason != AuthorizationAttemptReason.Manual && state.AutomaticStepOneAttempts > 0)
+        {
+            state = state with { AutomaticStepOneAttempts = state.AutomaticStepOneAttempts - 1 };
+        }
+
+        return SavePreStepFailure(state, reason);
+    }
+
+    private TimeSpan? SavePreStepFailure(RuntimeState state, AuthorizationAttemptReason reason)
+    {
+        state = state with
         {
             LastAttemptUtc = clock.GetUtcNow(),
             LastAttemptReason = ReasonText(reason),
