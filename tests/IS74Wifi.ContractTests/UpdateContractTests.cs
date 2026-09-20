@@ -10,6 +10,7 @@ internal static class UpdateContractTests
     {
         TestSemanticVersions();
         TestProgramInstallation();
+        TestInstalledAppRegistration();
         TestChecksumParser();
         await TestReleaseSelectionAndVerifiedDownloadAsync();
     }
@@ -18,9 +19,11 @@ internal static class UpdateContractTests
     {
         Assert(SemanticVersion.TryParse("v0.1.0-alpha.8", out var alpha8), "alpha.8 version did not parse");
         Assert(SemanticVersion.TryParse("v0.1.0-alpha.10", out var alpha10), "alpha.10 version did not parse");
+        Assert(SemanticVersion.TryParse("v0.1.0-alpha.11", out var alpha11), "alpha.11 version did not parse");
         Assert(SemanticVersion.TryParse("v0.1.0", out var stable), "stable version did not parse");
         Assert(alpha10.CompareTo(alpha8) > 0, "alpha ordering is lexical instead of numeric");
-        Assert(stable.CompareTo(alpha10) > 0, "stable release did not sort after prerelease");
+        Assert(alpha11.CompareTo(alpha10) > 0, "alpha.11 did not sort after alpha.10");
+        Assert(stable.CompareTo(alpha11) > 0, "stable release did not sort after prerelease");
         Assert(!SemanticVersion.TryParse("alpha.9", out _), "invalid version was accepted");
     }
 
@@ -46,6 +49,46 @@ internal static class UpdateContractTests
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("новее", StringComparison.Ordinal))
         {
+        }
+    }
+
+
+    private static void TestInstalledAppRegistration()
+    {
+        var executable = Path.Combine("C:\\Users", "Test User", "AppData", "Local", "Programs", "IS74Wifi", "IS74Wifi.exe");
+        Assert(WindowsInstalledAppRegistration.BuildUninstallCommand(executable) ==
+               $"\"{Path.GetFullPath(executable)}\" uninstall",
+            "Windows uninstall command does not target the canonical installed EXE");
+        Assert(WindowsInstalledAppRegistration.ToDisplayVersion("v0.1.0-alpha.11") == "0.1.0-alpha.11",
+            "Windows display version normalization changed");
+
+        if (!OperatingSystem.IsWindows()) return;
+
+        using var temp = TempDirectory.Create();
+        var source = Path.Combine(temp.Path, "downloaded.exe");
+        File.WriteAllText(source, "binary-placeholder");
+        var installation = new ProgramInstallation(Path.Combine(temp.Path, "local-app-data"));
+        installation.InstallFrom(source, "v0.1.0-alpha.11");
+
+        var registration = new WindowsInstalledAppRegistration("IS74WifiContract-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Assert(registration.Reconcile(installation, "v0.1.0-alpha.11"),
+                "missing installed-app registration was not created");
+            Assert(registration.IsRegisteredFor(installation, "v0.1.0-alpha.11"),
+                "installed-app registration did not point at the canonical install");
+            Assert(!registration.Reconcile(installation, "v0.1.0-alpha.11"),
+                "already-canonical installed-app registration was rewritten");
+
+            installation.DeleteInstalledFilesIfNotRunning(Environment.ProcessPath);
+            Assert(registration.Reconcile(installation, "v0.1.0-alpha.11"),
+                "stale installed-app registration was not removed after the install disappeared");
+            Assert(!registration.IsRegisteredFor(installation, "v0.1.0-alpha.11"),
+                "stale installed-app registration remained after reconciliation");
+        }
+        finally
+        {
+            registration.Unregister();
         }
     }
 

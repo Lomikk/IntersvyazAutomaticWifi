@@ -159,9 +159,10 @@ Status: **implementation complete; field validation pending**. Windows CI builds
 - Long-running consoleless `agent` mode.
 - Dynamic sleeping outside the expiry guard.
 - 24-hour predicted expiry scheduling and guard behavior.
-- Per-user `HKCU ...\Run` install/disable/uninstall operations. `install` copies the working EXE to `%LOCALAPPDATA%\Programs\IS74Wifi\IS74Wifi.exe` and points Run at that stable path.
-- `update-check` / `update` use public GitHub Releases, verify the release ZIP against its published SHA-256, then replace the installed EXE only after the running process exits.
-- `uninstall` removes the Run entry, local app data, and the installed per-user program copy; the original downloaded EXE remains user-managed if it still exists elsewhere.
+- Per-user `HKCU ...\Run` install/disable/uninstall operations. `install` copies the working EXE to `%LOCALAPPDATA%\Programs\IS74Wifi\IS74Wifi.exe` and points Run at that stable path; stale Run commands are detected and removed instead of being reported as an enabled automatic mode.
+- The canonical installed copy is registered under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\IS74Wifi`, so Windows Installed Apps exposes the same per-user uninstall flow without elevation.
+- `update-check` / `update` use public GitHub Releases, verify the release ZIP against its published SHA-256, then replace the installed EXE only after the running process exits and refresh the Windows uninstall registration to the new version.
+- `uninstall` removes the Run entry, local app data, Installed Apps registration, and the installed per-user program copy; the original downloaded EXE remains user-managed if it still exists elsewhere.
 - Manual `connect`, `status`, `logs`, `reset`, and `purge` commands.
 
 Exit gate: Windows 10 and Windows 11 field tests confirm no terminal window remains open and autostart can be enabled/disabled/removed cleanly.

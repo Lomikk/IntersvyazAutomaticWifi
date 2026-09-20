@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using System.Net;
 using IS74Wifi.Core;
 
@@ -7,6 +8,7 @@ internal static class AgentContractTests
     {
         TestSleepPolicy();
         TestAutostartCommand();
+        TestAutostartRegistrationState();
         TestAgentPidRecord();
         await TestExpiryIsAuthoritativeAsync();
         await TestPreExpiryNeedsTwoCaptiveResponsesAsync();
@@ -43,6 +45,44 @@ internal static class AgentContractTests
         var path = Path.Combine("C:\\Program Files", "IS74 Wifi", "IS74Wifi.exe");
         var command = WindowsAutostartService.BuildCommand(path);
         Assert(command == $"\"{Path.GetFullPath(path)}\" agent", "HKCU Run command quoting changed");
+        Assert(WindowsAutostartService.CommandMatchesExecutable(command, path), "canonical HKCU Run command was not recognized");
+        Assert(!WindowsAutostartService.CommandMatchesExecutable($"\"{Path.GetFullPath(path)}\" menu", path),
+            "non-agent HKCU Run command was accepted as canonical");
+    }
+
+    private static void TestAutostartRegistrationState()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        const string runKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        var valueName = "IS74WifiContract-" + Guid.NewGuid().ToString("N");
+        var executable = Path.Combine(Path.GetTempPath(), valueName + ".exe");
+        File.WriteAllText(executable, "placeholder");
+        var service = new WindowsAutostartService(valueName);
+
+        try
+        {
+            using (var key = Registry.CurrentUser.CreateSubKey(runKeyPath, writable: true)!)
+            {
+                key.SetValue(valueName, WindowsAutostartService.BuildCommand(executable), RegistryValueKind.String);
+            }
+
+            Assert(service.GetRegistrationState(executable) == AutostartRegistrationState.Enabled,
+                "canonical HKCU Run registration was not recognized as enabled");
+
+            File.Delete(executable);
+            Assert(service.GetRegistrationState(executable) == AutostartRegistrationState.Stale,
+                "HKCU Run registration targeting a missing EXE was not marked stale");
+            Assert(service.RemoveIfStale(executable), "stale HKCU Run registration was not removed");
+            Assert(service.GetRegistrationState(executable) == AutostartRegistrationState.Disabled,
+                "removed HKCU Run registration still appeared enabled");
+        }
+        finally
+        {
+            try { File.Delete(executable); } catch { }
+            using var key = Registry.CurrentUser.OpenSubKey(runKeyPath, writable: true);
+            key?.DeleteValue(valueName, throwOnMissingValue: false);
+        }
     }
 
     private static void TestAgentPidRecord()

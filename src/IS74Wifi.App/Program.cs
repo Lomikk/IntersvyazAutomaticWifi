@@ -5,7 +5,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.10";
+    private const string ProductVersion = "v0.1.0-alpha.11";
 
     [STAThread]
     private static async Task<int> Main(string[] args)
@@ -260,16 +260,28 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("=== IS74 Automatic Wi-Fi ===");
         var installation = new ProgramInstallation();
-        Console.WriteLine($"Версия      : {ProductVersion}");
-        Console.WriteLine($"Установка   : {(installation.IsInstalled ? "есть" : "нет")}");
-        Console.WriteLine($"Регистрация : {(secrets is null ? "нет" : "есть")}");
-        Console.WriteLine($"Телефон     : {MaskPhone(secrets?.Phone)}");
-        var automaticAuthorizationEnabled = app.Autostart.IsEnabled();
+        var installedVersion = installation.ReadInstalledVersion();
+        var installedAppRegistration = new WindowsInstalledAppRegistration();
+        var staleAutostartRemoved = app.Autostart.RemoveIfStale(installation.ExecutablePath);
+        var installedAppRegistrationChanged = installedAppRegistration.Reconcile(
+            installation,
+            installedVersion ?? ProductVersion);
+
+        Console.WriteLine($"Версия               : {ProductVersion}");
+        Console.WriteLine($"Установка            : {(installation.IsInstalled ? "есть" : "нет")}");
+        if (installation.IsInstalled && !string.IsNullOrWhiteSpace(installedVersion) &&
+            !string.Equals(installedVersion, ProductVersion, StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"Установленная версия : {installedVersion}");
+        }
+        Console.WriteLine($"Данные регистрации   : {(secrets is null ? "нет" : "сохранены")}");
+        Console.WriteLine($"Телефон              : {MaskPhone(secrets?.Phone)}");
+        var automaticAuthorizationEnabled = app.Autostart.IsEnabledFor(installation.ExecutablePath);
         var agentRunning = AgentProcessControl.IsAgentRunning();
         Console.WriteLine($"Автоматическая авторизация : {(automaticAuthorizationEnabled ? "включена" : "выключена")}");
         Console.WriteLine($"Фоновый агент              : {(agentRunning ? "работает" : "остановлен")}");
         Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
-        Console.WriteLine($"Интернет    : {(internet.Online ? "доступен" : "не подтверждён")}");
+        Console.WriteLine($"Интернет                     : {(internet.Online ? "доступен" : "не подтверждён")}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
         {
             Console.WriteLine($"API-сессия  : до {session.AccessEnd}");
@@ -293,6 +305,18 @@ internal static class Program
         if (state.UserActionRequired)
         {
             Console.WriteLine("Требуется действие           : да — автоматические попытки остановлены");
+        }
+        if (staleAutostartRemoved)
+        {
+            Console.WriteLine("Обслуживание                 : удалена устаревшая запись автозапуска");
+            app.Logger.Write(DiagnosticLevel.Info, "autostart.stale-entry removed=true");
+        }
+        if (installedAppRegistrationChanged)
+        {
+            Console.WriteLine(installation.IsInstalled
+                ? "Обслуживание                 : запись в установленных приложениях восстановлена"
+                : "Обслуживание                 : устаревшая запись установленного приложения удалена");
+            app.Logger.Write(DiagnosticLevel.Info, $"installed-app.registration reconciled=true installed={installation.IsInstalled}");
         }
         if (installation.IsInstalled)
         {
@@ -320,16 +344,19 @@ internal static class Program
 
         var installation = new ProgramInstallation();
         var installedExecutable = installation.InstallFrom(executable, ProductVersion);
+        new WindowsInstalledAppRegistration().Register(installation, ProductVersion);
         app.Autostart.Enable(installedExecutable, startNow: true);
         app.Logger.Write(DiagnosticLevel.Info, "autostart.enabled mode=hkcu-run installed-copy=true");
         Console.WriteLine("Автоматическая авторизация включена.");
         Console.WriteLine("Фоновый агент запущен и сразу проверит текущее подключение.");
         Console.WriteLine("Если вы подключены к Campus Wi-Fi и требуется авторизация, программа попробует выполнить её автоматически.");
         Console.WriteLine("Фоновый агент будет автоматически запускаться при входе в Windows.");
+        Console.WriteLine("IS74Wifi добавлена в список установленных приложений Windows.");
         Console.WriteLine();
         Console.WriteLine("Это окно теперь можно закрыть. Для работы программы держать его открытым не требуется.");
         Console.WriteLine($"Рабочая копия программы: {installedExecutable}");
         Console.WriteLine("Скачанный EXE можно переместить или удалить.");
+        Console.WriteLine("Удалить программу позже можно через пункт 7 или через Установленные приложения Windows.");
         return 0;
     }
 
@@ -371,22 +398,24 @@ internal static class Program
         app.Maintenance.PurgeAllData();
 
         var installation = new ProgramInstallation();
+        new WindowsInstalledAppRegistration().Unregister();
         var current = Environment.ProcessPath;
         if (!installation.IsInstalled)
         {
-            Console.WriteLine("Автозапуск отключён, все локальные данные приложения удалены.");
+            Console.WriteLine("Автоматическая авторизация отключена, локальные данные и запись программы в Windows удалены.");
             return 0;
         }
 
         if (!installation.IsInstalledExecutable(current))
         {
             installation.DeleteInstalledFilesIfNotRunning(current);
-            Console.WriteLine("Автозапуск, данные и установленная копия программы удалены.");
+            Console.WriteLine("Программа полностью удалена: автозапуск, локальные данные, установленная копия и запись в Windows очищены.");
             return 0;
         }
 
         ScheduleDeferredUninstall(installation);
-        Console.WriteLine("Автозапуск и данные удалены. Установленная копия программы будет удалена после закрытия текущего процесса.");
+        Console.WriteLine("Автозапуск, локальные данные и запись программы в Windows удалены.");
+        Console.WriteLine("Установленная копия программы будет удалена после закрытия текущего процесса.");
         return 0;
     }
 
@@ -515,11 +544,13 @@ internal static class Program
             if (string.IsNullOrWhiteSpace(currentExecutable) || !File.Exists(currentExecutable))
                 throw new InvalidOperationException("Не удалось определить текущий IS74Wifi.exe.");
 
-            var autostartWasEnabled = app.Autostart.IsEnabled();
+            var installation = new ProgramInstallation();
+            _ = app.Autostart.RemoveIfStale(installation.ExecutablePath);
+            var autostartWasEnabled = app.Autostart.IsEnabledFor(installation.ExecutablePath);
             AgentProcessControl.StopAgentOrThrow();
 
-            var installation = new ProgramInstallation();
             var installedExecutable = installation.InstallFrom(currentExecutable, ProductVersion);
+            new WindowsInstalledAppRegistration().Register(installation, ProductVersion);
             if (autostartWasEnabled)
             {
                 app.Autostart.Enable(installedExecutable, startNow: false);
@@ -616,6 +647,7 @@ internal static class Program
         File.Copy(source, staged, overwrite: true);
         File.Move(staged, installation.ExecutablePath, overwrite: true);
         installation.WriteVersionMarker(version);
+        new WindowsInstalledAppRegistration().Register(installation, version);
 
         if (restartAgent)
         {
