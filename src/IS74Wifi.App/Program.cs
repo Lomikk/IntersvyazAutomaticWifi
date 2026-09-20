@@ -133,13 +133,11 @@ internal static class Program
         }
 
         var confirmation = checkedCode.Value!;
-        app.Logger.Write(DiagnosticLevel.Info, $"registration.linked-profiles count={confirmation.Addresses.Count}");
-        var selectedUserId = SelectLinkedProfile(confirmation.Addresses);
+        app.Logger.Write(DiagnosticLevel.Info, "registration.confirmed mode=phone-only");
 
         var sessionResult = await app.Api.GetTokenAsync(
             confirmation.AuthId,
-            deviceId,
-            selectedUserId).ConfigureAwait(false);
+            deviceId).ConfigureAwait(false);
         if (!sessionResult.IsSuccess)
         {
             app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
@@ -185,45 +183,6 @@ internal static class Program
         }
         Console.WriteLine("Теперь можно авторизовать Wi-Fi один раз сейчас или включить автоматическую авторизацию.");
         return 0;
-    }
-
-    private static string? SelectLinkedProfile(IReadOnlyList<LinkedAddressProfile> profiles)
-    {
-        if (profiles.Count == 0)
-        {
-            return null;
-        }
-
-        if (profiles.Count == 1)
-        {
-            Console.WriteLine($"Найден связанный аккаунт Интерсвязи: {profiles[0].DisplayName}");
-            return profiles[0].UserId;
-        }
-
-        Console.WriteLine();
-        Console.WriteLine("К этому номеру телефона привязано несколько аккаунтов Интерсвязи. Выберите нужный:");
-        for (var i = 0; i < profiles.Count; i++)
-        {
-            Console.WriteLine($"{i + 1}. {profiles[i].DisplayName}");
-        }
-        Console.WriteLine("0. Отменить регистрацию");
-
-        while (true)
-        {
-            Console.Write("Выберите аккаунт: ");
-            var input = (Console.ReadLine() ?? string.Empty).Trim();
-            if (input == "0")
-            {
-                throw new InvalidOperationException("Регистрация отменена.");
-            }
-
-            if (int.TryParse(input, out var selected) && selected >= 1 && selected <= profiles.Count)
-            {
-                return profiles[selected - 1].UserId;
-            }
-
-            Console.WriteLine($"Введите число от 1 до {profiles.Count} или 0 для отмены.");
-        }
     }
 
     private static async Task<int> ConnectAsync()

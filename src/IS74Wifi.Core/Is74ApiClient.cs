@@ -83,49 +83,15 @@ public sealed class Is74ApiClient : IIs74PushClient
                 return InvalidPayload<ConfirmationChecked>(operation);
             }
 
-            var profiles = new List<LinkedAddressProfile>();
-            if (document.RootElement.TryGetProperty("addresses", out var addresses) &&
-                addresses.ValueKind != JsonValueKind.Null)
-            {
-                if (addresses.ValueKind != JsonValueKind.Array)
-                {
-                    return InvalidPayload<ConfirmationChecked>(operation);
-                }
-
-                var index = 0;
-                foreach (var address in addresses.EnumerateArray())
-                {
-                    index++;
-                    if (address.ValueKind != JsonValueKind.Object)
-                    {
-                        return InvalidPayload<ConfirmationChecked>(operation);
-                    }
-
-                    var userId = FindScalarByNormalizedName(address, "userid");
-                    if (string.IsNullOrWhiteSpace(userId))
-                    {
-                        return InvalidPayload<ConfirmationChecked>(operation);
-                    }
-
-                    var displayName = FindFirstScalarByNormalizedNames(
-                        address,
-                        "shortaddress",
-                        "address",
-                        "fulladdress",
-                        "name") ?? $"Профиль {index}";
-
-                    profiles.Add(new LinkedAddressProfile(userId, displayName));
-                }
-            }
-
-            return Is74ApiResult<ConfirmationChecked>.Success(new ConfirmationChecked(authId, profiles));
+            // Campus Wi-Fi registration is phone/device scoped. Account/address
+            // metadata returned by the shared mobile backend is intentionally ignored.
+            return Is74ApiResult<ConfirmationChecked>.Success(new ConfirmationChecked(authId));
         }
     }
 
     public async Task<Is74ApiResult<Is74ApiSession>> GetTokenAsync(
         string authId,
         string deviceId,
-        string? userId = null,
         CancellationToken cancellationToken = default)
     {
         const string operation = "auth.get-token";
@@ -134,7 +100,7 @@ public sealed class Is74ApiClient : IIs74PushClient
         request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["authId"] = authId,
-            ["userId"] = userId ?? string.Empty,
+            ["userId"] = string.Empty,
             ["uniqueDeviceId"] = deviceId
         });
 
@@ -346,53 +312,6 @@ public sealed class Is74ApiClient : IIs74PushClient
     private static Is74ApiResult<T> InvalidPayload<T>(string operation) =>
         Is74ApiResult<T>.Fail(new Is74ApiFailure(Is74ApiFailureKind.InvalidPayload, operation));
 
-
-    private static string? FindFirstScalarByNormalizedNames(JsonElement element, params string[] normalizedNames)
-    {
-        foreach (var normalizedName in normalizedNames)
-        {
-            var value = FindScalarByNormalizedName(element, normalizedName);
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-        }
-        return null;
-    }
-
-    private static string? FindScalarByNormalizedName(JsonElement element, string normalizedName)
-    {
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        foreach (var property in element.EnumerateObject())
-        {
-            if (NormalizeJsonName(property.Name) == normalizedName)
-            {
-                var value = ReadScalarString(property.Value);
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return value;
-                }
-            }
-        }
-
-        foreach (var property in element.EnumerateObject())
-        {
-            if (property.Value.ValueKind == JsonValueKind.Object)
-            {
-                var nested = FindScalarByNormalizedName(property.Value, normalizedName);
-                if (!string.IsNullOrWhiteSpace(nested))
-                {
-                    return nested;
-                }
-            }
-        }
-
-        return null;
-    }
 
     private static string NormalizeJsonName(string name) =>
         new(name.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());

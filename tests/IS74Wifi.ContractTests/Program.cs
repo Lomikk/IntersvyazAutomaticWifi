@@ -207,7 +207,12 @@ static async Task TestIs74ApiAsync()
 
     Assert(seen.Any(x => x.Path == "/mobile/auth/get-confirm" && x.Method == "POST" && x.Body.Contains("\"authType\":0", StringComparison.Ordinal)), "get-confirm request contract changed");
     Assert(seen.Any(x => x.Path == "/mobile/auth/check-confirm" && x.Body.Contains("authId=", StringComparison.Ordinal)), "check-confirm empty authId contract changed");
-    Assert(seen.Any(x => x.Path == "/mobile/auth/get-token" && x.Body.Contains("uniqueDeviceId=device-1", StringComparison.Ordinal)), "get-token uniqueDeviceId contract changed");
+    Assert(seen.Any(x => x.Path == "/mobile/auth/get-token" &&
+        x.Body.Contains("uniqueDeviceId=device-1", StringComparison.Ordinal) &&
+        x.Body.Contains("userId=", StringComparison.Ordinal) &&
+        !x.Body.Contains("userId=17", StringComparison.Ordinal) &&
+        !x.Body.Contains("userId=23", StringComparison.Ordinal)),
+        "get-token must remain phone/device scoped with an empty userId");
     Assert(seen.Any(x => x.Path == "/mobile/pushtoken/add-with-device-id" && x.Authorization == "Bearer bearer-xyz"), "metadata Bearer header missing");
     Assert(seen.Any(x => x.Path == "/mobile/pushtoken/add-with-device-id" &&
         x.Body.Contains("\"AUTHORIZE_PHONE\":\"9123456789\"", StringComparison.Ordinal) &&
@@ -228,33 +233,38 @@ static async Task TestIs74ApiAsync()
     Assert(PushMessageParser.ParsePage("{\"unexpected\":123}", out _) == PushPageParseStatus.UnrecognizedSchema, "unknown push schema was accepted");
     Assert(PushMessageParser.ParsePage("{", out _) == PushPageParseStatus.InvalidJson, "malformed push JSON was not classified");
 
-    var profileRequests = new List<string>();
+    var accountRequests = new List<string>();
     using var multipleClient = new HttpClient(new DelegateHandler(async (request, cancellationToken) =>
     {
         var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
-        profileRequests.Add(body);
+        accountRequests.Add(body);
         return request.RequestUri!.AbsolutePath switch
         {
             "/mobile/auth/check-confirm" => JsonResponse("{\"authId\":\"a\",\"addresses\":[{\"userId\":17,\"address\":\"ул. Первая, 1\"},{\"USER_ID\":23,\"short_address\":\"ул. Вторая, 2\"}]}"),
-            "/mobile/auth/get-token" => JsonResponse("{\"TOKEN\":\"profile-token\",\"USER_ID\":23}"),
+            "/mobile/auth/get-token" => JsonResponse("{\"TOKEN\":\"phone-scoped-token\",\"USER_ID\":23}"),
             _ => new HttpResponseMessage(HttpStatusCode.NotFound)
         };
     }));
     var multipleApi = new Is74ApiClient(new HttpTransport(multipleClient));
     var multiple = await multipleApi.CheckConfirmationAsync("9123456789", "123456", "device-1");
-    Assert(multiple.IsSuccess && multiple.Value?.Addresses.Count == 2, "linked address profiles were not returned");
-    Assert(multiple.Value!.Addresses[0] == new LinkedAddressProfile("17", "ул. Первая, 1"), "first linked address profile was parsed incorrectly");
-    Assert(multiple.Value.Addresses[1] == new LinkedAddressProfile("23", "ул. Вторая, 2"), "second linked address profile was parsed incorrectly");
+    Assert(multiple.IsSuccess && multiple.Value?.AuthId == "a",
+        "linked account metadata must not change confirmation success");
 
-    var profileToken = await multipleApi.GetTokenAsync("a", "device-1", multiple.Value.Addresses[1].UserId);
-    Assert(profileToken.IsSuccess && profileToken.Value?.Token == "profile-token", "selected linked profile did not obtain a token");
-    Assert(profileRequests.Any(body => body.Contains("userId=23", StringComparison.Ordinal)), "selected linked profile userId was not sent to get-token");
+    var phoneScopedToken = await multipleApi.GetTokenAsync("a", "device-1");
+    Assert(phoneScopedToken.IsSuccess && phoneScopedToken.Value?.Token == "phone-scoped-token",
+        "phone-scoped token request failed when linked accounts were present");
+    Assert(accountRequests.Any(body =>
+            body.Contains("userId=", StringComparison.Ordinal) &&
+            !body.Contains("userId=17", StringComparison.Ordinal) &&
+            !body.Contains("userId=23", StringComparison.Ordinal)),
+        "linked account userId leaked into the Campus Wi-Fi token request");
 
     using var malformedAddressClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
         JsonResponse("{\"authId\":\"a\",\"addresses\":[{\"address\":\"без userId\"}]}"))));
     var malformedAddress = await new Is74ApiClient(new HttpTransport(malformedAddressClient))
         .CheckConfirmationAsync("9123456789", "123456", "device-1");
-    Assert(malformedAddress.Failure?.Kind == Is74ApiFailureKind.InvalidPayload, "address without explicit userId must fail closed");
+    Assert(malformedAddress.IsSuccess && malformedAddress.Value?.AuthId == "a",
+        "irrelevant address metadata must not break Campus Wi-Fi registration");
 
     using var unauthorizedClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized))));
     var unauthorized = await new Is74ApiClient(new HttpTransport(unauthorizedClient))
