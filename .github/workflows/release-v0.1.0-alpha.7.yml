@@ -83,10 +83,19 @@ jobs:
         run: |
           $exe = Resolve-Path '.\artifacts\nativeaot\IS74Wifi.exe'
 
-          $version = & $exe version
-          if ($LASTEXITCODE -ne 0) { throw "NativeAOT version smoke failed: $LASTEXITCODE" }
-          if (($version | Out-String) -notmatch 'v0\.1\.0-alpha\.7') {
-            throw "Unexpected version output: $($version | Out-String)"
+          # IS74Wifi is a WinExe. PowerShell's call operator does not reliably
+          # wait for GUI-subsystem processes or populate $LASTEXITCODE, even
+          # though the executable itself is a CLI. Use Start-Process consistently
+          # with the alpha-candidate smoke tests.
+          $p = Start-Process -FilePath $exe -ArgumentList 'version' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "NativeAOT version smoke failed: $($p.ExitCode)" }
+
+          # Keep the expected release identity explicit in the source as a
+          # packaging guard without depending on redirected console output from
+          # a WinExe process.
+          $program = Get-Content '.\src\IS74Wifi.App\Program.cs' -Raw
+          if ($program -notmatch 'ProductVersion = "v0\.1\.0-alpha\.7"') {
+            throw 'Program.cs does not identify this build as v0.1.0-alpha.7'
           }
 
           $old = $env:LOCALAPPDATA
