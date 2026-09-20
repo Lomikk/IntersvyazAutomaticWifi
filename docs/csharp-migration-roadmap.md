@@ -117,6 +117,7 @@ Exit gate: unit/contract tests cover state persistence, redaction, SSID gating, 
 Status: **complete**. Registration, device metadata, push parsing, baseline handling, explicit 401, and typed transport failures are covered by the Windows C# contract run.
 
 - Registration endpoints: `get-confirm`, `check-confirm`, `get-token`.
+- Linked-address registration: `addresses=[]` keeps the empty `userId` path; one linked profile is selected directly; multiple linked profiles are shown to the user and the selected explicit `userId` is sent to `get-token` (no guessing from generic IDs).
 - Device metadata registration.
 - Typed push-message parsing for both observed root-array and object-shaped responses.
 - `baselineId` logic and fail-closed parsing.

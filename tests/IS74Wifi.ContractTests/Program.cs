@@ -227,10 +227,33 @@ static async Task TestIs74ApiAsync()
     Assert(PushMessageParser.ParsePage("{\"unexpected\":123}", out _) == PushPageParseStatus.UnrecognizedSchema, "unknown push schema was accepted");
     Assert(PushMessageParser.ParsePage("{", out _) == PushPageParseStatus.InvalidJson, "malformed push JSON was not classified");
 
-    using var multipleClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(JsonResponse("{\"authId\":\"a\",\"addresses\":[{},{}]}"))));
-    var multiple = await new Is74ApiClient(new HttpTransport(multipleClient))
+    var profileRequests = new List<string>();
+    using var multipleClient = new HttpClient(new DelegateHandler(async (request, cancellationToken) =>
+    {
+        var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+        profileRequests.Add(body);
+        return request.RequestUri!.AbsolutePath switch
+        {
+            "/mobile/auth/check-confirm" => JsonResponse("{\"authId\":\"a\",\"addresses\":[{\"userId\":17,\"address\":\"ул. Первая, 1\"},{\"USER_ID\":23,\"short_address\":\"ул. Вторая, 2\"}]}"),
+            "/mobile/auth/get-token" => JsonResponse("{\"TOKEN\":\"profile-token\",\"USER_ID\":23}"),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+        };
+    }));
+    var multipleApi = new Is74ApiClient(new HttpTransport(multipleClient));
+    var multiple = await multipleApi.CheckConfirmationAsync("9123456789", "123456", "device-1");
+    Assert(multiple.IsSuccess && multiple.Value?.Addresses.Count == 2, "linked address profiles were not returned");
+    Assert(multiple.Value!.Addresses[0] == new LinkedAddressProfile("17", "ул. Первая, 1"), "first linked address profile was parsed incorrectly");
+    Assert(multiple.Value.Addresses[1] == new LinkedAddressProfile("23", "ул. Вторая, 2"), "second linked address profile was parsed incorrectly");
+
+    var profileToken = await multipleApi.GetTokenAsync("a", "device-1", multiple.Value.Addresses[1].UserId);
+    Assert(profileToken.IsSuccess && profileToken.Value?.Token == "profile-token", "selected linked profile did not obtain a token");
+    Assert(profileRequests.Any(body => body.Contains("userId=23", StringComparison.Ordinal)), "selected linked profile userId was not sent to get-token");
+
+    using var malformedAddressClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        JsonResponse("{\"authId\":\"a\",\"addresses\":[{\"address\":\"без userId\"}]}"))));
+    var malformedAddress = await new Is74ApiClient(new HttpTransport(malformedAddressClient))
         .CheckConfirmationAsync("9123456789", "123456", "device-1");
-    Assert(multiple.Failure?.Kind == Is74ApiFailureKind.MultipleAddresses, "multiple-address registration was not stopped");
+    Assert(malformedAddress.Failure?.Kind == Is74ApiFailureKind.InvalidPayload, "address without explicit userId must fail closed");
 
     using var unauthorizedClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized))));
     var unauthorized = await new Is74ApiClient(new HttpTransport(unauthorizedClient))

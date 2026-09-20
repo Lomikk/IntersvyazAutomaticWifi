@@ -4,7 +4,13 @@ namespace IS74Wifi.Core;
 
 public sealed record ConfirmationRequested();
 
-public sealed record ConfirmationChecked(string AuthId, int AddressesCount);
+public sealed record ConfirmationChecked(
+    string AuthId,
+    IReadOnlyList<LinkedAddressProfile> Addresses);
+
+public sealed record LinkedAddressProfile(
+    string UserId,
+    string DisplayName);
 
 public sealed record Is74ApiSession(
     string Token,

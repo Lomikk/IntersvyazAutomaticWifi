@@ -5,7 +5,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.7";
+    private const string ProductVersion = "v0.1.0-alpha.8";
 
     [STAThread]
     private static async Task<int> Main(string[] args)
@@ -86,7 +86,8 @@ internal static class Program
         var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
         if (!requested.IsSuccess)
         {
-            throw new InvalidOperationException(DescribeApiFailure(requested.Failure!));
+            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-confirm failure={requested.Failure!.Kind}");
+            throw new InvalidOperationException(DescribeApiFailure(requested.Failure));
         }
 
         Console.Write("Введите SMS-код: ");
@@ -99,17 +100,22 @@ internal static class Program
         var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
         if (!checkedCode.IsSuccess)
         {
-            if (checkedCode.Failure?.Kind == Is74ApiFailureKind.MultipleAddresses)
-            {
-                throw new InvalidOperationException("Сервер вернул несколько связанных адресов. Автоматический выбор профиля пока не выполняется.");
-            }
-            throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure!));
+            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=check-confirm failure={checkedCode.Failure!.Kind}");
+            throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure));
         }
 
-        var sessionResult = await app.Api.GetTokenAsync(checkedCode.Value!.AuthId, deviceId).ConfigureAwait(false);
+        var confirmation = checkedCode.Value!;
+        app.Logger.Write(DiagnosticLevel.Info, $"registration.linked-profiles count={confirmation.Addresses.Count}");
+        var selectedUserId = SelectLinkedProfile(confirmation.Addresses);
+
+        var sessionResult = await app.Api.GetTokenAsync(
+            confirmation.AuthId,
+            deviceId,
+            selectedUserId).ConfigureAwait(false);
         if (!sessionResult.IsSuccess)
         {
-            throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure!));
+            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
+            throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure));
         }
 
         var session = sessionResult.Value!;
@@ -151,6 +157,45 @@ internal static class Program
         }
         Console.WriteLine("Первую Wi-Fi авторизацию выполните командой connect; она задаст 24-часовую точку отсчёта для агента.");
         return 0;
+    }
+
+    private static string? SelectLinkedProfile(IReadOnlyList<LinkedAddressProfile> profiles)
+    {
+        if (profiles.Count == 0)
+        {
+            return null;
+        }
+
+        if (profiles.Count == 1)
+        {
+            Console.WriteLine($"Найден связанный профиль: {profiles[0].DisplayName}");
+            return profiles[0].UserId;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("С номером телефона связано несколько адресов. Выберите профиль:");
+        for (var i = 0; i < profiles.Count; i++)
+        {
+            Console.WriteLine($"{i + 1}. {profiles[i].DisplayName}");
+        }
+        Console.WriteLine("0. Отменить регистрацию");
+
+        while (true)
+        {
+            Console.Write("Выберите профиль: ");
+            var input = (Console.ReadLine() ?? string.Empty).Trim();
+            if (input == "0")
+            {
+                throw new InvalidOperationException("Регистрация отменена пользователем.");
+            }
+
+            if (int.TryParse(input, out var selected) && selected >= 1 && selected <= profiles.Count)
+            {
+                return profiles[selected - 1].UserId;
+            }
+
+            Console.WriteLine($"Введите число от 1 до {profiles.Count} или 0 для отмены.");
+        }
     }
 
     private static async Task<int> ConnectAsync()
