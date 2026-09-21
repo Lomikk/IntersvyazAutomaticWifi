@@ -207,8 +207,8 @@ public static partial class WindowsWifiService
                     }
 
                     var connection = Marshal.PtrToStructure<WlanConnectionAttributes>(data);
-                    var association = connection.AssociationAttributes;
-                    var nativeSsid = association.Dot11Ssid;
+                    var currentAssociation = connection.AssociationAttributes;
+                    var nativeSsid = currentAssociation.Dot11Ssid;
                     var length = (int)Math.Min(nativeSsid.SsidLength, 32u);
                     if (length <= 0 || nativeSsid.Ssid is null)
                     {
@@ -218,7 +218,7 @@ public static partial class WindowsWifiService
                     var ssid = Encoding.UTF8.GetString(nativeSsid.Ssid, 0, length);
                     if (!string.IsNullOrEmpty(ssid))
                     {
-                        candidates.Add((ssid, association));
+                        candidates.Add((ssid, currentAssociation));
                     }
                 }
                 finally

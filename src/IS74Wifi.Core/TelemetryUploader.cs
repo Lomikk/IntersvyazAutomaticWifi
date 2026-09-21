@@ -76,7 +76,9 @@ public sealed class TelemetryUploader(
 
         if (sentAny)
         {
-            var nextAttempt = queue.HasPending ? now + TimeSpan.FromHours(6) : null;
+            DateTimeOffset? nextAttempt = queue.HasPending
+                ? now + TimeSpan.FromHours(6)
+                : null;
             stateStore.Save(new TelemetryUploadState(now, nextAttempt, 0));
             logger.Write(DiagnosticLevel.Info,
                 $"telemetry.upload success pending={queue.HasPending}");
