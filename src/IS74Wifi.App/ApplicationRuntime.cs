@@ -137,7 +137,7 @@ internal sealed class ApplicationRuntime : IDisposable
             telemetryQueue,
             telemetryInstallId,
             appVersion,
-            settings.TelemetryHttpTimeoutMilliseconds);
+            settings.InteractiveBackendTimeoutMilliseconds);
 
         var authorization = new AuthorizationFlow(
             api,

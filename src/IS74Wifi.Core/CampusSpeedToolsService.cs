@@ -17,10 +17,10 @@ public sealed class CampusSpeedToolsService(
     TelemetryQueue telemetryQueue,
     string installId,
     string appVersion,
-    int telemetryTimeoutMilliseconds)
+    int interactiveBackendTimeoutMilliseconds)
 {
-    private readonly TimeSpan telemetryTimeout = TimeSpan.FromMilliseconds(
-        Math.Clamp(telemetryTimeoutMilliseconds, 1000, 10000));
+    private readonly TimeSpan interactiveBackendTimeout = TimeSpan.FromMilliseconds(
+        Math.Clamp(interactiveBackendTimeoutMilliseconds, 3000, 30000));
 
     public bool BackendEnabled => telemetryClient is not null;
 
@@ -45,7 +45,7 @@ public sealed class CampusSpeedToolsService(
 
         var write = await telemetryClient.SubmitSpeedTestAsync(
             telemetry,
-            telemetryTimeout,
+            interactiveBackendTimeout,
             cancellationToken).ConfigureAwait(false);
 
         var queued = !write.Success && ShouldRetryLater(write.Error);
@@ -100,7 +100,7 @@ public sealed class CampusSpeedToolsService(
 
         var write = await telemetryClient.PublishLeaderboardAsync(
             entry,
-            telemetryTimeout,
+            interactiveBackendTimeout,
             cancellationToken).ConfigureAwait(false);
 
         var queued = !write.Success && ShouldRetryLater(write.Error);
@@ -124,7 +124,7 @@ public sealed class CampusSpeedToolsService(
                 []));
         }
 
-        return telemetryClient.GetLeaderboardAsync(limit, telemetryTimeout, cancellationToken);
+        return telemetryClient.GetLeaderboardAsync(limit, interactiveBackendTimeout, cancellationToken);
     }
 
     private void QueueSpeedTest(TelemetrySpeedTestEvent telemetry) =>
