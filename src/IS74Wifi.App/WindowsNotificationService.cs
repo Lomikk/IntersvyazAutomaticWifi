@@ -3,7 +3,7 @@ using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
 
-internal sealed class WindowsNotificationService(
+internal sealed partial class WindowsNotificationService(
     SettingsStore settingsStore,
     DiagnosticLogger logger) : IAgentNotificationSink
 {
