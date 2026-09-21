@@ -5,7 +5,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.16";
+    private const string ProductVersion = "v0.1.0-alpha.17";
     private static bool forwardMenuWithoutReveal;
 
     [STAThread]
