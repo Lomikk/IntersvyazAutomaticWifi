@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using IS74Wifi.Core;
 
@@ -8,7 +10,11 @@ internal sealed partial class WindowsNotificationService(
     DiagnosticLogger logger) : IAgentNotificationSink
 {
     internal const string InteractiveSessionGateName = @"Local\IS74Wifi.CSharp.Interactive";
+    private const uint CallbackMessage = 0x8000 + 74; // WM_APP + 74
     private static int nextIconId = 100;
+    private static readonly WindowProcedure NotificationWindowProcedure = NotificationWndProc;
+    private static readonly IntPtr NotificationWindowProcedurePointer = Marshal.GetFunctionPointerForDelegate(NotificationWindowProcedure);
+    private static readonly ConcurrentDictionary<IntPtr, WindowRegistration> NotificationWindows = new();
 
     public void Publish(AgentNotification notification)
     {
@@ -42,7 +48,7 @@ internal sealed partial class WindowsNotificationService(
     internal static NamedSemaphoreLease? TryMarkInteractiveSession() =>
         NamedSemaphoreLease.TryAcquire(InteractiveSessionGateName);
 
-    private static bool IsInteractiveSessionRunning()
+    internal static bool IsInteractiveSessionRunning()
     {
         using var probe = NamedSemaphoreLease.TryAcquire(InteractiveSessionGateName);
         return probe is null;
@@ -68,6 +74,19 @@ internal sealed partial class WindowsNotificationService(
             return;
         }
 
+        var previousProcedure = IntPtr.Zero;
+        if (notification.Action != AgentNotificationAction.None)
+        {
+            previousProcedure = NativeMethods.SetWindowLongPtrW(
+                window,
+                NativeMethods.GwlpWndProc,
+                NotificationWindowProcedurePointer);
+            if (previousProcedure != IntPtr.Zero)
+            {
+                NotificationWindows[window] = new WindowRegistration(previousProcedure, notification.Action);
+            }
+        }
+
         var iconId = unchecked((uint)Interlocked.Increment(ref nextIconId));
         var icon = NativeMethods.LoadIconW(IntPtr.Zero, new IntPtr(32516)); // IDI_INFORMATION
         var data = new NotifyIconData
@@ -78,6 +97,11 @@ internal sealed partial class WindowsNotificationService(
             uFlags = NativeMethods.NifIcon | NativeMethods.NifTip,
             hIcon = icon
         };
+        if (previousProcedure != IntPtr.Zero)
+        {
+            data.uFlags |= NativeMethods.NifMessage;
+            data.uCallbackMessage = CallbackMessage;
+        }
         SetTip(ref data, "IS74Wifi");
 
         var added = false;
@@ -105,11 +129,17 @@ internal sealed partial class WindowsNotificationService(
             SetInfo(ref data, notification.Message);
             _ = NativeMethods.ShellNotifyIconW(NativeMethods.NimModify, ref data);
 
-            // Keep the tray identity alive long enough for Windows to surface the
-            // balloon through its normal notification UI. Notifications are rare
-            // (normally once per 24-hour auth cycle), so one short-lived task is
-            // preferable to keeping a permanent tray process/icon.
-            Thread.Sleep(TimeSpan.FromSeconds(10));
+            // Actionable notifications need a short message pump so Shell_NotifyIcon
+            // can deliver NIN_BALLOONUSERCLICK to the hidden window. Non-actionable
+            // notifications keep the older, cheaper sleep path.
+            if (previousProcedure != IntPtr.Zero)
+            {
+                PumpWindowMessages(TimeSpan.FromSeconds(15));
+            }
+            else
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(10));
+            }
         }
         finally
         {
@@ -118,8 +148,74 @@ internal sealed partial class WindowsNotificationService(
                 data.uFlags = 0;
                 _ = NativeMethods.ShellNotifyIconW(NativeMethods.NimDelete, ref data);
             }
+
+            if (previousProcedure != IntPtr.Zero)
+            {
+                NotificationWindows.TryRemove(window, out _);
+                _ = NativeMethods.SetWindowLongPtrW(window, NativeMethods.GwlpWndProc, previousProcedure);
+            }
             _ = NativeMethods.DestroyWindow(window);
         }
+    }
+
+    private static void PumpWindowMessages(TimeSpan duration)
+    {
+        var deadline = DateTimeOffset.UtcNow + duration;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            while (NativeMethods.PeekMessageW(out var message, IntPtr.Zero, 0, 0, NativeMethods.PmRemove) != 0)
+            {
+                _ = NativeMethods.TranslateMessage(ref message);
+                _ = NativeMethods.DispatchMessageW(ref message);
+            }
+            Thread.Sleep(25);
+        }
+    }
+
+    private static IntPtr NotificationWndProc(IntPtr window, uint message, IntPtr wParam, IntPtr lParam)
+    {
+        if (!NotificationWindows.TryGetValue(window, out var registration))
+        {
+            return NativeMethods.DefWindowProcW(window, message, wParam, lParam);
+        }
+
+        try
+        {
+            if (message == CallbackMessage && unchecked((uint)lParam.ToInt64()) == NativeMethods.NinBalloonUserClick)
+            {
+                LaunchNotificationAction(registration.Action);
+                return IntPtr.Zero;
+            }
+        }
+        catch
+        {
+            // A shell callback must never propagate an exception across the native
+            // window-procedure boundary.
+        }
+
+        return NativeMethods.CallWindowProcW(registration.PreviousProcedure, window, message, wParam, lParam);
+    }
+
+    private static void LaunchNotificationAction(AgentNotificationAction action)
+    {
+        if (action != AgentNotificationAction.OpenUpdates)
+        {
+            return;
+        }
+
+        var installation = new ProgramInstallation();
+        if (!installation.IsInstalled)
+        {
+            return;
+        }
+
+        var startInfo = new ProcessStartInfo(installation.ExecutablePath)
+        {
+            UseShellExecute = true
+        };
+        startInfo.ArgumentList.Add("menu");
+        startInfo.ArgumentList.Add("updates");
+        _ = Process.Start(startInfo);
     }
 
     private static unsafe void SetTip(ref NotifyIconData data, string value)
@@ -166,6 +262,30 @@ internal sealed partial class WindowsNotificationService(
         }
     }
 
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate IntPtr WindowProcedure(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+    private sealed record WindowRegistration(IntPtr PreviousProcedure, AgentNotificationAction Action);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeMessage
+    {
+        public IntPtr hWnd;
+        public uint message;
+        public UIntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public NativePoint pt;
+        public uint lPrivate;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private unsafe struct NotifyIconData
     {
@@ -199,6 +319,9 @@ internal sealed partial class WindowsNotificationService(
         internal const uint NiifWarning = 0x00000002;
         internal const uint NiifError = 0x00000003;
         internal const uint NiifNoSound = 0x00000010;
+        internal const uint NinBalloonUserClick = 0x0400 + 5; // WM_USER + 5
+        internal const uint PmRemove = 0x0001;
+        internal const int GwlpWndProc = -4;
 
         [LibraryImport("shell32.dll", EntryPoint = "Shell_NotifyIconW")]
         internal static partial int ShellNotifyIconW(uint message, ref NotifyIconData data);
@@ -218,10 +341,38 @@ internal sealed partial class WindowsNotificationService(
             IntPtr instance,
             IntPtr parameter);
 
-        [LibraryImport("user32.dll", EntryPoint = "DestroyWindow", SetLastError = true)]
+        [LibraryImport("user32.dll", EntryPoint = "DestroyWindow")]
         internal static partial int DestroyWindow(IntPtr window);
 
         [LibraryImport("user32.dll", EntryPoint = "LoadIconW")]
         internal static partial IntPtr LoadIconW(IntPtr instance, IntPtr iconName);
+
+        [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+        internal static partial IntPtr SetWindowLongPtrW(IntPtr window, int index, IntPtr value);
+
+        [LibraryImport("user32.dll", EntryPoint = "CallWindowProcW")]
+        internal static partial IntPtr CallWindowProcW(
+            IntPtr previousProcedure,
+            IntPtr window,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam);
+
+        [LibraryImport("user32.dll", EntryPoint = "DefWindowProcW")]
+        internal static partial IntPtr DefWindowProcW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+        [LibraryImport("user32.dll", EntryPoint = "PeekMessageW")]
+        internal static partial int PeekMessageW(
+            out NativeMessage message,
+            IntPtr window,
+            uint messageFilterMin,
+            uint messageFilterMax,
+            uint removeMessage);
+
+        [LibraryImport("user32.dll", EntryPoint = "TranslateMessage")]
+        internal static partial int TranslateMessage(ref NativeMessage message);
+
+        [LibraryImport("user32.dll", EntryPoint = "DispatchMessageW")]
+        internal static partial IntPtr DispatchMessageW(ref NativeMessage message);
     }
 }
