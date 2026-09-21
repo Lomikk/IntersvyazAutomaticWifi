@@ -298,6 +298,7 @@ internal static class Program
         var agentRunning = AgentProcessControl.IsAgentRunning();
         Console.WriteLine($"Автоматическая авторизация : {(automaticAuthorizationEnabled ? "включена" : "выключена")}");
         Console.WriteLine($"Фоновый агент              : {(agentRunning ? "работает" : "остановлен")}");
+        Console.WriteLine($"Уведомления                : {FormatNotificationMode(app.Settings.NotificationMode)}");
         Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
         Console.WriteLine($"Интернет                     : {(internet.Online ? "доступен" : "не подтверждён")}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
@@ -1318,6 +1319,7 @@ internal static class Program
 
     private static async Task<int> RunMenuAsync()
     {
+        using var interactiveSession = WindowsNotificationService.TryMarkInteractiveSession();
         var ui = new InteractiveTerminalUi(ProductVersion);
         var showReveal = !string.Equals(
             Environment.GetEnvironmentVariable("IS74W_SKIP_REVEAL"),
@@ -1457,6 +1459,10 @@ internal static class Program
                             "Отключаю автоматическую авторизацию...",
                             progress => DisableAutostart(quiet: true, progress: progress),
                             "Автоматическая авторизация отключена").ConfigureAwait(false);
+                        break;
+
+                    case InteractiveMenuAction.CycleNotifications:
+                        CycleNotificationMode();
                         break;
 
                     case InteractiveMenuAction.ShowDetailedStatus:
@@ -1825,6 +1831,7 @@ internal static class Program
             $"Телефон: {MaskPhone(secrets?.Phone)}",
             $"Автовход: {(automatic ? "включён" : "выключен")}",
             $"Агент: {(AgentProcessControl.IsAgentRunning() ? "работает" : "остановлен")}",
+            $"Уведомления: {FormatNotificationMode(app.Settings.NotificationMode)}",
             $"API-сессия: {FormatSessionEnd(session?.AccessEnd)}"
         };
 
@@ -2086,11 +2093,33 @@ internal static class Program
             WifiAuthorizationActive: authorizationActive,
             AutomaticAuthorizationEnabled: automatic,
             AgentRunning: agentRunning,
+            NotificationMode: FormatNotificationMode(app.Settings.NotificationMode),
             MaskedPhone: MaskPhone(secrets?.Phone),
             ApiSessionEnd: FormatSessionEnd(session?.AccessEnd),
             LastResult: string.IsNullOrWhiteSpace(runtime.LastResult) ? "—" : runtime.LastResult,
             Version: ProductVersion);
     }
+
+    private static void CycleNotificationMode()
+    {
+        using var app = ApplicationRuntime.Create();
+        var next = app.Settings.NotificationMode switch
+        {
+            NotificationMode.Important => NotificationMode.All,
+            NotificationMode.All => NotificationMode.Off,
+            _ => NotificationMode.Important
+        };
+
+        new SettingsStore(app.Paths, app.Json).Save(app.Settings with { NotificationMode = next });
+        app.Logger.Write(DiagnosticLevel.Info, $"notifications.mode value={next}");
+    }
+
+    private static string FormatNotificationMode(NotificationMode mode) => mode switch
+    {
+        NotificationMode.All => "все",
+        NotificationMode.Off => "выкл",
+        _ => "важные"
+    };
 
     private static string FormatSessionEnd(string? value)
     {

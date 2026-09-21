@@ -2,6 +2,7 @@ namespace IS74Wifi.Core;
 
 public sealed record AppSettings
 {
+    public NotificationMode NotificationMode { get; init; } = NotificationMode.Important;
     public double AuthWindowHours { get; init; } = 24;
     public int AgentPollSeconds { get; init; } = 15;
     public int GuardWindowSeconds { get; init; } = 10;

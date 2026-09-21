@@ -13,6 +13,7 @@ internal static class AgentContractTests
         await TestExpiryIsAuthoritativeAsync();
         await TestPreExpiryNeedsTwoCaptiveResponsesAsync();
         await TestPreExpiryTransportFailureDoesNotAuthorizeAsync();
+        await TestNotificationLifecycleAsync();
     }
 
     private static void TestSleepPolicy()
@@ -162,6 +163,37 @@ internal static class AgentContractTests
         Assert(fixture.Authorization.Calls == 0, "DNS failure before expiry burned an authorization attempt");
     }
 
+    private static async Task TestNotificationLifecycleAsync()
+    {
+        var reminderNow = new DateTimeOffset(2026, 9, 18, 11, 56, 0, TimeSpan.Zero);
+        using (var reminderFixture = AgentFixture.Create(reminderNow))
+        {
+            reminderFixture.SaveState(new RuntimeState { ExpectedExpiryUtc = reminderNow.AddMinutes(4) });
+            await reminderFixture.Agent.TickAsync();
+
+            Assert(reminderFixture.Authorization.Calls == 0, "expiry reminder unexpectedly started authorization");
+            Assert(reminderFixture.Notifications.Items.Count == 1, "five-minute notification was not emitted exactly once");
+            Assert(reminderFixture.Notifications.Items[0].Importance == AgentNotificationImportance.Routine,
+                "expiry reminder became an important notification");
+
+            await reminderFixture.Agent.TickAsync();
+            Assert(reminderFixture.Notifications.Items.Count == 1, "expiry reminder repeated for the same auth window");
+        }
+
+        var expiry = new DateTimeOffset(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
+        using var successFixture = AgentFixture.Create(expiry.AddSeconds(1));
+        successFixture.SaveState(new RuntimeState { ExpectedExpiryUtc = expiry });
+        await successFixture.Agent.TickAsync();
+
+        Assert(successFixture.Notifications.Items.Count == 2, "automatic authorization did not emit start and result notifications");
+        Assert(successFixture.Notifications.Items[0].Importance == AgentNotificationImportance.Routine,
+            "authorization start notification importance changed");
+        Assert(successFixture.Notifications.Items[1].Importance == AgentNotificationImportance.Important,
+            "successful authorization should be an important notification");
+        Assert(successFixture.Notifications.Items[1].Severity == AgentNotificationSeverity.Success,
+            "successful authorization notification severity changed");
+    }
+
     private static InternetProbeResult Probe(
         bool online,
         bool responseReceived,
@@ -189,13 +221,15 @@ internal static class AgentContractTests
             RuntimeStateStore stateStore,
             AgentService agent,
             RecordingAuthorizationRunner authorization,
-            ScriptedInternetProbe internet)
+            ScriptedInternetProbe internet,
+            RecordingNotificationSink notifications)
         {
             Root = root;
             StateStore = stateStore;
             Agent = agent;
             Authorization = authorization;
             Internet = internet;
+            Notifications = notifications;
         }
 
         public string Root { get; }
@@ -203,6 +237,7 @@ internal static class AgentContractTests
         public AgentService Agent { get; }
         public RecordingAuthorizationRunner Authorization { get; }
         public ScriptedInternetProbe Internet { get; }
+        public RecordingNotificationSink Notifications { get; }
 
         public static AgentFixture Create(
             DateTimeOffset now,
@@ -220,6 +255,7 @@ internal static class AgentContractTests
             var device = new DeviceIdentityStore(paths);
             internet ??= new ScriptedInternetProbe();
             var authorization = new RecordingAuthorizationRunner();
+            var notifications = new RecordingNotificationSink();
             var logger = new DiagnosticLogger(paths);
             var agent = new AgentService(
                 secrets,
@@ -230,8 +266,9 @@ internal static class AgentContractTests
                 new TargetWifi(),
                 settings,
                 logger,
-                new FixedTimeProvider(now));
-            return new AgentFixture(root, stateStore, agent, authorization, internet);
+                new FixedTimeProvider(now),
+                notifications: notifications);
+            return new AgentFixture(root, stateStore, agent, authorization, internet, notifications);
         }
 
         public void SaveState(RuntimeState state) => StateStore.Save(state);
@@ -282,6 +319,13 @@ internal static class AgentContractTests
             }
             return Task.FromResult(Probe(true, true));
         }
+    }
+
+    internal sealed class RecordingNotificationSink : IAgentNotificationSink
+    {
+        public List<AgentNotification> Items { get; } = [];
+
+        public void Publish(AgentNotification notification) => Items.Add(notification);
     }
 
     private sealed class TargetWifi : IWifiEnvironment

@@ -1128,9 +1128,10 @@ internal sealed class InteractiveTerminalUi
                 registered ? "Сбросить регистрацию" : "Зарегистрировать устройство",
                 registered ? InteractiveMenuAction.ResetRegistration : InteractiveMenuAction.Register),
             new MenuItem('4', "Открыть подробный отчёт", InteractiveMenuAction.ShowDetailedStatus),
-            new MenuItem('5', "Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
-            new MenuItem('6', "Проверить обновления", InteractiveMenuAction.Update),
-            new MenuItem('7', "Удалить программу и данные", InteractiveMenuAction.Uninstall),
+            new MenuItem('5', $"Уведомления: {snapshot?.NotificationMode ?? "важные"}", InteractiveMenuAction.CycleNotifications),
+            new MenuItem('6', "Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
+            new MenuItem('7', "Проверить обновления", InteractiveMenuAction.Update),
+            new MenuItem('8', "Удалить программу и данные", InteractiveMenuAction.Uninstall),
             new MenuItem('0', "Выход", InteractiveMenuAction.Exit)
         ];
     }
@@ -1153,16 +1154,19 @@ internal sealed class InteractiveTerminalUi
             s.AutomaticAuthorizationEnabled ? Palette.Good : Palette.Dim);
         DrawStatusLine(canvas, PaneY + 5, "Агент", s.AgentRunning ? "работает ●" : "остановлен ○",
             s.AgentRunning ? Palette.Good : Palette.Dim);
+        DrawStatusLine(canvas, PaneY + 6, "Уведомления",
+            s.NotificationMode == "выкл" ? "выкл ○" : $"{s.NotificationMode} ●",
+            s.NotificationMode == "выкл" ? Palette.Dim : Palette.Good);
 
-        Put(canvas, rightPaneX + 3, PaneY + 7, "Телефон", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 7, s.MaskedPhone, Palette.Text);
-        Put(canvas, rightPaneX + 3, PaneY + 8, "API-сессия", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 8, s.ApiSessionEnd, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 8, "Телефон", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 8, s.MaskedPhone, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 9, "API-сессия", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 9, s.ApiSessionEnd, Palette.Text);
 
-        Put(canvas, rightPaneX + 3, PaneY + 10, "Результат", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 10, s.LastResult, Palette.Text);
-        Put(canvas, rightPaneX + 3, PaneY + 11, "Версия", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 11, s.Version, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 11, "Результат", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 11, s.LastResult, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 12, "Версия", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 12, s.Version, Palette.Text);
     }
 
     private static string FormatInternet(bool? value) => value switch

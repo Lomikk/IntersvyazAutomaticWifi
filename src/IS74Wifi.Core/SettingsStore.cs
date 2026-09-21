@@ -12,4 +12,10 @@ public sealed class SettingsStore(AppPaths paths, JsonFileStore json)
         }
         return settings;
     }
+
+    public void Save(AppSettings settings)
+    {
+        paths.EnsureDirectories();
+        json.Write(paths.SettingsFile, settings, PersistenceJsonContext.Default.AppSettings);
+    }
 }

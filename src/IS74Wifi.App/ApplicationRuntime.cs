@@ -71,7 +71,8 @@ internal sealed class ApplicationRuntime : IDisposable
     {
         var paths = new AppPaths();
         var json = new JsonFileStore();
-        var settings = new SettingsStore(paths, json).Load();
+        var settingsStore = new SettingsStore(paths, json);
+        var settings = settingsStore.Load();
         var logger = new DiagnosticLogger(paths);
         var secrets = new DpapiSecretStore(paths);
         var deviceIdentity = new DeviceIdentityStore(paths);
@@ -97,6 +98,7 @@ internal sealed class ApplicationRuntime : IDisposable
             polling,
             authorizationState,
             logger);
+        var notifications = new WindowsNotificationService(settingsStore, logger);
         var agent = new AgentService(
             secrets,
             deviceIdentity,
@@ -106,7 +108,8 @@ internal sealed class ApplicationRuntime : IDisposable
             wifi,
             settings,
             logger,
-            addressCacheWarmer: dns);
+            addressCacheWarmer: dns,
+            notifications: notifications);
 
         return new ApplicationRuntime(
             paths,
