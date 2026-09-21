@@ -1,3 +1,5 @@
+using IS74Wifi.Core;
+
 namespace IS74Wifi.App;
 
 internal sealed record InteractiveStatusSnapshot(
@@ -9,6 +11,7 @@ internal sealed record InteractiveStatusSnapshot(
     DateTimeOffset? AuthorizationExpectedExpiryUtc,
     bool AuthorizationAlreadyActive,
     bool NetworkCheckIgnored,
+    AnonymousStatisticsConsent AnonymousStatisticsConsent,
     bool AutomaticAuthorizationEnabled,
     bool AgentRunning,
     string NotificationMode,
@@ -42,6 +45,7 @@ internal enum InteractiveMenuAction
     EnableAutomaticAuthorization,
     DisableAutomaticAuthorization,
     ToggleNetworkCheck,
+    ToggleAnonymousStatistics,
     CycleNotifications,
     ShowDetailedStatus,
     ResetRegistration,

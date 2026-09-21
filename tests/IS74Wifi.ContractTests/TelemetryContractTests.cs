@@ -4,7 +4,7 @@ using IS74Wifi.Core;
 
 internal static class TelemetryContractTests
 {
-    public static Task RunAsync()
+    public static async Task RunAsync()
     {
         using var temp = TestDirectory.Create();
         var paths = new AppPaths(temp.Path);
@@ -139,7 +139,51 @@ internal static class TelemetryContractTests
         queue.Complete(batch);
         Assert(!queue.HasPending, "successful telemetry batch was not removed from local queue");
 
-        return Task.CompletedTask;
+        await TestUploadConsentGateAsync();
+    }
+
+    private static async Task TestUploadConsentGateAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var queue = new TelemetryQueue(paths);
+        queue.Enqueue(["{\"event_type\":\"test\",\"schema\":3}"]);
+
+        var posts = 0;
+        using var http = new HttpClient(new DelegateHandler((request, _) =>
+        {
+            if (request.Method != HttpMethod.Post)
+            {
+                throw new InvalidOperationException("unexpected telemetry consent request");
+            }
+            Interlocked.Increment(ref posts);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}")
+            });
+        }));
+        var client = new TelemetryClient(http, new Uri("https://telemetry.example.test/exec"));
+        var allowed = false;
+        var uploader = new TelemetryUploader(
+            queue,
+            new TelemetryUploadStateStore(paths, new JsonFileStore()),
+            client,
+            new AppSettings { AnonymousStatisticsConsent = AnonymousStatisticsConsent.Declined },
+            new DiagnosticLogger(paths),
+            () => allowed);
+
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 0 && queue.HasPending,
+            "telemetry uploader ignored declined anonymous statistics consent");
+
+        allowed = true;
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 1 && !queue.HasPending,
+            "telemetry uploader did not resume after anonymous statistics consent");
+
+        queue.Enqueue(["{\"event_type\":\"test\",\"schema\":3}"]);
+        queue.ClearPending();
+        Assert(!queue.HasPending, "telemetry queue did not clear at a consent boundary");
     }
 
     private static void Assert(bool condition, string message)

@@ -168,6 +168,26 @@ public sealed class TelemetryQueue(
         }
     }
 
+    public void ClearPending()
+    {
+        try
+        {
+            if (!Directory.Exists(paths.TelemetryPendingDirectory))
+            {
+                return;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(paths.TelemetryPendingDirectory, "*.jsonl"))
+            {
+                TryDelete(file);
+            }
+        }
+        catch
+        {
+            // Consent changes must never fail because telemetry cleanup failed.
+        }
+    }
+
     public bool HasPending
     {
         get

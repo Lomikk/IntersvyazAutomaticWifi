@@ -107,15 +107,17 @@ internal sealed class ApplicationRuntime : IDisposable
         var wifi = new WindowsWifiEnvironment();
         var polling = new PushPollingEngine(api);
 
-        // Authorization telemetry is local-first. The critical path only mutates
-        // in-memory trace state; durable queue writes happen after RunAsync returns.
+        // Authorization telemetry is opt-in and local-first. When allowed, the
+        // critical path only mutates in-memory trace state; durable queue writes
+        // happen after RunAsync returns.
         var telemetryIdentity = new TelemetryIdentityStore(paths);
         var telemetryInstallId = telemetryIdentity.GetOrCreate();
         var telemetryQueue = new TelemetryQueue(paths);
-        var telemetryRecorder = new AuthorizationTelemetryRecorder(
-            telemetryInstallId,
-            telemetryQueue,
-            appVersion);
+        bool AnonymousStatisticsAllowed() =>
+            settingsStore.Load().AnonymousStatisticsConsent == AnonymousStatisticsConsent.Allowed;
+        var telemetryRecorder = settings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Allowed
+            ? new AuthorizationTelemetryRecorder(telemetryInstallId, telemetryQueue, appVersion)
+            : null;
 
         var telemetryEndpoint = ResolveTelemetryEndpoint(settings);
         HttpClient? telemetryHttp = null;
@@ -130,14 +132,16 @@ internal sealed class ApplicationRuntime : IDisposable
             new TelemetryUploadStateStore(paths, json),
             telemetryClient,
             settings,
-            logger);
+            logger,
+            AnonymousStatisticsAllowed);
         var campusSpeedTools = new CampusSpeedToolsService(
             new Is74SpeedTestProvider(speedTestHttp),
             telemetryClient,
             telemetryQueue,
             telemetryInstallId,
             appVersion,
-            settings.InteractiveBackendTimeoutMilliseconds);
+            settings.InteractiveBackendTimeoutMilliseconds,
+            AnonymousStatisticsAllowed);
 
         var authorization = new AuthorizationFlow(
             api,

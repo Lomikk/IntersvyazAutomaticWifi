@@ -39,9 +39,16 @@ static Task TestStorageAsync()
     var settings = new SettingsStore(paths, json).Load();
 
     Assert(settings.AuthWindowHours == 24, "default auth window changed");
+    Assert(settings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Unknown,
+        "anonymous statistics consent must default to unknown");
     Assert(settings.MaxAutomaticStepOneAttempts == 4, "automatic attempt limit changed");
     Assert(settings.AutomaticRetryDelaysSeconds.SequenceEqual([15, 30, 60]), "retry schedule changed");
     Assert(File.Exists(paths.SettingsFile), "default settings were not persisted");
+
+    var settingsStore = new SettingsStore(paths, json);
+    settingsStore.Save(settings with { AnonymousStatisticsConsent = AnonymousStatisticsConsent.Declined });
+    Assert(settingsStore.Load().AnonymousStatisticsConsent == AnonymousStatisticsConsent.Declined,
+        "anonymous statistics consent did not persist");
 
     var stateStore = new RuntimeStateStore(paths, json);
     var expectedExpiry = DateTimeOffset.UtcNow.AddHours(24);

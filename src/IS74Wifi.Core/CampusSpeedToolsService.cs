@@ -17,12 +17,15 @@ public sealed class CampusSpeedToolsService(
     TelemetryQueue telemetryQueue,
     string installId,
     string appVersion,
-    int interactiveBackendTimeoutMilliseconds)
+    int interactiveBackendTimeoutMilliseconds,
+    Func<bool>? anonymousStatisticsAllowed = null)
 {
     private readonly TimeSpan interactiveBackendTimeout = TimeSpan.FromMilliseconds(
         Math.Clamp(interactiveBackendTimeoutMilliseconds, 3000, 30000));
+    private readonly Func<bool> statisticsAllowed = anonymousStatisticsAllowed ?? (() => true);
 
     public bool BackendEnabled => telemetryClient is not null;
+    public bool AnonymousStatisticsAllowed => statisticsAllowed();
 
     public async Task<CampusSpeedTestRun> MeasureAsync(
         IProgress<SpeedTestProgress>? progress = null,
@@ -31,6 +34,16 @@ public sealed class CampusSpeedToolsService(
         var measurement = await speedTestProvider.MeasureAsync(progress, cancellationToken).ConfigureAwait(false);
         var radio = WindowsWifiService.GetSpeedTestRadioSnapshot();
         var telemetry = SpeedTestTelemetry.CreateEvent(measurement, installId, appVersion, radio);
+
+        if (!statisticsAllowed())
+        {
+            return new CampusSpeedTestRun(
+                measurement,
+                radio,
+                telemetry,
+                new TelemetryWriteResult(false, false, "statistics_disabled"),
+                StatisticsQueued: false);
+        }
 
         if (telemetryClient is null)
         {
@@ -62,6 +75,13 @@ public sealed class CampusSpeedToolsService(
         string nickname,
         CancellationToken cancellationToken = default)
     {
+        if (!statisticsAllowed())
+        {
+            return new CampusLeaderboardPublishResult(
+                new TelemetryWriteResult(false, false, "statistics_consent_required"),
+                Queued: false);
+        }
+
         var trimmed = nickname.Trim();
         if (trimmed.Length is < 1 or > 32 ||
             trimmed.Any(ch => char.IsControl(ch)) ||

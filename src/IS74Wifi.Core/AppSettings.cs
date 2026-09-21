@@ -1,5 +1,12 @@
 namespace IS74Wifi.Core;
 
+public enum AnonymousStatisticsConsent
+{
+    Unknown = 0,
+    Allowed = 1,
+    Declined = 2
+}
+
 public sealed record AppSettings
 {
     public NotificationMode NotificationMode { get; init; } = NotificationMode.Important;
@@ -7,6 +14,7 @@ public sealed record AppSettings
     // is not representative of the route used by captive-portal traffic
     // (USB tethering, VPN/proxy software, multiple adapters, etc.).
     public bool IgnoreNetworkCheck { get; init; }
+    public AnonymousStatisticsConsent AnonymousStatisticsConsent { get; init; } = global::IS74Wifi.Core.AnonymousStatisticsConsent.Unknown;
     public double AuthWindowHours { get; init; } = 24;
     public int AgentPollSeconds { get; init; } = 15;
     public int GuardWindowSeconds { get; init; } = 10;

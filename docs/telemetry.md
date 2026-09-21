@@ -10,13 +10,15 @@ Telemetry exists to measure the real captive-authorization race without changing
 4. `POST /stepTwo` starts immediately after the fresh code, even when `/stepOne` has not completed.
 5. Internet is confirmed independently through the strict `online.susu.ru` probe.
 
-The telemetry implementation therefore records precise local timing first and performs no telemetry HTTP requests inside the authorization critical path.
+The telemetry implementation therefore records precise local timing first and performs no telemetry HTTP requests inside the authorization critical path. Collection and upload are opt-in: after registration the interactive client asks once for permission to send anonymous application statistics. Declining is remembered and is not asked again on ordinary startup; the preference remains available in Settings.
 
 ## Identity and privacy
 
 Each installation gets a permanent random `install_id` (`Guid.NewGuid()` encoded as 32 hexadecimal characters). It is stored separately under `%LOCALAPPDATA%\IS74Wifi\telemetry\install-id.txt` and is not derived from the InterSvyaz device ID, phone number, Windows SID, MAC address, machine name, user/profile ID, or bearer token.
 
 Each authorization has a new random `attempt_id`; each serialized row has a new `event_id`. These IDs allow later SQL/Python grouping and durable deduplication without exposing the InterSvyaz account identity.
+
+The consent state is persisted as `unknown`, `allowed`, or `declined`. `unknown` and `declined` both block authorization telemetry recording, background uploads, automatic speed-test telemetry, and leaderboard publication. Changing consent clears pending upload files so data collected under an earlier policy cannot cross the consent boundary. A local speed test still works without consent. If the user explicitly tries to publish a speed result while consent is not enabled, the UI asks again in that publication context; accepting enables statistics and continues publication, while declining leaves the result local.
 
 Telemetry event contracts deliberately contain no fields for:
 
@@ -69,7 +71,7 @@ The attempt summary additionally records:
 
 ## Local queue
 
-After the network authorization work has finished, the completed trace is serialized into a unique JSONL file under:
+When anonymous statistics are allowed, after the network authorization work has finished the completed trace is serialized into a unique JSONL file under:
 
 ```text
 %LOCALAPPDATA%\IS74Wifi\telemetry\pending\
@@ -83,7 +85,7 @@ A transport batch groups whole trace files, up to 64 events and roughly 60 KiB. 
 
 ## Upload scheduling
 
-Authorization traces are intentionally not uploaded in real time. The background agent tries to flush telemetry only when its next authorization wake-up is at least one minute away. The default upload interval is 12 hours.
+Authorization traces are intentionally not uploaded in real time. Upload scheduling is active only while anonymous statistics consent is `allowed`. The background process tries to flush telemetry only when its next authorization wake-up is at least one minute away. The default upload interval is 12 hours.
 
 By default a flush sends one bounded batch. This keeps normal operation close to the intended “accumulate locally, upload rarely” model. The setting can raise that cap for recovery/backlog draining; if data remains after a successful flush, the next attempt is delayed by six hours. HTTP timeout is 3 seconds by default. Failures leave files in the local queue and use backoff; authorization never depends on upload success.
 

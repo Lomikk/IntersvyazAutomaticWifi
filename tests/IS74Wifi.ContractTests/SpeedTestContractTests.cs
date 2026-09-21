@@ -123,6 +123,7 @@ internal static class SpeedTestContractTests
         await TestGenericTelemetryPostContractAsync(telemetry);
         await TestTelemetryFailureDiagnosticsAsync();
         await TestManualAppsScriptRedirectTraceAsync();
+        await TestCampusSpeedToolsConsentAsync();
     }
 
     private static async Task TestGenericTelemetryPostContractAsync(TelemetrySpeedTestEvent telemetry)
@@ -258,6 +259,56 @@ internal static class SpeedTestContractTests
         }
     }
 
+    private static async Task TestCampusSpeedToolsConsentAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var queue = new TelemetryQueue(paths);
+        var postCount = 0;
+        using var http = new HttpClient(new DelegateHandler((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                Interlocked.Increment(ref postCount);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"ok\":true}")
+                });
+            }
+
+            throw new InvalidOperationException("unexpected consent test request");
+        }));
+        var client = new TelemetryClient(http, new Uri("https://telemetry.example.test/exec"));
+        var allowed = false;
+        var service = new CampusSpeedToolsService(
+            new FixedSpeedProvider(),
+            client,
+            queue,
+            "0123456789abcdef0123456789abcdef",
+            "0.0.0-test",
+            3000,
+            () => allowed);
+
+        var localOnly = await service.MeasureAsync();
+        Assert(localOnly.StatisticsWrite.Error == "statistics_disabled",
+            "speed measurement ignored declined statistics consent");
+        Assert(!localOnly.StatisticsQueued && !queue.HasPending && postCount == 0,
+            "declined statistics consent still wrote or queued speed telemetry");
+
+        var blockedPublish = await service.PublishAsync(localOnly, "campus-cat");
+        Assert(blockedPublish.Write.Error == "statistics_consent_required" && postCount == 0,
+            "leaderboard publish bypassed statistics consent");
+
+        allowed = true;
+        var publish = await service.PublishAsync(localOnly, "campus-cat");
+        Assert(publish.Write.Success && postCount == 1,
+            "leaderboard publish did not resume after consent was granted");
+
+        var uploaded = await service.MeasureAsync();
+        Assert(uploaded.StatisticsWrite.Success && postCount == 2,
+            "speed telemetry did not resume after consent was granted");
+    }
+
     private static async Task TestManualAppsScriptRedirectTraceAsync()
     {
         var methods = new List<string>();
@@ -296,6 +347,31 @@ internal static class SpeedTestContractTests
         if (!condition)
         {
             throw new InvalidOperationException(message);
+        }
+    }
+
+    private sealed class FixedSpeedProvider : ISpeedTestProvider
+    {
+        public Task<SpeedTestMeasurement> MeasureAsync(
+            IProgress<SpeedTestProgress>? progress = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new SpeedTestMeasurement(
+                Provider: "test",
+                TestVersion: "test-v1",
+                TestScope: "regional",
+                ServerKind: "regional_provider",
+                DownloadMbps: 100,
+                UploadMbps: 50,
+                LatencyMs: 10,
+                JitterMs: 2,
+                PacketLossPct: null,
+                DownloadDuration: TimeSpan.FromSeconds(1),
+                UploadDuration: TimeSpan.FromSeconds(1),
+                LatencySampleCount: 3,
+                DownloadBytes: 1024,
+                UploadBytes: 1024));
         }
     }
 

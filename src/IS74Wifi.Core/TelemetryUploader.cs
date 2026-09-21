@@ -6,15 +6,18 @@ public sealed class TelemetryUploader(
     TelemetryClient? client,
     AppSettings settings,
     DiagnosticLogger logger,
+    Func<bool>? anonymousStatisticsAllowed = null,
     TimeProvider? timeProvider = null)
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
+    private readonly Func<bool> statisticsAllowed = anonymousStatisticsAllowed ??
+        (() => settings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Allowed);
 
-    public bool Enabled => client is not null;
+    public bool Enabled => client is not null && statisticsAllowed();
 
     public async Task TryFlushIfDueAsync(CancellationToken cancellationToken = default)
     {
-        if (client is null || !queue.HasPending || cancellationToken.IsCancellationRequested)
+        if (client is null || !statisticsAllowed() || !queue.HasPending || cancellationToken.IsCancellationRequested)
         {
             return;
         }

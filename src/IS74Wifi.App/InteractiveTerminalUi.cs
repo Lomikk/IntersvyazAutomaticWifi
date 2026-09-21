@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
 
@@ -628,6 +629,79 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
+    public async Task<bool> ConfirmYesNoAsync(
+        string title,
+        string message,
+        string yesLabel,
+        string noLabel,
+        InteractiveStatusSnapshot currentStatus,
+        CancellationToken cancellationToken = default)
+    {
+        status = currentStatus;
+        if (!CanUseInteractiveSession)
+        {
+            Console.Clear();
+            Console.WriteLine(title);
+            Console.WriteLine();
+            Console.WriteLine(message);
+            Console.WriteLine();
+            Console.WriteLine($"[Y] {yesLabel}");
+            Console.WriteLine($"[N] {noLabel}");
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var key = Console.ReadKey(intercept: true);
+                if (key.Key == ConsoleKey.Y) return true;
+                if (key.Key is ConsoleKey.N or ConsoleKey.Escape) return false;
+            }
+        }
+
+        selected = 0;
+        PrepareInteractiveConsole(clear: false);
+        try
+        {
+            var keyTask = ReadKeyAsync();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                UpdateLayout();
+                UpdateAmbientSweepState();
+                RenderYesNoFrame(title, message, yesLabel, noLabel);
+
+                var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
+                {
+                    continue;
+                }
+
+                var key = await keyTask.ConfigureAwait(false);
+                if (key.Key is ConsoleKey.UpArrow or ConsoleKey.DownArrow)
+                {
+                    selected = selected == 0 ? 1 : 0;
+                    keyTask = ReadKeyAsync();
+                    continue;
+                }
+                if (key.Key == ConsoleKey.Escape || key.Key == ConsoleKey.N)
+                {
+                    return false;
+                }
+                if (key.Key == ConsoleKey.Y)
+                {
+                    return true;
+                }
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    return selected == 0;
+                }
+                keyTask = ReadKeyAsync();
+            }
+        }
+        finally
+        {
+            RestoreConsole();
+        }
+    }
+
     public async Task ShowDetailsAsync(
         string title,
         IReadOnlyList<string> lines,
@@ -918,6 +992,20 @@ internal sealed partial class InteractiveTerminalUi
             DrawSelectable(canvas, contentX, messageY + 4, '0', "Отмена", selected == 1);
         }
         Center(canvas, CanvasHeight - 1, "↑ ↓ выбрать   Enter продолжить   1/0 сразу   Esc отмена", Palette.Dim);
+        Render(canvas);
+    }
+
+    private void RenderYesNoFrame(
+        string title,
+        string message,
+        string yesLabel,
+        string noLabel)
+    {
+        var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
+        PutWrapped(canvas, contentX, contentY, contentWidth, message, Palette.Text);
+        DrawSelectable(canvas, contentX, contentY + 7, 'Y', yesLabel, selected == 0);
+        DrawSelectable(canvas, contentX, contentY + 8, 'N', noLabel, selected == 1);
+        Center(canvas, CanvasHeight - 1, "↑ ↓ выбрать   Enter продолжить   Y/N сразу   Esc — нет", Palette.Dim);
         Render(canvas);
     }
 
@@ -1241,8 +1329,19 @@ internal sealed partial class InteractiveTerminalUi
             '2',
             $"Проверка сети: {(snapshot?.NetworkCheckIgnored == true ? "отключена" : "включена")}",
             InteractiveMenuAction.ToggleNetworkCheck),
+        new MenuItem(
+            '3',
+            $"Анонимная статистика: {FormatStatisticsConsent(snapshot?.AnonymousStatisticsConsent ?? AnonymousStatisticsConsent.Unknown)}",
+            InteractiveMenuAction.ToggleAnonymousStatistics),
         new MenuItem('0', "Назад", InteractiveMenuAction.Back)
     ];
+
+    private static string FormatStatisticsConsent(AnonymousStatisticsConsent consent) => consent switch
+    {
+        AnonymousStatisticsConsent.Allowed => "включена",
+        AnonymousStatisticsConsent.Declined => "выключена",
+        _ => "не выбрано"
+    };
 
     private static IReadOnlyList<MenuItem> GetMaintenanceItems(InteractiveStatusSnapshot? snapshot)
     {

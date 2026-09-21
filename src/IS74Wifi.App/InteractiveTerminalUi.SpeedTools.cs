@@ -149,6 +149,7 @@ internal sealed partial class InteractiveTerminalUi
     public async Task RunSpeedToolsAsync(
         InteractiveStatusSnapshot currentStatus,
         CampusSpeedToolsService speedTools,
+        Func<CancellationToken, Task<bool>> ensureAnonymousStatisticsConsent,
         CancellationToken cancellationToken = default)
     {
         status = currentStatus;
@@ -156,7 +157,7 @@ internal sealed partial class InteractiveTerminalUi
 
         if (!CanUseInteractiveSession)
         {
-            await RunSpeedToolsCompactAsync(speedTools, cancellationToken).ConfigureAwait(false);
+            await RunSpeedToolsCompactAsync(speedTools, ensureAnonymousStatisticsConsent, cancellationToken).ConfigureAwait(false);
             selected = mainMenuSelection;
             return;
         }
@@ -227,7 +228,7 @@ internal sealed partial class InteractiveTerminalUi
                 }
                 else if (key.KeyChar == '4')
                 {
-                    await PublishLastSpeedResultAsync(speedTools, cancellationToken).ConfigureAwait(false);
+                    await PublishLastSpeedResultAsync(speedTools, ensureAnonymousStatisticsConsent, cancellationToken).ConfigureAwait(false);
                 }
 
                 keyTask = ReadKeyAsync();
@@ -316,11 +317,7 @@ internal sealed partial class InteractiveTerminalUi
                 lastSpeedTestRun.Measurement.LatencyMs,
                 lastSpeedTestRun.Measurement.JitterMs);
 
-            speedStatusText = lastSpeedTestRun.StatisticsWrite.Success
-                ? "Замер завершён · статистика отправлена"
-                : lastSpeedTestRun.StatisticsQueued
-                    ? "Замер завершён · статистика сохранена в очереди"
-                    : "Замер завершён · статистика не отправлена";
+            speedStatusText = DescribeSpeedStatisticsStatus(lastSpeedTestRun);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -380,6 +377,7 @@ internal sealed partial class InteractiveTerminalUi
 
     private async Task PublishLastSpeedResultAsync(
         CampusSpeedToolsService speedTools,
+        Func<CancellationToken, Task<bool>> ensureAnonymousStatisticsConsent,
         CancellationToken cancellationToken)
     {
         if (lastSpeedTestRun is null)
@@ -397,6 +395,13 @@ internal sealed partial class InteractiveTerminalUi
                 "ПУБЛИКАЦИЯ РЕЗУЛЬТАТА",
                 "Backend статистики не настроен. Сам замер работает локально, но опубликовать результат в общем рейтинге пока нельзя.",
                 cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!speedTools.AnonymousStatisticsAllowed &&
+            !await ensureAnonymousStatisticsConsent(cancellationToken).ConfigureAwait(false))
+        {
+            speedStatusText = "Публикация отменена · анонимная статистика отключена";
             return;
         }
 
@@ -863,6 +868,7 @@ internal sealed partial class InteractiveTerminalUi
 
     private async Task RunSpeedToolsCompactAsync(
         CampusSpeedToolsService speedTools,
+        Func<CancellationToken, Task<bool>> ensureAnonymousStatisticsConsent,
         CancellationToken cancellationToken)
     {
         while (true)
@@ -911,11 +917,7 @@ internal sealed partial class InteractiveTerminalUi
                 {
                     lastSpeedTestRun = await speedTools.MeasureAsync(null, cancellationToken).ConfigureAwait(false);
                     speedLastPublished = false;
-                    speedStatusText = lastSpeedTestRun.StatisticsWrite.Success
-                        ? "Замер завершён · статистика отправлена"
-                        : lastSpeedTestRun.StatisticsQueued
-                            ? "Замер завершён · статистика сохранена в очереди"
-                            : "Замер завершён · статистика не отправлена";
+                    speedStatusText = DescribeSpeedStatisticsStatus(lastSpeedTestRun);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -946,6 +948,15 @@ internal sealed partial class InteractiveTerminalUi
                 if (lastSpeedTestRun is null)
                 {
                     speedStatusText = "Сначала выполните замер";
+                }
+                else if (!speedTools.BackendEnabled)
+                {
+                    speedStatusText = "Публикация недоступна: backend не настроен";
+                }
+                else if (!speedTools.AnonymousStatisticsAllowed &&
+                         !await ensureAnonymousStatisticsConsent(cancellationToken).ConfigureAwait(false))
+                {
+                    speedStatusText = "Публикация отменена · анонимная статистика отключена";
                 }
                 else
                 {
@@ -1078,6 +1089,23 @@ internal sealed partial class InteractiveTerminalUi
         };
     }
 
+    private static string DescribeSpeedStatisticsStatus(CampusSpeedTestRun run)
+    {
+        if (run.StatisticsWrite.Success)
+        {
+            return "Замер завершён · статистика отправлена";
+        }
+        if (run.StatisticsQueued)
+        {
+            return "Замер завершён · статистика сохранена в очереди";
+        }
+        if (string.Equals(run.StatisticsWrite.Error, "statistics_disabled", StringComparison.Ordinal))
+        {
+            return "Замер завершён · локально, статистика отключена";
+        }
+        return "Замер завершён · статистика не отправлена";
+    }
+
     private static string FormatMetric(double? value)
     {
         if (value is null || !double.IsFinite(value.Value))
@@ -1103,6 +1131,8 @@ internal sealed partial class InteractiveTerminalUi
         return error switch
         {
             "backend_not_configured" => "backend не настроен",
+            "statistics_disabled" => "анонимная статистика отключена",
+            "statistics_consent_required" => "нужно разрешить анонимную статистику",
             "timeout" => "таймаут HTTP-запроса",
             "cancelled" => "запрос отменён интерфейсом",
             "dns" => "ошибка DNS",

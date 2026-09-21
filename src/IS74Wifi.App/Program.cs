@@ -6,6 +6,10 @@ namespace IS74Wifi.App;
 internal static class Program
 {
     private const string ProductVersion = "v0.1.0-alpha.17";
+    private const string AnonymousStatisticsConsentMessage =
+        "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации, а также позволяет участвовать в анонимном рейтинге скорости интернета.";
+    private const string AnonymousStatisticsPublishMessage =
+        "Для публикации результата требуется отправка анонимной статистики. Разрешить её?";
     private static bool forwardMenuWithoutReveal;
 
     [STAThread]
@@ -301,6 +305,7 @@ internal static class Program
             Console.WriteLine($"Сессия API действует до: {session.AccessEnd}");
         }
         Console.WriteLine("Теперь можно авторизовать Wi-Fi один раз сейчас или включить автоматическую авторизацию.");
+        PromptAnonymousStatisticsConsentConsole();
         return 0;
     }
 
@@ -436,7 +441,7 @@ internal static class Program
             Console.WriteLine("Требуется действие           : да — автоматические попытки остановлены");
         }
         var telemetryStatus = app.TelemetryQueue.GetStatus();
-        Console.WriteLine($"Телеметрия                   : {(app.TelemetryUploader.Enabled ? "выгрузка настроена" : "только локально")}");
+        Console.WriteLine($"Анонимная статистика         : {FormatAnonymousStatisticsConsent(app.Settings.AnonymousStatisticsConsent)}");
         Console.WriteLine($"Очередь телеметрии           : {telemetryStatus.PendingFiles} файлов / {FormatByteCount(telemetryStatus.PendingBytes)}");
         if (telemetryStatus.RejectedFiles > 0)
         {
@@ -1657,6 +1662,28 @@ internal static class Program
                         break;
                     }
 
+                    case InteractiveMenuAction.ToggleAnonymousStatistics:
+                    {
+                        if (initialStatus.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Allowed)
+                        {
+                            await RunMenuBatchActionAsync(
+                                ui,
+                                "АНОНИМНАЯ СТАТИСТИКА",
+                                initialStatus,
+                                "Отключаю отправку анонимной статистики...",
+                                progress => SetAnonymousStatisticsConsent(AnonymousStatisticsConsent.Declined, progress),
+                                "Анонимная статистика отключена").ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            _ = await PromptAnonymousStatisticsConsentAsync(
+                                ui,
+                                initialStatus,
+                                forPublication: false).ConfigureAwait(false);
+                        }
+                        break;
+                    }
+
                     case InteractiveMenuAction.CycleNotifications:
                         CycleNotificationMode();
                         break;
@@ -1729,7 +1756,8 @@ internal static class Program
                         using var speedRuntime = ApplicationRuntime.Create(ProductVersion);
                         await ui.RunSpeedToolsAsync(
                             GetInteractiveStatusSnapshot(),
-                            speedRuntime.CampusSpeedTools).ConfigureAwait(false);
+                            speedRuntime.CampusSpeedTools,
+                            cancellationToken => EnsureAnonymousStatisticsConsentForPublicationAsync(ui, cancellationToken)).ConfigureAwait(false);
                         break;
                     }
 
@@ -1899,6 +1927,17 @@ internal static class Program
                 "РЕГИСТРАЦИЯ",
                 history,
                 GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+
+            using (var consentRuntime = ApplicationRuntime.Create(ProductVersion))
+            {
+                if (consentRuntime.Settings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Unknown)
+                {
+                    _ = await PromptAnonymousStatisticsConsentAsync(
+                        ui,
+                        GetInteractiveStatusSnapshot(),
+                        forPublication: false).ConfigureAwait(false);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -2042,7 +2081,7 @@ internal static class Program
         var telemetryStatus = app.TelemetryQueue.GetStatus();
         lines.Add(string.Empty);
         lines.Add("=== Телеметрия ===");
-        lines.Add($"Режим: {(app.TelemetryUploader.Enabled ? "локальная очередь + отложенная выгрузка" : "только локальная очередь")}");
+        lines.Add($"Режим: {FormatAnonymousStatisticsConsent(app.Settings.AnonymousStatisticsConsent)}");
         lines.Add($"Ожидает выгрузки: {telemetryStatus.PendingFiles} файлов / {FormatByteCount(telemetryStatus.PendingBytes)}");
         lines.Add($"Карантин: {telemetryStatus.RejectedFiles} файлов / {FormatByteCount(telemetryStatus.RejectedBytes)}");
 
@@ -2310,6 +2349,7 @@ internal static class Program
             AuthorizationExpectedExpiryUtc: runtime.ExpectedExpiryUtc,
             AuthorizationAlreadyActive: string.Equals(runtime.LastResult, "already-authorized", StringComparison.Ordinal),
             NetworkCheckIgnored: app.Settings.IgnoreNetworkCheck,
+            AnonymousStatisticsConsent: app.Settings.AnonymousStatisticsConsent,
             AutomaticAuthorizationEnabled: automatic,
             AgentRunning: agentRunning,
             NotificationMode: FormatNotificationMode(app.Settings.NotificationMode),
@@ -2379,6 +2419,122 @@ internal static class Program
         _ => "ошибка авторизации"
     };
 
+    private static async Task<bool> PromptAnonymousStatisticsConsentAsync(
+        InteractiveTerminalUi ui,
+        InteractiveStatusSnapshot currentStatus,
+        bool forPublication,
+        CancellationToken cancellationToken = default)
+    {
+        using (var app = ApplicationRuntime.Create(ProductVersion))
+        {
+            var current = app.Settings.AnonymousStatisticsConsent;
+            if (current == AnonymousStatisticsConsent.Allowed)
+            {
+                return true;
+            }
+        }
+
+        var allowed = await ui.ConfirmYesNoAsync(
+            "АНОНИМНАЯ СТАТИСТИКА",
+            forPublication ? AnonymousStatisticsPublishMessage : AnonymousStatisticsConsentMessage,
+            forPublication ? "Разрешить и опубликовать" : "Разрешить",
+            forPublication ? "Не публиковать" : "Не отправлять",
+            currentStatus,
+            cancellationToken).ConfigureAwait(false);
+
+        SetAnonymousStatisticsConsent(allowed
+            ? AnonymousStatisticsConsent.Allowed
+            : AnonymousStatisticsConsent.Declined);
+        return allowed;
+    }
+
+    private static Task<bool> EnsureAnonymousStatisticsConsentForPublicationAsync(
+        InteractiveTerminalUi ui,
+        CancellationToken cancellationToken) =>
+        PromptAnonymousStatisticsConsentAsync(
+            ui,
+            GetInteractiveStatusSnapshot(),
+            forPublication: true,
+            cancellationToken: cancellationToken);
+
+    private static void PromptAnonymousStatisticsConsentConsole()
+    {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        if (app.Settings.AnonymousStatisticsConsent != AnonymousStatisticsConsent.Unknown)
+        {
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("АНОНИМНАЯ СТАТИСТИКА");
+        Console.WriteLine(AnonymousStatisticsConsentMessage);
+        Console.Write("[Y] Разрешить   [N] Не отправлять: ");
+        while (true)
+        {
+            var key = Console.ReadKey(intercept: true);
+            if (key.Key == ConsoleKey.Y)
+            {
+                Console.WriteLine("Y");
+                SetAnonymousStatisticsConsent(AnonymousStatisticsConsent.Allowed);
+                return;
+            }
+            if (key.Key is ConsoleKey.N or ConsoleKey.Escape)
+            {
+                Console.WriteLine("N");
+                SetAnonymousStatisticsConsent(AnonymousStatisticsConsent.Declined);
+                return;
+            }
+        }
+    }
+
+    private static void SetAnonymousStatisticsConsent(
+        AnonymousStatisticsConsent consent,
+        Action<string>? progress = null)
+    {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        if (app.Settings.AnonymousStatisticsConsent == consent)
+        {
+            ReportMenuBatchProgress(progress, "Настройка уже сохранена");
+            return;
+        }
+
+        var installation = new ProgramInstallation();
+        var restartAgent = AgentProcessControl.IsAgentRunning() && installation.IsInstalled;
+
+        if (restartAgent)
+        {
+            AgentProcessControl.StopAgentOrThrow();
+            ReportMenuBatchProgress(progress, "Фоновый режим остановлен для применения настройки");
+        }
+
+        try
+        {
+            // Never let telemetry collected under an earlier policy cross a consent
+            // boundary. New events are recorded only while consent is enabled.
+            app.TelemetryQueue.ClearPending();
+            new SettingsStore(app.Paths, app.Json).Save(app.Settings with
+            {
+                AnonymousStatisticsConsent = consent
+            });
+            app.Logger.Write(DiagnosticLevel.Info, $"telemetry.consent value={consent}");
+            ReportMenuBatchProgress(progress, "Настройка сохранена");
+        }
+        catch
+        {
+            if (restartAgent)
+            {
+                StartInstalledAgent(installation.ExecutablePath);
+            }
+            throw;
+        }
+
+        if (restartAgent)
+        {
+            StartInstalledAgent(installation.ExecutablePath);
+            ReportMenuBatchProgress(progress, "Фоновый режим запущен с новой настройкой");
+        }
+    }
+
     private static void CycleNotificationMode()
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
@@ -2418,6 +2574,13 @@ internal static class Program
         StartInstalledAgent(installation.ExecutablePath);
         ReportMenuBatchProgress(progress, "Фоновый режим запущен с новой настройкой");
     }
+
+    private static string FormatAnonymousStatisticsConsent(AnonymousStatisticsConsent consent) => consent switch
+    {
+        AnonymousStatisticsConsent.Allowed => "включена",
+        AnonymousStatisticsConsent.Declined => "выключена",
+        _ => "не выбрано"
+    };
 
     private static string FormatNotificationMode(NotificationMode mode) => mode switch
     {
