@@ -6,6 +6,7 @@ namespace IS74Wifi.App;
 internal static class Program
 {
     private const string ProductVersion = "v0.1.0-alpha.12";
+    private static bool forwardMenuWithoutReveal;
 
     [STAThread]
     private static async Task<int> Main(string[] args)
@@ -482,33 +483,34 @@ internal static class Program
             return false;
         }
 
-        Console.WriteLine();
-        if (installation.IsInstalled)
-        {
-            Console.WriteLine($"Установлена версия: {installedVersionText ?? "неизвестно"}");
-            Console.WriteLine($"Запущена версия    : {ProductVersion}");
-            Console.Write("Обновить установленную копию и продолжить? [Y/N]: ");
-        }
-        else
-        {
-            Console.WriteLine("Для обычной работы IS74Wifi должна быть установлена для текущего пользователя Windows.");
-            Console.WriteLine($"Программа будет установлена в: {installation.InstallDirectory}");
-            Console.WriteLine("Права администратора не требуются. Автоматическая авторизация при этом не включается.");
-            Console.Write("Установить IS74Wifi и продолжить? [Y/N]: ");
-        }
+        var wasInstalled = installation.IsInstalled;
+        var ui = new InteractiveTerminalUi(ProductVersion);
+        var proceed = ui.ConfirmInstallOrUpgradeAsync(
+                upgrade: wasInstalled,
+                installedVersion: installedVersionText,
+                installDirectory: installation.InstallDirectory)
+            .GetAwaiter()
+            .GetResult();
 
-        if (!ReadYesAnswer(Console.ReadLine()))
+        if (!proceed)
         {
-            Console.WriteLine(installation.IsInstalled ? "Обновление отменено." : "Установка отменена.");
+            Console.Clear();
+            Console.WriteLine(wasInstalled ? "Обновление отменено." : "Установка отменена.");
             exitCode = 0;
             return true;
         }
 
         InstallOrUpgradeCanonicalCopy(current, installation);
-        Console.WriteLine(installation.IsInstalled
-            ? $"Рабочая копия готова: {installation.ExecutablePath}"
-            : "IS74Wifi установлена.");
-        Console.WriteLine("Открываю установленную копию...");
+        ui.ShowBusyMessage(
+            "ГОТОВО",
+            wasInstalled
+                ? $"Установленная копия обновлена до {ProductVersion}."
+                : "IS74W установлена для текущего пользователя Windows.",
+            GetInteractiveStatusSnapshot());
+
+        // The downloaded bootstrap process now forwards to the canonical copy.
+        // Keep the header in its settled state instead of replaying the full reveal twice.
+        forwardMenuWithoutReveal = true;
         return false;
     }
 
@@ -569,6 +571,10 @@ internal static class Program
             UseShellExecute = false,
             CreateNoWindow = command == "agent"
         };
+        if (command == "menu" && forwardMenuWithoutReveal)
+        {
+            startInfo.Environment["IS74W_SKIP_REVEAL"] = "1";
+        }
         foreach (var arg in args)
         {
             startInfo.ArgumentList.Add(arg);
@@ -902,60 +908,162 @@ internal static class Program
 
     private static async Task<int> RunMenuAsync()
     {
+        var ui = new InteractiveTerminalUi(ProductVersion);
+        var showReveal = !string.Equals(
+            Environment.GetEnvironmentVariable("IS74W_SKIP_REVEAL"),
+            "1",
+            StringComparison.Ordinal);
+
         while (true)
         {
-            await PrintStatusAsync().ConfigureAwait(false);
-            Console.WriteLine("1. Зарегистрировать устройство");
-            Console.WriteLine("2. Авторизовать Wi-Fi один раз сейчас");
-            Console.WriteLine("3. Включить автоматическую авторизацию");
-            Console.WriteLine("4. Отключить автоматическую авторизацию");
-            Console.WriteLine("5. Показать состояние");
-            Console.WriteLine("6. Сбросить регистрацию");
-            Console.WriteLine("7. Удалить программу и все локальные данные");
-            Console.WriteLine("8. Открыть диагностические логи");
-            Console.WriteLine("9. Проверить обновления");
-            Console.WriteLine("0. Выход");
-            Console.Write("Выберите действие: ");
-            var choice = Console.ReadLine()?.Trim();
+            var initialStatus = GetInteractiveStatusSnapshot();
+            var refreshedStatus = RefreshInteractiveStatusAsync();
+            var action = await ui.RunMenuAsync(initialStatus, refreshedStatus, showReveal).ConfigureAwait(false);
+            showReveal = false;
 
             try
             {
-                switch (choice)
+                switch (action)
                 {
-                    case "1": await RegisterAsync().ConfigureAwait(false); break;
-                    case "2": await ConnectAsync().ConfigureAwait(false); break;
-                    case "3": EnableAutomaticAuthorization(); break;
-                    case "4": DisableAutostart(); break;
-                    case "5": await PrintStatusAsync().ConfigureAwait(false); break;
-                    case "6":
-                        Console.Write("Удалить регистрацию и локальную сессию? Введите YES: ");
-                        if (Console.ReadLine() == "YES") ResetRegistration();
+                    case InteractiveMenuAction.Register:
+                        ui.PrepareForAction("Регистрация устройства");
+                        await RegisterAsync().ConfigureAwait(false);
+                        ui.PauseAfterAction();
                         break;
-                    case "7":
-                        Console.Write("Остановить автоматическую авторизацию, удалить программу и ВСЕ локальные данные? Введите УДАЛИТЬ: ");
-                        if (Console.ReadLine() == "УДАЛИТЬ")
+
+                    case InteractiveMenuAction.Connect:
+                        ui.PrepareForAction("Авторизация Wi-Fi");
+                        await ConnectAsync().ConfigureAwait(false);
+                        ui.PauseAfterAction();
+                        break;
+
+                    case InteractiveMenuAction.EnableAutomaticAuthorization:
+                        ui.PrepareForAction("Автоматическая авторизация");
+                        EnableAutomaticAuthorization();
+                        ui.PauseAfterAction();
+                        break;
+
+                    case InteractiveMenuAction.DisableAutomaticAuthorization:
+                        ui.PrepareForAction("Автоматическая авторизация");
+                        DisableAutostart();
+                        ui.PauseAfterAction();
+                        break;
+
+                    case InteractiveMenuAction.ShowDetailedStatus:
+                        ui.PrepareForAction("Подробное состояние");
+                        await PrintStatusAsync().ConfigureAwait(false);
+                        ui.PauseAfterAction();
+                        break;
+
+                    case InteractiveMenuAction.ResetRegistration:
+                        ui.PrepareForAction("Сброс регистрации");
+                        ResetRegistration();
+                        ui.PauseAfterAction();
+                        break;
+
+                    case InteractiveMenuAction.Uninstall:
+                        ui.PrepareForAction("Удаление IS74W");
+                        Uninstall();
+                        return 0;
+
+                    case InteractiveMenuAction.OpenLogs:
+                        ui.PrepareForAction("Диагностические логи");
+                        OpenLogs();
+                        ui.PauseAfterAction();
+                        break;
+
+                    case InteractiveMenuAction.Update:
+                        ui.PrepareForAction("Обновления");
+                        if (await UpdateAsync(restartMenu: true).ConfigureAwait(false))
                         {
-                            Uninstall();
                             return 0;
                         }
+                        ui.PauseAfterAction();
                         break;
-                    case "8": OpenLogs(); break;
-                    case "9":
-                        if (await UpdateAsync(restartMenu: true).ConfigureAwait(false)) return 0;
+
+                    case InteractiveMenuAction.Exit:
+                        Console.Clear();
+                        return 0;
+
+                    default:
                         break;
-                    case "0": return 0;
-                    default: Console.WriteLine("Неизвестный пункт."); break;
                 }
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine(ex.Message);
+                ui.PauseAfterAction();
             }
-
-            Console.WriteLine();
-            Console.Write("Enter для продолжения...");
-            Console.ReadLine();
         }
+    }
+
+    private static InteractiveStatusSnapshot GetInteractiveStatusSnapshot(bool? internetOverride = null)
+    {
+        using var app = ApplicationRuntime.Create();
+        return BuildInteractiveStatusSnapshot(app, internetOverride);
+    }
+
+    private static async Task<InteractiveStatusSnapshot> RefreshInteractiveStatusAsync()
+    {
+        using var app = ApplicationRuntime.Create();
+        bool? online;
+        try
+        {
+            var probe = await app.Internet.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+            online = probe.Online;
+        }
+        catch
+        {
+            online = null;
+        }
+        return BuildInteractiveStatusSnapshot(app, online);
+    }
+
+    private static InteractiveStatusSnapshot BuildInteractiveStatusSnapshot(
+        ApplicationRuntime app,
+        bool? internetOverride)
+    {
+        var installation = new ProgramInstallation();
+        var secrets = app.Secrets.Load();
+        var session = app.Session.Load();
+        var runtime = app.RuntimeState.Load();
+        var automatic = installation.IsInstalled && app.Autostart.IsEnabledFor(installation.ExecutablePath);
+        var agentRunning = AgentProcessControl.IsAgentRunning();
+        var authorizationActive = runtime.ExpectedExpiryUtc is { } expiry
+            ? expiry > DateTimeOffset.UtcNow
+            : runtime.LastAuthUtc is not null;
+
+        var internet = internetOverride ?? runtime.InternetConfirmed;
+        return new InteractiveStatusSnapshot(
+            Installed: installation.IsInstalled,
+            Registered: secrets is not null,
+            InternetAvailable: internet,
+            WifiAuthorizationActive: authorizationActive,
+            AutomaticAuthorizationEnabled: automatic,
+            AgentRunning: agentRunning,
+            MaskedPhone: MaskPhone(secrets?.Phone),
+            ApiSessionEnd: FormatSessionEnd(session?.AccessEnd),
+            LastResult: string.IsNullOrWhiteSpace(runtime.LastResult) ? "—" : runtime.LastResult,
+            Version: ProductVersion);
+    }
+
+    private static string FormatSessionEnd(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "—";
+        }
+
+        if (DateTimeOffset.TryParse(
+                value,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AllowWhiteSpaces,
+                out var parsed))
+        {
+            return "до " + parsed.ToLocalTime().ToString("dd.MM.yyyy HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        return "до " + value.Trim();
     }
 
     private static async Task<int> RunAgentAsync()

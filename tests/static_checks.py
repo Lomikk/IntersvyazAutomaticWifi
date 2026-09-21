@@ -127,4 +127,15 @@ assert 'Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContin
 assert 'Wait-IS74ScheduledTaskStopped' in module, 'autostart replacement must wait for the old agent to stop'
 assert 'tests\\critical_path_contract.ps1' not in module  # sanity: tests stay outside runtime
 
+# C# terminal UI stays a real console renderer rather than a web/TUI dependency.
+csharp_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.cs').read_text(encoding='utf-8')
+csharp_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8')
+assert 'private const int CanvasWidth = 79;' in csharp_ui, 'terminal UI must fit an 80-column console without wrapping'
+assert 'private const int CanvasHeight = 30;' in csharp_ui, 'terminal UI height contract changed'
+assert 'ConsoleKey.UpArrow' in csharp_ui and 'ConsoleKey.DownArrow' in csharp_ui and 'ConsoleKey.Enter' in csharp_ui
+assert 'BannerMode.InitialSweep' in csharp_ui and 'BannerMode.AmbientSweep' in csharp_ui, 'brand sweep animations missing'
+assert 'glint' not in csharp_ui.lower(), 'per-letter glint animation must stay disabled'
+assert 'InterSvyaz Wi-Fi Auth' in csharp_ui
+assert 'IS74W_SKIP_REVEAL' in csharp_program, 'bootstrap must not replay the full reveal after installation'
+
 print('static checks: OK')
