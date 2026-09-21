@@ -211,6 +211,7 @@ assert 'SendTelemetryBatchAsync' not in auth_flow and 'TryFlushIfDueAsync' not i
 assert 'File.' not in push_polling, 'push polling critical path must not write telemetry to disk'
 assert 'TelemetryUploadIntervalHours' in (root / 'src' / 'IS74Wifi.Core' / 'AppSettings.cs').read_text(encoding='utf-8')
 assert 'TimeSpan.FromHours(6)' in telemetry_uploader, 'backlogged telemetry should respect the server upload window'
+assert 'MaxUploadEvents = 64' in telemetry_models and 'MaxUploadPayloadBytes = 60 * 1024' in telemetry_models, 'telemetry transport batch must fit the external Apps Script receiver guards'
 for forbidden in ['BearerToken', 'Phone', 'ConfirmCode', 'AuthId', 'UserId', 'ProfileId', 'PushMessage', 'FullMessage']:
     assert forbidden not in telemetry_models, f'sensitive field leaked into telemetry DTO contract: {forbidden}'
 assert 'install-id.txt' in (root / 'src' / 'IS74Wifi.Core' / 'AppPaths.cs').read_text(encoding='utf-8'), 'stable telemetry install ID storage missing'

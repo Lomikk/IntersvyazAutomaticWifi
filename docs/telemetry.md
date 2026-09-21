@@ -79,19 +79,19 @@ One file represents one completed authorization trace and contains the attempt s
 
 The queue is bounded (currently about 10 MiB / 1024 trace files). An individually invalid/oversized trace is quarantined rather than blocking later uploads.
 
-A transport batch groups whole trace files, up to 512 events and roughly 240 KiB. `batch_id` is deterministic from the serialized event payload. If an HTTP response is lost, the exact same local data therefore produces the same batch ID on retry. Each row also has its own `event_id` for durable downstream deduplication.
+A transport batch groups whole trace files, up to 64 events and roughly 60 KiB. The client intentionally stays below the currently deployed Apps Script guards (64 events / 64 KiB) so JSON-envelope overhead cannot push an otherwise valid batch over the receiver limit. `batch_id` is deterministic from the serialized event payload. If an HTTP response is lost, the exact same local data therefore produces the same batch ID on retry. Each row also has its own `event_id` for durable downstream deduplication.
 
 ## Upload scheduling
 
 Authorization traces are intentionally not uploaded in real time. The background agent tries to flush telemetry only when its next authorization wake-up is at least one minute away. The default upload interval is 12 hours.
 
-A flush can send up to eight bounded batches. If more data remains after that, the next retry is delayed by six hours to match the ingestion rate window. HTTP timeout is 3 seconds by default. Failures leave files in the local queue and use backoff; authorization never depends on upload success.
+By default a flush sends one bounded batch. This keeps normal operation close to the intended “accumulate locally, upload rarely” model. The setting can raise that cap for recovery/backlog draining; if data remains after a successful flush, the next attempt is delayed by six hours. HTTP timeout is 3 seconds by default. Failures leave files in the local queue and use backoff; authorization never depends on upload success.
 
 If no HTTPS telemetry endpoint is configured, local collection continues and nothing is uploaded. The endpoint can currently be supplied through `IS74W_TELEMETRY_URL` or the `TelemetryEndpoint` setting.
 
 ## Ingestion API contract
 
-The Apps Script ingestion service exposes four logical interfaces:
+The client models four logical interfaces. The Apps Script source is intentionally kept outside this public repository; production upload must stay disabled until the deployed script is verified to implement the same wire contract:
 
 ```text
 POST ?route=telemetry
@@ -102,7 +102,7 @@ GET  ?route=leaderboard
 
 `POST telemetry` accepts only authorization attempts, mailbox polls, Internet probes, portal responses, and errors. A batch must belong to one `install_id`.
 
-The current basic anti-abuse limits are deliberately much higher than normal-client traffic:
+The intended backend anti-abuse limits are deliberately much higher than normal-client traffic and must be verified against the external Apps Script before deployment:
 
 - global write guard: 120 POST requests/minute;
 - telemetry: at most 8 upload requests per 6-hour window per `install_id`;
@@ -111,7 +111,7 @@ The current basic anti-abuse limits are deliberately much higher than normal-cli
 
 These are safety/bug guards, not a cryptographic trust boundary. Because the client is open source, a deliberate attacker can generate new installation IDs. A future public deployment can put a rate-limiting gateway in front of the Apps Script if stronger abuse resistance becomes necessary.
 
-The Script Property `INGESTION_ENABLED=false` acts as an emergency write kill switch.
+The external Apps Script design includes an `INGESTION_ENABLED=false` emergency write kill switch; because that backend is intentionally not versioned here, deployment verification must confirm it is present.
 
 ## Storage model
 

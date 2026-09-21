@@ -44,6 +44,12 @@ public sealed record TelemetryQueueBatch(
     IReadOnlyList<string> EventJson,
     IReadOnlyList<string> Files);
 
+public sealed record TelemetryQueueStatus(
+    int PendingFiles,
+    long PendingBytes,
+    int RejectedFiles,
+    long RejectedBytes);
+
 public sealed class TelemetryQueue(
     AppPaths paths,
     long maxQueueBytes = 10 * 1024 * 1024,
@@ -176,6 +182,37 @@ public sealed class TelemetryQueue(
                 return false;
             }
         }
+    }
+
+    public TelemetryQueueStatus GetStatus()
+    {
+        static (int Count, long Bytes) Measure(string directory)
+        {
+            try
+            {
+                if (!Directory.Exists(directory))
+                {
+                    return (0, 0);
+                }
+
+                var files = Directory.EnumerateFiles(directory, "*.jsonl")
+                    .Select(path => new FileInfo(path))
+                    .ToList();
+                return (files.Count, files.Sum(file => file.Exists ? file.Length : 0L));
+            }
+            catch
+            {
+                return (0, 0);
+            }
+        }
+
+        var pending = Measure(paths.TelemetryPendingDirectory);
+        var rejected = Measure(paths.TelemetryRejectedDirectory);
+        return new TelemetryQueueStatus(
+            pending.Count,
+            pending.Bytes,
+            rejected.Count,
+            rejected.Bytes);
     }
 
     private void TrimBestEffort()

@@ -324,6 +324,13 @@ internal static class Program
         {
             Console.WriteLine("Требуется действие           : да — автоматические попытки остановлены");
         }
+        var telemetryStatus = app.TelemetryQueue.GetStatus();
+        Console.WriteLine($"Телеметрия                   : {(app.TelemetryUploader.Enabled ? "выгрузка настроена" : "только локально")}");
+        Console.WriteLine($"Очередь телеметрии           : {telemetryStatus.PendingFiles} файлов / {FormatByteCount(telemetryStatus.PendingBytes)}");
+        if (telemetryStatus.RejectedFiles > 0)
+        {
+            Console.WriteLine($"Отклонённые trace-файлы      : {telemetryStatus.RejectedFiles} / {FormatByteCount(telemetryStatus.RejectedBytes)}");
+        }
         if (staleAutostartRemoved)
         {
             Console.WriteLine("Обслуживание                 : удалена устаревшая запись автозапуска");
@@ -1864,6 +1871,13 @@ internal static class Program
             $"Уведомления: {FormatNotificationMode(app.Settings.NotificationMode)}",
             $"API-сессия: {FormatSessionEnd(session?.AccessEnd)}"
         };
+
+        var telemetryStatus = app.TelemetryQueue.GetStatus();
+        lines.Add(string.Empty);
+        lines.Add("=== Телеметрия ===");
+        lines.Add($"Режим: {(app.TelemetryUploader.Enabled ? "локальная очередь + отложенная выгрузка" : "только локальная очередь")}");
+        lines.Add($"Ожидает выгрузки: {telemetryStatus.PendingFiles} файлов / {FormatByteCount(telemetryStatus.PendingBytes)}");
+        lines.Add($"Карантин: {telemetryStatus.RejectedFiles} файлов / {FormatByteCount(telemetryStatus.RejectedBytes)}");
 
         if (state.LastAuthUtc is { } lastAuth)
             lines.Add($"Последняя Wi-Fi авторизация: {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");

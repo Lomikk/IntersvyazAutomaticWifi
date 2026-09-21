@@ -6,8 +6,10 @@ public static class TelemetryContract
 {
     public const int Schema = 3;
     public const string PushScheduleVersion = "push-v1";
-    public const int MaxUploadEvents = 512;
-    public const int MaxUploadPayloadBytes = 240 * 1024;
+    // Keep transport batches within the currently deployed Apps Script receiver's
+    // hard guards. Payload leaves a small envelope/headroom margin below 64 KiB.
+    public const int MaxUploadEvents = 64;
+    public const int MaxUploadPayloadBytes = 60 * 1024;
 }
 
 public sealed record TelemetryAttemptEvent
@@ -181,6 +183,11 @@ public sealed record TelemetryLeaderboardEntry
     public required string AppVersion { get; init; }
     public required string EventId { get; init; }
     public required string Nickname { get; init; }
+    public double? DownloadMbps { get; init; }
+    public double? UploadMbps { get; init; }
+    public double? LatencyMs { get; init; }
+    public double? JitterMs { get; init; }
+    public double? PacketLossPct { get; init; }
 }
 
 public sealed record TelemetryUploadState(

@@ -17,5 +17,5 @@ public sealed record AppSettings
     public string? TelemetryEndpoint { get; init; }
     public int TelemetryUploadIntervalHours { get; init; } = 12;
     public int TelemetryHttpTimeoutMilliseconds { get; init; } = 3000;
-    public int TelemetryMaxBatchesPerFlush { get; init; } = 8;
+    public int TelemetryMaxBatchesPerFlush { get; init; } = 1;
 }
