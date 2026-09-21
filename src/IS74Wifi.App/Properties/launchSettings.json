@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "IS74Wifi.App": {
+      "commandName": "Project"
+    },
+    "IS74Wifi.App (Local Debug)": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "IS74W_RUN_LOCAL": "1"
+      }
+    }
+  }
+}

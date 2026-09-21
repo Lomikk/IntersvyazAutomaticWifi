@@ -137,5 +137,13 @@ assert 'BannerMode.InitialSweep' in csharp_ui and 'BannerMode.AmbientSweep' in c
 assert 'glint' not in csharp_ui.lower(), 'per-letter glint animation must stay disabled'
 assert 'InterSvyaz Wi-Fi Auth' in csharp_ui
 assert 'IS74W_SKIP_REVEAL' in csharp_program, 'bootstrap must not replay the full reveal after installation'
+assert 'GetPrimaryItems(snapshot)' in csharp_ui, 'compact and rich menus must share the same state-aware action list'
+assert 'new MenuItem("Авторизовать Wi-Fi сейчас", InteractiveMenuAction.Connect)' in csharp_ui
+assert '"Отключить автоавторизацию" : "Включить автоавторизацию"' in csharp_ui
+assert 'registered ? "Сбросить регистрацию" : "Зарегистрировать устройство"' in csharp_ui
+assert 'new MenuItem("Подробное состояние", InteractiveMenuAction.ShowDetailedStatus)' in csharp_ui
+assert 'TargetView' not in csharp_ui, 'rich UI must not reintroduce speculative submenu navigation'
+launch_settings = (root / 'src' / 'IS74Wifi.App' / 'Properties' / 'launchSettings.json').read_text(encoding='utf-8')
+assert 'IS74Wifi.App (Local Debug)' in launch_settings and 'IS74W_RUN_LOCAL' in launch_settings, 'Visual Studio local-debug profile missing'
 
 print('static checks: OK')
