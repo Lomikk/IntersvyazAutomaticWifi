@@ -1562,6 +1562,10 @@ internal static class Program
                         }
                         break;
 
+                    case InteractiveMenuAction.SpeedTools:
+                        await ui.RunSpeedToolsAsync(GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                        break;
+
                     case InteractiveMenuAction.Exit:
                         Console.Clear();
                         return 0;
