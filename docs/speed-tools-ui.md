@@ -19,12 +19,23 @@ The left pane reserves presentation for a future measurement result:
 - jitter in milliseconds;
 - packet loss in percent.
 
-The right pane reserves presentation for the campus leaderboard, including download/upload/ping/jitter columns when width allows. Narrow layouts drop the upload column first rather than truncating every row beyond readability. The user nickname/result summary and voluntary publication controls live under the table.
+The right pane reserves presentation for the campus leaderboard, including download/upload/ping/jitter columns when width allows. Narrow layouts drop the upload column first rather than truncating every row beyond readability. The user nickname/result summary lives under the table; hotkey help is shown only once in the common footer so controls are not duplicated inside the pane.
+
+`[2]` expands the leaderboard into a dedicated browse view. That view may temporarily use nearly the whole terminal (the Wi-Fi status pane and banner are not useful while browsing ranking data), and supports:
+
+- `↑` / `↓` — one row;
+- `PgUp` / `PgDn` — one visible page;
+- `Home` / `End` — first/last page;
+- `R` — refresh hook for the future backend;
+- `Enter` / `Esc` — return to the two-pane speed dashboard.
+
+The UI shell currently exposes 50 empty placeholder ranks (`—` values) purely so scrolling and responsive layout can be exercised without fabricating measurements. The backend should replace that collection with real campus rows.
 
 Hotkeys:
 
 - `Enter` / `[1]` — start the future speed measurement;
-- `[2]` / `R` — refresh the future leaderboard;
+- `[2]` — expand/browse the leaderboard;
+- `R` — refresh the future leaderboard;
 - `[3]` — edit the transient nickname;
 - `[4]` — publish the future completed result;
 - `[0]` / `Esc` — return to the normal IS74Wifi menu.
@@ -50,6 +61,7 @@ Recommended integration points in `InteractiveTerminalUi.SpeedTools.cs`:
 - wire `Enter` / `[1]` to real progress/result updates and feed download text into `DrawLargeSpeedMetric`;
 - replace the placeholder metric rows in `DrawSpeedMeasurementPane`;
 - populate `DrawSpeedLeaderboardPane` from real campus rows and add scrolling if the visible row count becomes insufficient;
+- replace `speedLeaderboardRows` placeholders with real campus rows; the expanded browse view already handles scrolling and resizing;
 - persist the nickname outside the UI object if desired;
 - gate publication on a real completed result and send only after explicit user confirmation.
 

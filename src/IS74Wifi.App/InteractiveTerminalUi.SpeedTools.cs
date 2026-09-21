@@ -7,6 +7,7 @@ namespace IS74Wifi.App;
 internal sealed partial class InteractiveTerminalUi
 {
     private const int SpeedNicknameMaximumLength = 18;
+    private const int SpeedLeaderboardPlaceholderCount = 50;
 
     private static readonly IReadOnlyDictionary<char, string[]> SpeedMetricGlyphs =
         new Dictionary<char, string[]>
@@ -122,6 +123,18 @@ internal sealed partial class InteractiveTerminalUi
         };
 
     private string speedNicknameDraft = "Гость";
+    private readonly IReadOnlyList<SpeedLeaderboardRow> speedLeaderboardRows =
+        Enumerable.Range(1, SpeedLeaderboardPlaceholderCount)
+            .Select(rank => new SpeedLeaderboardRow(rank, "—", "—", "—", "—", "—"))
+            .ToArray();
+
+    private sealed record SpeedLeaderboardRow(
+        int Rank,
+        string Nickname,
+        string DownloadMbps,
+        string UploadMbps,
+        string PingMs,
+        string JitterMs);
 
     public async Task RunSpeedToolsAsync(
         InteractiveStatusSnapshot currentStatus,
@@ -166,7 +179,11 @@ internal sealed partial class InteractiveTerminalUi
                         "Интерфейс измерителя готов. Download, upload, ping, jitter и packet loss подключит отдельный backend-модуль.",
                         cancellationToken).ConfigureAwait(false);
                 }
-                else if (key.KeyChar == '2' || key.Key == ConsoleKey.R)
+                else if (key.KeyChar == '2')
+                {
+                    await ShowExpandedLeaderboardAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else if (key.Key == ConsoleKey.R)
                 {
                     await ShowSpeedToolsNoticeAsync(
                         "ТАБЛИЦА ЛИДЕРОВ",
@@ -277,6 +294,75 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
+    private async Task ShowExpandedLeaderboardAsync(CancellationToken cancellationToken)
+    {
+        var scrollOffset = 0;
+        var keyTask = ReadKeyAsync();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            UpdateLayout();
+
+            var visibleRows = GetExpandedLeaderboardVisibleRowCount();
+            scrollOffset = Math.Clamp(
+                scrollOffset,
+                0,
+                Math.Max(0, speedLeaderboardRows.Count - visibleRows));
+
+            RenderExpandedLeaderboardFrame(scrollOffset, visibleRows);
+
+            var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+            if (completed != keyTask)
+            {
+                continue;
+            }
+
+            var key = await keyTask.ConfigureAwait(false);
+            if (key.Key is ConsoleKey.Enter or ConsoleKey.Escape || key.KeyChar == '0' || key.KeyChar == '2')
+            {
+                return;
+            }
+
+            if (key.Key == ConsoleKey.UpArrow)
+            {
+                scrollOffset = Math.Max(0, scrollOffset - 1);
+            }
+            else if (key.Key == ConsoleKey.DownArrow)
+            {
+                scrollOffset = Math.Min(
+                    Math.Max(0, speedLeaderboardRows.Count - visibleRows),
+                    scrollOffset + 1);
+            }
+            else if (key.Key == ConsoleKey.PageUp)
+            {
+                scrollOffset = Math.Max(0, scrollOffset - visibleRows);
+            }
+            else if (key.Key == ConsoleKey.PageDown)
+            {
+                scrollOffset = Math.Min(
+                    Math.Max(0, speedLeaderboardRows.Count - visibleRows),
+                    scrollOffset + visibleRows);
+            }
+            else if (key.Key == ConsoleKey.Home)
+            {
+                scrollOffset = 0;
+            }
+            else if (key.Key == ConsoleKey.End)
+            {
+                scrollOffset = Math.Max(0, speedLeaderboardRows.Count - visibleRows);
+            }
+            else if (key.Key == ConsoleKey.R)
+            {
+                await ShowSpeedToolsNoticeAsync(
+                    "ТАБЛИЦА ЛИДЕРОВ",
+                    "Интерфейс обновления рейтинга готов. Получение реальных результатов кампуса подключит отдельный backend-модуль.",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            keyTask = ReadKeyAsync();
+        }
+    }
+
     private void RenderSpeedDashboardFrame()
     {
         var canvas = CreateSpeedToolsDashboardCanvas(
@@ -287,7 +373,53 @@ internal sealed partial class InteractiveTerminalUi
 
         DrawSpeedMeasurementPane(canvas, leftContentX, leftContentY, leftContentWidth);
         DrawSpeedLeaderboardPane(canvas);
-        Center(canvas, CanvasHeight - 1, "Enter/1 замер   2/R обновить рейтинг   3 ник   4 публикация   Esc назад", Palette.Dim);
+        Center(canvas, CanvasHeight - 1, "Enter/1 замер   2 таблица   R обновить   3 ник   4 публикация   Esc назад", Palette.Dim);
+        Render(canvas);
+    }
+
+    private void RenderExpandedLeaderboardFrame(int scrollOffset, int visibleRows)
+    {
+        var canvas = CreateCanvas();
+        var boxY = 1;
+        var boxHeight = Math.Max(8, CanvasHeight - 3);
+        var boxX = compactLayout ? 1 : Math.Max(1, (canvasWidth - Math.Min(canvasWidth - 2, 112)) / 2);
+        var boxWidth = compactLayout ? Math.Max(20, canvasWidth - 2) : Math.Min(canvasWidth - 2, 112);
+
+        DrawBox(canvas, boxX, boxY, boxWidth, boxHeight, "ЛИДЕРЫ КАМПУСА");
+
+        var x = boxX + 3;
+        var y = boxY + 2;
+        var width = Math.Max(1, boxWidth - 6);
+
+        DrawLeaderboardHeader(canvas, x, y, width);
+
+        for (var rowIndex = 0; rowIndex < visibleRows; rowIndex++)
+        {
+            var sourceIndex = scrollOffset + rowIndex;
+            if (sourceIndex >= speedLeaderboardRows.Count)
+            {
+                break;
+            }
+
+            DrawLeaderboardRow(canvas, x, y + 2 + rowIndex, width, speedLeaderboardRows[sourceIndex]);
+        }
+
+        var first = speedLeaderboardRows.Count == 0 ? 0 : scrollOffset + 1;
+        var last = speedLeaderboardRows.Count == 0
+            ? 0
+            : Math.Min(speedLeaderboardRows.Count, scrollOffset + visibleRows);
+        Put(
+            canvas,
+            x,
+            boxY + boxHeight - 2,
+            Truncate($"Строки {first}–{last} / {speedLeaderboardRows.Count}   Ник: {speedNicknameDraft}", width),
+            Palette.Dim);
+
+        Center(
+            canvas,
+            CanvasHeight - 1,
+            "↑↓ листать   PgUp/PgDn страница   Home/End край   R обновить   Enter/Esc назад",
+            Palette.Dim);
         Render(canvas);
     }
 
@@ -391,30 +523,66 @@ internal sealed partial class InteractiveTerminalUi
         var y = PaneY + 2;
         var width = Math.Max(1, paneWidth - 6);
 
+        DrawLeaderboardHeader(canvas, x, y, width);
+        for (var row = 0; row < 5 && row < speedLeaderboardRows.Count; row++)
+        {
+            DrawLeaderboardRow(canvas, x, y + 2 + row, width, speedLeaderboardRows[row]);
+        }
+
+        Put(canvas, x, y + 8, Truncate($"Ник: {speedNicknameDraft}", width), Palette.Bright);
+        Put(canvas, x, y + 9, Truncate("Ваш результат: ещё не опубликован", width), Palette.Dim);
+    }
+
+    private static void DrawLeaderboardHeader(Cell[,] canvas, int x, int y, int width)
+    {
         if (width >= 43)
         {
             Put(canvas, x, y, Truncate("#  НИК            ↓      ↑   PING  JIT", width), Palette.Highlight);
             Put(canvas, x, y + 1, new string('─', Math.Min(width, 41)), Palette.Dim);
-            for (var row = 0; row < 5; row++)
-            {
-                Put(canvas, x, y + 2 + row,
-                    Truncate($"{row + 1,-2} —              —      —      —    —", width), Palette.Text);
-            }
         }
         else
         {
             Put(canvas, x, y, Truncate("# НИК          ↓   PING  JIT", width), Palette.Highlight);
             Put(canvas, x, y + 1, new string('─', Math.Min(width, 29)), Palette.Dim);
-            for (var row = 0; row < 5; row++)
-            {
-                Put(canvas, x, y + 2 + row,
-                    Truncate($"{row + 1,-2} —            —     —    —", width), Palette.Text);
-            }
         }
+    }
 
-        Put(canvas, x, y + 8, Truncate($"Ник: {speedNicknameDraft}", width), Palette.Bright);
-        Put(canvas, x, y + 9, Truncate("Ваш результат: ещё не опубликован", width), Palette.Dim);
-        Put(canvas, x, y + 10, Truncate("[2] Обновить  [3] Ник  [4] Опубликовать", width), Palette.Highlight);
+    private static void DrawLeaderboardRow(
+        Cell[,] canvas,
+        int x,
+        int y,
+        int width,
+        SpeedLeaderboardRow row)
+    {
+        if (width >= 43)
+        {
+            Put(
+                canvas,
+                x,
+                y,
+                Truncate(
+                    $"{row.Rank,-2} {row.Nickname,-14} {row.DownloadMbps,6} {row.UploadMbps,6} {row.PingMs,6} {row.JitterMs,4}",
+                    width),
+                Palette.Text);
+        }
+        else
+        {
+            Put(
+                canvas,
+                x,
+                y,
+                Truncate(
+                    $"{row.Rank,-2} {row.Nickname,-12} {row.DownloadMbps,3} {row.PingMs,5} {row.JitterMs,4}",
+                    width),
+                Palette.Text);
+        }
+    }
+
+    private int GetExpandedLeaderboardVisibleRowCount()
+    {
+        var boxHeight = Math.Max(8, CanvasHeight - 3);
+        // Two rows for header/separator, one summary row at the bottom and box padding.
+        return Math.Max(1, boxHeight - 6);
     }
 
     private static void DrawLargeSpeedMetric(
@@ -483,7 +651,8 @@ internal sealed partial class InteractiveTerminalUi
             Console.WriteLine();
             Console.WriteLine($"Ник: {speedNicknameDraft}");
             Console.WriteLine();
-            Console.WriteLine("[1] Начать замер   [2] Обновить рейтинг");
+            Console.WriteLine("[1] Начать замер   [2] Развернуть таблицу");
+            Console.WriteLine("[R] Обновить рейтинг");
             Console.WriteLine("[3] Никнейм        [4] Опубликовать");
             Console.WriteLine("[0] Назад");
             Console.WriteLine();
@@ -495,7 +664,7 @@ internal sealed partial class InteractiveTerminalUi
                 return;
             }
 
-            if (key.KeyChar is '1' or '2' or '4' || key.Key == ConsoleKey.Enter || key.Key == ConsoleKey.R)
+            if (key.KeyChar is '1' or '4' || key.Key == ConsoleKey.Enter || key.Key == ConsoleKey.R)
             {
                 Console.Clear();
                 Console.WriteLine("Интерфейс готов. Бизнес-логика пока не подключена.");
@@ -510,6 +679,10 @@ internal sealed partial class InteractiveTerminalUi
                     }
                 }
             }
+            else if (key.KeyChar == '2')
+            {
+                RunSpeedLeaderboardCompact();
+            }
             else if (key.KeyChar == '3')
             {
                 Console.Clear();
@@ -519,6 +692,60 @@ internal sealed partial class InteractiveTerminalUi
                 {
                     speedNicknameDraft = nickname[..Math.Min(nickname.Length, SpeedNicknameMaximumLength)];
                 }
+            }
+        }
+    }
+
+    private void RunSpeedLeaderboardCompact()
+    {
+        var offset = 0;
+        while (true)
+        {
+            Console.Clear();
+            var visible = Math.Max(3, Console.WindowHeight - 8);
+            offset = Math.Clamp(offset, 0, Math.Max(0, speedLeaderboardRows.Count - visible));
+
+            Console.WriteLine("IS74W — Лидеры кампуса");
+            Console.WriteLine();
+            Console.WriteLine("#  Ник              ↓      ↑   Ping  Jit");
+            Console.WriteLine(new string('-', 43));
+            foreach (var row in speedLeaderboardRows.Skip(offset).Take(visible))
+            {
+                Console.WriteLine($"{row.Rank,-2} {row.Nickname,-14} {row.DownloadMbps,6} {row.UploadMbps,6} {row.PingMs,6} {row.JitterMs,4}");
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("↑↓ листать   PgUp/PgDn страница   Home/End край   Enter/Esc назад");
+
+            var key = Console.ReadKey(intercept: true);
+            if (key.Key is ConsoleKey.Enter or ConsoleKey.Escape)
+            {
+                return;
+            }
+
+            if (key.Key == ConsoleKey.UpArrow)
+            {
+                offset = Math.Max(0, offset - 1);
+            }
+            else if (key.Key == ConsoleKey.DownArrow)
+            {
+                offset = Math.Min(Math.Max(0, speedLeaderboardRows.Count - visible), offset + 1);
+            }
+            else if (key.Key == ConsoleKey.PageUp)
+            {
+                offset = Math.Max(0, offset - visible);
+            }
+            else if (key.Key == ConsoleKey.PageDown)
+            {
+                offset = Math.Min(Math.Max(0, speedLeaderboardRows.Count - visible), offset + visible);
+            }
+            else if (key.Key == ConsoleKey.Home)
+            {
+                offset = 0;
+            }
+            else if (key.Key == ConsoleKey.End)
+            {
+                offset = Math.Max(0, speedLeaderboardRows.Count - visible);
             }
         }
     }
