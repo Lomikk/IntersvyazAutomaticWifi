@@ -130,18 +130,23 @@ assert 'tests\\critical_path_contract.ps1' not in module  # sanity: tests stay o
 # C# terminal UI stays a real console renderer rather than a web/TUI dependency.
 csharp_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.cs').read_text(encoding='utf-8')
 csharp_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8')
-assert 'private const int CanvasWidth = 79;' in csharp_ui, 'terminal UI must fit an 80-column console without wrapping'
+assert 'private const int MinimumCanvasWidth = 79;' in csharp_ui, 'terminal UI must retain an 80-column-safe layout'
+assert 'private const int PreferredCanvasWidth = 116;' in csharp_ui, 'terminal UI wide layout target changed'
 assert 'private const int CanvasHeight = 30;' in csharp_ui, 'terminal UI height contract changed'
+assert 'Console.WindowWidth' in csharp_ui and 'UpdateLayout()' in csharp_ui, 'terminal UI must adapt to the current terminal width'
 assert 'ConsoleKey.UpArrow' in csharp_ui and 'ConsoleKey.DownArrow' in csharp_ui and 'ConsoleKey.Enter' in csharp_ui
+assert "new MenuItem('1', \"Авторизовать Wi-Fi сейчас\"" in csharp_ui, 'terminal UI numeric hotkeys missing'
+assert "new MenuItem('0', \"Выход\"" in csharp_ui, 'terminal UI exit hotkey missing'
 assert 'BannerMode.InitialSweep' in csharp_ui and 'BannerMode.AmbientSweep' in csharp_ui, 'brand sweep animations missing'
 assert 'glint' not in csharp_ui.lower(), 'per-letter glint animation must stay disabled'
 assert 'InterSvyaz Wi-Fi Auth' in csharp_ui
 assert 'IS74W_SKIP_REVEAL' in csharp_program, 'bootstrap must not replay the full reveal after installation'
 assert 'GetPrimaryItems(snapshot)' in csharp_ui, 'compact and rich menus must share the same state-aware action list'
-assert 'new MenuItem("Авторизовать Wi-Fi сейчас", InteractiveMenuAction.Connect)' in csharp_ui
+assert '"Wi-Fi доступ"' in csharp_ui, 'status pane must disambiguate Wi-Fi authorization from API registration'
+assert '"доступен ●"' in csharp_ui, 'status indicators must render after their status text'
 assert '"Отключить автоавторизацию" : "Включить автоавторизацию"' in csharp_ui
 assert 'registered ? "Сбросить регистрацию" : "Зарегистрировать устройство"' in csharp_ui
-assert 'new MenuItem("Подробное состояние", InteractiveMenuAction.ShowDetailedStatus)' in csharp_ui
+assert "new MenuItem('4', \"Подробное состояние\", InteractiveMenuAction.ShowDetailedStatus)" in csharp_ui
 assert 'TargetView' not in csharp_ui, 'rich UI must not reintroduce speculative submenu navigation'
 launch_settings = (root / 'src' / 'IS74Wifi.App' / 'Properties' / 'launchSettings.json').read_text(encoding='utf-8')
 assert 'IS74Wifi.App (Local Debug)' in launch_settings and 'IS74W_RUN_LOCAL' in launch_settings, 'Visual Studio local-debug profile missing'

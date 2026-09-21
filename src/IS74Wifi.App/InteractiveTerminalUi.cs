@@ -5,12 +5,11 @@ namespace IS74Wifi.App;
 
 internal sealed class InteractiveTerminalUi
 {
-    private const int CanvasWidth = 79;
+    private const int MinimumTerminalWidth = 80;
+    private const int MinimumCanvasWidth = 79;
+    private const int PreferredCanvasWidth = 116;
     private const int CanvasHeight = 30;
-    private const int LeftPaneX = 1;
-    private const int RightPaneX = 42;
     private const int PaneY = 14;
-    private const int PaneWidth = 37;
     private const int PaneHeight = 14;
 
     private static readonly string[] Banner =
@@ -35,6 +34,11 @@ internal sealed class InteractiveTerminalUi
     private readonly bool ansi;
     private InteractiveStatusSnapshot? status;
     private int selected;
+    private int canvasWidth = MinimumCanvasWidth;
+    private int renderLeft;
+    private int leftPaneX = 1;
+    private int rightPaneX = 41;
+    private int paneWidth = 37;
     private DateTimeOffset nextAmbientSweepUtc = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(14);
     private DateTimeOffset? ambientSweepStartedUtc;
 
@@ -55,7 +59,7 @@ internal sealed class InteractiveTerminalUi
 
             try
             {
-                return Console.WindowWidth >= CanvasWidth && Console.WindowHeight >= CanvasHeight;
+                return Console.WindowWidth >= MinimumTerminalWidth && Console.WindowHeight >= CanvasHeight;
             }
             catch
             {
@@ -78,6 +82,7 @@ internal sealed class InteractiveTerminalUi
             return RunCompactMenu(initialStatus);
         }
 
+        UpdateLayout();
         PrepareInteractiveConsole();
         try
         {
@@ -99,6 +104,8 @@ internal sealed class InteractiveTerminalUi
                     RestoreConsole();
                     return RunCompactMenu(status ?? initialStatus);
                 }
+
+                UpdateLayout();
 
                 if (refreshedStatusTask is { IsCompletedSuccessfully: true })
                 {
@@ -153,6 +160,12 @@ internal sealed class InteractiveTerminalUi
                     continue;
                 }
 
+                var hotkeyItem = items.FirstOrDefault(item => item.Hotkey == key.KeyChar);
+                if (hotkeyItem.Action != InteractiveMenuAction.None)
+                {
+                    return hotkeyItem.Action;
+                }
+
                 if (key.Key != ConsoleKey.Enter)
                 {
                     keyTask = ReadKeyAsync();
@@ -185,6 +198,7 @@ internal sealed class InteractiveTerminalUi
             return ConfirmInstallCompact(upgrade, installedVersion, installDirectory);
         }
 
+        UpdateLayout();
         PrepareInteractiveConsole();
         try
         {
@@ -202,6 +216,7 @@ internal sealed class InteractiveTerminalUi
                     RestoreConsole();
                     return ConfirmInstallCompact(upgrade, installedVersion, installDirectory);
                 }
+                UpdateLayout();
                 UpdateAmbientSweepState();
                 RenderInstallFrame(upgrade, installedVersion, installDirectory);
 
@@ -233,6 +248,16 @@ internal sealed class InteractiveTerminalUi
                     return false;
                 }
 
+                if (key.KeyChar == '1')
+                {
+                    return true;
+                }
+
+                if (key.KeyChar == '0')
+                {
+                    return false;
+                }
+
                 if (key.Key == ConsoleKey.Enter)
                 {
                     return selected == 0;
@@ -257,13 +282,14 @@ internal sealed class InteractiveTerminalUi
             return;
         }
 
+        UpdateLayout();
         PrepareInteractiveConsole();
         status = currentStatus;
         var canvas = CreateCanvas();
         DrawBanner(canvas, 0, BannerMode.Final, 0);
         Center(canvas, 13, Subtitle, Palette.Dim);
-        DrawBox(canvas, LeftPaneX, PaneY, PaneWidth, PaneHeight, title);
-        PutWrapped(canvas, LeftPaneX + 3, PaneY + 3, PaneWidth - 6, message, Palette.Bright);
+        DrawBox(canvas, leftPaneX, PaneY, paneWidth, PaneHeight, title);
+        PutWrapped(canvas, leftPaneX + 3, PaneY + 3, paneWidth - 6, message, Palette.Bright);
         DrawStatusPane(canvas);
         Center(canvas, 29, "Пожалуйста, подождите...", Palette.Dim);
         Render(canvas);
@@ -313,7 +339,7 @@ internal sealed class InteractiveTerminalUi
             var row = Console.CursorTop;
             for (var i = 0; i < items.Count; i++)
             {
-                Console.WriteLine($"{(i == index ? '›' : ' ')} {items[i].Label}");
+                Console.WriteLine($"{(i == index ? '›' : ' ')} [{items[i].Hotkey}] {items[i].Label}");
             }
 
             var key = Console.ReadKey(intercept: true);
@@ -329,7 +355,15 @@ internal sealed class InteractiveTerminalUi
             {
                 return items[index].Action;
             }
-            else if (key.Key == ConsoleKey.Escape)
+            else
+            {
+                var hotkeyItem = items.FirstOrDefault(item => item.Hotkey == key.KeyChar);
+                if (hotkeyItem.Action != InteractiveMenuAction.None)
+                {
+                    return hotkeyItem.Action;
+                }
+            }
+            if (key.Key == ConsoleKey.Escape)
             {
                 return InteractiveMenuAction.Exit;
             }
@@ -363,14 +397,14 @@ internal sealed class InteractiveTerminalUi
             Console.WriteLine("Права администратора не требуются.");
         }
         Console.WriteLine();
-        Console.WriteLine("Enter — установить / обновить");
-        Console.WriteLine("Esc   — выйти");
+        Console.WriteLine("[1] / Enter — установить / обновить");
+        Console.WriteLine("[0] / Esc   — выйти");
 
         while (true)
         {
             var key = Console.ReadKey(intercept: true);
-            if (key.Key == ConsoleKey.Enter) return true;
-            if (key.Key == ConsoleKey.Escape) return false;
+            if (key.Key == ConsoleKey.Enter || key.KeyChar == '1') return true;
+            if (key.Key == ConsoleKey.Escape || key.KeyChar == '0') return false;
         }
     }
 
@@ -464,7 +498,7 @@ internal sealed class InteractiveTerminalUi
         Center(canvas, 13, Subtitle, Palette.Dim);
         DrawLeftPane(canvas);
         DrawStatusPane(canvas);
-        Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   Esc назад   R reveal", Palette.Dim);
+        Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   1–7/0 сразу   Esc назад   R reveal", Palette.Dim);
         Render(canvas);
     }
 
@@ -486,34 +520,35 @@ internal sealed class InteractiveTerminalUi
         DrawBanner(canvas, 0, head is null ? BannerMode.Final : BannerMode.AmbientSweep, head ?? 0);
         Center(canvas, 13, Subtitle, Palette.Dim);
 
-        DrawBox(canvas, LeftPaneX, PaneY, PaneWidth, PaneHeight, upgrade ? "ОБНОВЛЕНИЕ" : "ПЕРВЫЙ ЗАПУСК");
+        DrawBox(canvas, leftPaneX, PaneY, paneWidth, PaneHeight, upgrade ? "ОБНОВЛЕНИЕ" : "ПЕРВЫЙ ЗАПУСК");
+        var innerWidth = paneWidth - 6;
         if (upgrade)
         {
-            Put(canvas, LeftPaneX + 3, PaneY + 2, "Установленная версия", Palette.Dim);
-            Put(canvas, LeftPaneX + 3, PaneY + 3, Truncate(installedVersion ?? "неизвестно", 29), Palette.Text);
-            Put(canvas, LeftPaneX + 3, PaneY + 5, "Запущенная версия", Palette.Dim);
-            Put(canvas, LeftPaneX + 3, PaneY + 6, Truncate(productVersion, 29), Palette.Text);
+            Put(canvas, leftPaneX + 3, PaneY + 2, "Установленная версия", Palette.Dim);
+            Put(canvas, leftPaneX + 3, PaneY + 3, Truncate(installedVersion ?? "неизвестно", innerWidth), Palette.Text);
+            Put(canvas, leftPaneX + 3, PaneY + 5, "Запущенная версия", Palette.Dim);
+            Put(canvas, leftPaneX + 3, PaneY + 6, Truncate(productVersion, innerWidth), Palette.Text);
         }
         else
         {
-            PutWrapped(canvas, LeftPaneX + 3, PaneY + 2, 29,
+            PutWrapped(canvas, leftPaneX + 3, PaneY + 2, innerWidth,
                 "IS74W необходимо установить для дальнейшей работы.", Palette.Text);
-            Put(canvas, LeftPaneX + 3, PaneY + 6, "Без прав администратора", Palette.Dim);
-            Put(canvas, LeftPaneX + 3, PaneY + 7, Truncate(installDirectory, 29), Palette.Dim);
+            Put(canvas, leftPaneX + 3, PaneY + 6, "Без прав администратора", Palette.Dim);
+            Put(canvas, leftPaneX + 3, PaneY + 7, Truncate(installDirectory, innerWidth), Palette.Dim);
         }
 
         var installLabel = upgrade ? "Обновить IS74W" : "Установить IS74W";
-        DrawSelectable(canvas, LeftPaneX + 3, PaneY + 10, installLabel, selected == 0);
-        DrawSelectable(canvas, LeftPaneX + 3, PaneY + 11, "Выход", selected == 1);
+        DrawSelectable(canvas, leftPaneX + 3, PaneY + 10, '1', installLabel, selected == 0);
+        DrawSelectable(canvas, leftPaneX + 3, PaneY + 11, '0', "Выход", selected == 1);
 
         DrawInstallStatus(canvas, installed: upgrade, registered: false, automatic: false, agent: false);
-        Center(canvas, 29, "↑ ↓ выбрать   Enter продолжить   Esc выйти   R reveal", Palette.Dim);
+        Center(canvas, 29, "↑ ↓ выбрать   Enter продолжить   1/0 сразу   Esc выйти   R reveal", Palette.Dim);
         Render(canvas);
     }
 
     private void DrawLeftPane(Cell[,] canvas)
     {
-        DrawBox(canvas, LeftPaneX, PaneY, PaneWidth, PaneHeight, "МЕНЮ");
+        DrawBox(canvas, leftPaneX, PaneY, paneWidth, PaneHeight, "МЕНЮ");
         DrawCurrentItems(canvas, PaneY + 2);
     }
 
@@ -522,7 +557,7 @@ internal sealed class InteractiveTerminalUi
         var items = GetCurrentItems();
         for (var i = 0; i < items.Count; i++)
         {
-            DrawSelectable(canvas, LeftPaneX + 3, firstRow + i, items[i].Label, i == selected);
+            DrawSelectable(canvas, leftPaneX + 3, firstRow + i, items[i].Hotkey, items[i].Label, i == selected);
         }
     }
 
@@ -538,80 +573,82 @@ internal sealed class InteractiveTerminalUi
 
         return
         [
-            new MenuItem("Авторизовать Wi-Fi сейчас", InteractiveMenuAction.Connect),
+            new MenuItem('1', "Авторизовать Wi-Fi сейчас", InteractiveMenuAction.Connect),
             new MenuItem(
+                '2',
                 automaticEnabled ? "Отключить автоавторизацию" : "Включить автоавторизацию",
                 automaticEnabled ? InteractiveMenuAction.DisableAutomaticAuthorization : InteractiveMenuAction.EnableAutomaticAuthorization),
             new MenuItem(
+                '3',
                 registered ? "Сбросить регистрацию" : "Зарегистрировать устройство",
                 registered ? InteractiveMenuAction.ResetRegistration : InteractiveMenuAction.Register),
-            new MenuItem("Подробное состояние", InteractiveMenuAction.ShowDetailedStatus),
-            new MenuItem("Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
-            new MenuItem("Проверить обновления", InteractiveMenuAction.Update),
-            new MenuItem("Удалить программу и данные", InteractiveMenuAction.Uninstall),
-            new MenuItem("Выход", InteractiveMenuAction.Exit)
+            new MenuItem('4', "Подробное состояние", InteractiveMenuAction.ShowDetailedStatus),
+            new MenuItem('5', "Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
+            new MenuItem('6', "Проверить обновления", InteractiveMenuAction.Update),
+            new MenuItem('7', "Удалить программу и данные", InteractiveMenuAction.Uninstall),
+            new MenuItem('0', "Выход", InteractiveMenuAction.Exit)
         ];
     }
 
     private void DrawStatusPane(Cell[,] canvas)
     {
-        DrawBox(canvas, RightPaneX, PaneY, PaneWidth, PaneHeight, "СОСТОЯНИЕ");
+        DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, "СОСТОЯНИЕ");
         var s = status;
         if (s is null)
         {
-            Put(canvas, RightPaneX + 3, PaneY + 3, "Загрузка состояния...", Palette.Dim);
+            Put(canvas, rightPaneX + 3, PaneY + 3, "Загрузка состояния...", Palette.Dim);
             return;
         }
 
         DrawStatusLine(canvas, PaneY + 2, "Интернет", FormatInternet(s.InternetAvailable),
             s.InternetAvailable == true ? Palette.Good : s.InternetAvailable == false ? Palette.Dim : Palette.Highlight);
-        DrawStatusLine(canvas, PaneY + 3, "Авторизация", s.WifiAuthorizationActive ? "● активна" : "○ нет",
+        DrawStatusLine(canvas, PaneY + 3, "Wi-Fi доступ", s.WifiAuthorizationActive ? "активен ●" : "нет ○",
             s.WifiAuthorizationActive ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 4, "Автовход", s.AutomaticAuthorizationEnabled ? "● включён" : "○ выключен",
+        DrawStatusLine(canvas, PaneY + 4, "Автовход", s.AutomaticAuthorizationEnabled ? "включён ●" : "выключен ○",
             s.AutomaticAuthorizationEnabled ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 5, "Агент", s.AgentRunning ? "● работает" : "○ остановлен",
+        DrawStatusLine(canvas, PaneY + 5, "Агент", s.AgentRunning ? "работает ●" : "остановлен ○",
             s.AgentRunning ? Palette.Good : Palette.Dim);
 
-        Put(canvas, RightPaneX + 3, PaneY + 7, "Телефон", Palette.Dim);
-        Put(canvas, RightPaneX + 17, PaneY + 7, Truncate(s.MaskedPhone, 16), Palette.Text);
-        Put(canvas, RightPaneX + 3, PaneY + 8, "API-сессия", Palette.Dim);
-        Put(canvas, RightPaneX + 14, PaneY + 8, Truncate(s.ApiSessionEnd, 19), Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 7, "Телефон", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 7, s.MaskedPhone, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 8, "API-сессия", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 8, s.ApiSessionEnd, Palette.Text);
 
-        Put(canvas, RightPaneX + 3, PaneY + 10, "Результат", Palette.Dim);
-        Put(canvas, RightPaneX + 14, PaneY + 10, Truncate(s.LastResult, 19), Palette.Text);
-        Put(canvas, RightPaneX + 3, PaneY + 11, "Версия", Palette.Dim);
-        Put(canvas, RightPaneX + 17, PaneY + 11, Truncate(s.Version, 16), Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 10, "Результат", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 10, s.LastResult, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 11, "Версия", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 11, s.Version, Palette.Text);
     }
 
     private static string FormatInternet(bool? value) => value switch
     {
-        true => "● доступен",
-        false => "○ нет",
-        null => "◌ проверка"
+        true => "доступен ●",
+        false => "нет ○",
+        null => "проверка ◌"
     };
 
     private void DrawInstallStatus(Cell[,] canvas, bool installed, bool registered, bool automatic, bool agent)
     {
-        DrawBox(canvas, RightPaneX, PaneY, PaneWidth, PaneHeight, "СОСТОЯНИЕ");
-        DrawStatusLine(canvas, PaneY + 2, "Установка", installed ? "● есть" : "○ нет", installed ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 3, "Регистрация", registered ? "● есть" : "○ нет", registered ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 4, "Автовход", automatic ? "● включён" : "○ выключен", automatic ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 5, "Агент", agent ? "● работает" : "○ остановлен", agent ? Palette.Good : Palette.Dim);
-        Put(canvas, RightPaneX + 3, PaneY + 8, "Версия", Palette.Dim);
-        Put(canvas, RightPaneX + 17, PaneY + 8, Truncate(productVersion, 16), Palette.Text);
+        DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, "СОСТОЯНИЕ");
+        DrawStatusLine(canvas, PaneY + 2, "Установка", installed ? "есть ●" : "нет ○", installed ? Palette.Good : Palette.Dim);
+        DrawStatusLine(canvas, PaneY + 3, "Регистрация", registered ? "есть ●" : "нет ○", registered ? Palette.Good : Palette.Dim);
+        DrawStatusLine(canvas, PaneY + 4, "Автовход", automatic ? "включён ●" : "выключен ○", automatic ? Palette.Good : Palette.Dim);
+        DrawStatusLine(canvas, PaneY + 5, "Агент", agent ? "работает ●" : "остановлен ○", agent ? Palette.Good : Palette.Dim);
+        Put(canvas, rightPaneX + 3, PaneY + 8, "Версия", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 8, productVersion, Palette.Text);
     }
 
-    private static void DrawStatusLine(Cell[,] canvas, int row, string label, string value, Palette valueColor)
+    private void DrawStatusLine(Cell[,] canvas, int row, string label, string value, Palette valueColor)
     {
-        Put(canvas, RightPaneX + 3, row, label, Palette.Dim);
-        var x = RightPaneX + PaneWidth - 3 - value.Length;
-        Put(canvas, Math.Max(RightPaneX + 15, x), row, value, valueColor);
+        Put(canvas, rightPaneX + 3, row, label, Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 15, rightPaneX + paneWidth - 3, row, value, valueColor);
     }
 
-    private static void DrawSelectable(Cell[,] canvas, int x, int y, string text, bool isSelected)
+    private void DrawSelectable(Cell[,] canvas, int x, int y, char hotkey, string text, bool isSelected)
     {
         Put(canvas, x, y, isSelected ? "› " : "  ", isSelected ? Palette.Highlight : Palette.Text);
-        Put(canvas, x + 2, y, Truncate(text, 29), isSelected ? Palette.Bright : Palette.Text);
+        Put(canvas, x + 2, y, $"[{hotkey}]", Palette.Dim);
+        Put(canvas, x + 6, y, Truncate(text, Math.Max(1, paneWidth - 10)), isSelected ? Palette.Bright : Palette.Text);
     }
 
     private static void DrawBox(Cell[,] canvas, int x, int y, int width, int height, string title)
@@ -654,7 +691,8 @@ internal sealed class InteractiveTerminalUi
 
     private static void DrawBanner(Cell[,] canvas, int top, BannerMode mode, double head)
     {
-        var left = Math.Max(0, (CanvasWidth - BannerWidth) / 2);
+        var width = canvas.GetLength(1);
+        var left = Math.Max(0, (width - BannerWidth) / 2);
         for (var row = 0; row < Banner.Length; row++)
         {
             var line = Banner[row];
@@ -693,12 +731,12 @@ internal sealed class InteractiveTerminalUi
         }
     }
 
-    private static Cell[,] CreateCanvas()
+    private Cell[,] CreateCanvas()
     {
-        var canvas = new Cell[CanvasHeight, CanvasWidth];
+        var canvas = new Cell[CanvasHeight, canvasWidth];
         for (var y = 0; y < CanvasHeight; y++)
         {
-            for (var x = 0; x < CanvasWidth; x++)
+            for (var x = 0; x < canvasWidth; x++)
             {
                 canvas[y, x] = new Cell(' ', Palette.Text);
             }
@@ -708,18 +746,34 @@ internal sealed class InteractiveTerminalUi
 
     private static void Center(Cell[,] canvas, int row, string text, Palette color)
     {
-        Put(canvas, Math.Max(0, (CanvasWidth - text.Length) / 2), row, text, color);
+        Put(canvas, Math.Max(0, (canvas.GetLength(1) - text.Length) / 2), row, text, color);
     }
 
     private static void Put(Cell[,] canvas, int x, int y, string text, Palette color)
     {
-        if (y < 0 || y >= CanvasHeight) return;
+        var height = canvas.GetLength(0);
+        var width = canvas.GetLength(1);
+        if (y < 0 || y >= height) return;
         for (var i = 0; i < text.Length; i++)
         {
             var targetX = x + i;
-            if (targetX < 0 || targetX >= CanvasWidth) continue;
+            if (targetX < 0 || targetX >= width) continue;
             canvas[y, targetX] = new Cell(text[i], color);
         }
+    }
+
+    private static void PutRightAligned(
+        Cell[,] canvas,
+        int minimumX,
+        int rightExclusive,
+        int row,
+        string? value,
+        Palette color)
+    {
+        var available = Math.Max(1, rightExclusive - minimumX);
+        var text = Truncate(value, available);
+        var x = Math.Max(minimumX, rightExclusive - text.Length);
+        Put(canvas, x, row, text, color);
     }
 
     private void Render(Cell[,] canvas)
@@ -734,14 +788,18 @@ internal sealed class InteractiveTerminalUi
         }
     }
 
-    private static void RenderAnsi(Cell[,] canvas)
+    private void RenderAnsi(Cell[,] canvas)
     {
-        var output = new StringBuilder(CanvasHeight * (CanvasWidth + 32));
-        output.Append("\u001b[H");
+        var width = canvas.GetLength(1);
+        var height = canvas.GetLength(0);
+        var output = new StringBuilder(height * (width + 48));
         Palette? active = null;
-        for (var y = 0; y < CanvasHeight; y++)
+        for (var y = 0; y < height; y++)
         {
-            for (var x = 0; x < CanvasWidth; x++)
+            output.Append("\u001b[").Append(y + 1).Append(";1H\u001b[2K");
+            output.Append("\u001b[").Append(y + 1).Append(';').Append(renderLeft + 1).Append('H');
+            active = null;
+            for (var x = 0; x < width; x++)
             {
                 var cell = canvas[y, x];
                 if (active != cell.Color)
@@ -751,27 +809,32 @@ internal sealed class InteractiveTerminalUi
                 }
                 output.Append(cell.Character);
             }
-            if (y < CanvasHeight - 1) output.Append('\n');
         }
         output.Append("\u001b[0m");
         Console.Write(output.ToString());
     }
 
-    private static void RenderConsoleColors(Cell[,] canvas)
+    private void RenderConsoleColors(Cell[,] canvas)
     {
-        try
-        {
-            Console.SetCursorPosition(0, 0);
-        }
-        catch
-        {
-            Console.Clear();
-        }
-
+        var width = canvas.GetLength(1);
+        var height = canvas.GetLength(0);
         Palette? active = null;
-        for (var y = 0; y < CanvasHeight; y++)
+        for (var y = 0; y < height; y++)
         {
-            for (var x = 0; x < CanvasWidth; x++)
+            try
+            {
+                Console.SetCursorPosition(0, y);
+                Console.Write(new string(' ', Math.Max(1, Console.WindowWidth - 1)));
+                Console.SetCursorPosition(renderLeft, y);
+            }
+            catch
+            {
+                Console.Clear();
+                Console.SetCursorPosition(renderLeft, y);
+            }
+
+            active = null;
+            for (var x = 0; x < width; x++)
             {
                 var cell = canvas[y, x];
                 if (active != cell.Color)
@@ -781,7 +844,6 @@ internal sealed class InteractiveTerminalUi
                 }
                 Console.Write(cell.Character);
             }
-            if (y < CanvasHeight - 1) Console.WriteLine();
         }
         Console.ResetColor();
     }
@@ -820,6 +882,30 @@ internal sealed class InteractiveTerminalUi
         return text[..(maxLength - 1)] + "…";
     }
 
+    private void UpdateLayout()
+    {
+        try
+        {
+            var terminalWidth = Console.WindowWidth;
+            var drawableWidth = Math.Max(MinimumCanvasWidth, terminalWidth - 1);
+            canvasWidth = Math.Min(PreferredCanvasWidth, drawableWidth);
+            renderLeft = Math.Max(0, (terminalWidth - canvasWidth) / 2);
+
+            var gap = canvasWidth >= 100 ? 4 : 3;
+            paneWidth = Math.Max(30, (canvasWidth - 2 - gap) / 2);
+            leftPaneX = 1;
+            rightPaneX = leftPaneX + paneWidth + gap;
+        }
+        catch
+        {
+            canvasWidth = MinimumCanvasWidth;
+            renderLeft = 0;
+            paneWidth = 37;
+            leftPaneX = 1;
+            rightPaneX = 41;
+        }
+    }
+
     private static void PrepareInteractiveConsole()
     {
         try
@@ -845,6 +931,7 @@ internal sealed class InteractiveTerminalUi
     }
 
     private readonly record struct MenuItem(
+        char Hotkey,
         string Label,
         InteractiveMenuAction Action);
 
