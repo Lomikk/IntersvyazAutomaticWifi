@@ -1540,10 +1540,6 @@ internal static class Program
     {
         using var interactiveSession = WindowsNotificationService.TryMarkInteractiveSession();
         var ui = new InteractiveTerminalUi(ProductVersion);
-        if (startInUpdates)
-        {
-            ui.OpenUpdatesPage();
-        }
         var showReveal = !string.Equals(
             Environment.GetEnvironmentVariable("IS74W_SKIP_REVEAL"),
             "1",
@@ -1582,8 +1578,21 @@ internal static class Program
             showReveal = false;
         }
 
+        var openUpdatesAfterOnboarding = startInUpdates;
         while (true)
         {
+            if (!await CompleteInteractiveOnboardingAsync(ui).ConfigureAwait(false))
+            {
+                Console.Clear();
+                return 0;
+            }
+
+            if (openUpdatesAfterOnboarding)
+            {
+                ui.OpenUpdatesPage();
+                openUpdatesAfterOnboarding = false;
+            }
+
             var initialStatus = GetInteractiveStatusSnapshot();
             var refreshedStatus = RefreshInteractiveStatusAsync();
             var action = await ui.RunMenuAsync(initialStatus, refreshedStatus, showReveal).ConfigureAwait(false);
@@ -1860,6 +1869,43 @@ internal static class Program
         }
     }
 
+    private static async Task<bool> CompleteInteractiveOnboardingAsync(InteractiveTerminalUi ui)
+    {
+        while (true)
+        {
+            bool registered;
+            AnonymousStatisticsConsent consent;
+            using (var app = ApplicationRuntime.Create(ProductVersion))
+            {
+                registered = app.Secrets.Load() is not null;
+                consent = app.Settings.AnonymousStatisticsConsent;
+            }
+
+            if (!registered)
+            {
+                var proceed = await ui.ConfirmRegistrationOrExitAsync().ConfigureAwait(false);
+                if (!proceed)
+                {
+                    return false;
+                }
+
+                await RegisterFromMenuAsync(ui, GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                continue;
+            }
+
+            if (consent == AnonymousStatisticsConsent.Unknown)
+            {
+                _ = await PromptAnonymousStatisticsConsentAsync(
+                    ui,
+                    GetInteractiveStatusSnapshot(),
+                    forPublication: false).ConfigureAwait(false);
+                continue;
+            }
+
+            return true;
+        }
+    }
+
     private static async Task RegisterFromMenuAsync(
         InteractiveTerminalUi ui,
         InteractiveStatusSnapshot currentStatus)
@@ -2008,16 +2054,6 @@ internal static class Program
                 history,
                 GetInteractiveStatusSnapshot()).ConfigureAwait(false);
 
-            using (var consentRuntime = ApplicationRuntime.Create(ProductVersion))
-            {
-                if (consentRuntime.Settings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Unknown)
-                {
-                    _ = await PromptAnonymousStatisticsConsentAsync(
-                        ui,
-                        GetInteractiveStatusSnapshot(),
-                        forPublication: false).ConfigureAwait(false);
-                }
-            }
         }
         catch (Exception ex)
         {

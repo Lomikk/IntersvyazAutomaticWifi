@@ -290,6 +290,94 @@ internal sealed partial class InteractiveTerminalUi
         selected = 0;
     }
 
+    public async Task<bool> ConfirmRegistrationOrExitAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (!CanUseInteractiveSession)
+        {
+            return ConfirmRegistrationCompact();
+        }
+
+        UpdateLayout();
+        PrepareInteractiveConsole();
+        try
+        {
+            selected = 0;
+            nextAmbientSweepUtc = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Random.Shared.Next(12, 19));
+            ambientSweepStartedUtc = null;
+
+            var keyTask = ReadKeyAsync();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!CanUseInteractiveSession)
+                {
+                    RestoreConsole();
+                    return ConfirmRegistrationCompact();
+                }
+
+                UpdateLayout();
+                UpdateAmbientSweepState();
+                RenderRegistrationFrame();
+
+                var completed = await Task.WhenAny(
+                    keyTask,
+                    Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
+                {
+                    continue;
+                }
+
+                var key = await keyTask.ConfigureAwait(false);
+                if (key.Key is ConsoleKey.UpArrow or ConsoleKey.DownArrow)
+                {
+                    selected = selected == 0 ? 1 : 0;
+                    keyTask = ReadKeyAsync();
+                    continue;
+                }
+
+                if (key.Key == ConsoleKey.Escape || key.KeyChar == '0')
+                {
+                    return false;
+                }
+
+                if (key.KeyChar == '1')
+                {
+                    return true;
+                }
+
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    return selected == 0;
+                }
+
+                keyTask = ReadKeyAsync();
+            }
+        }
+        finally
+        {
+            RestoreConsole();
+        }
+    }
+
+    private static bool ConfirmRegistrationCompact()
+    {
+        Console.Clear();
+        Console.WriteLine("IS74W — InterSvyaz Wi-Fi Auth");
+        Console.WriteLine();
+        Console.WriteLine("Для продолжения необходимо зарегистрировать устройство.");
+        Console.WriteLine();
+        Console.WriteLine("[1] Зарегистрировать устройство");
+        Console.WriteLine("[0] Выход");
+
+        while (true)
+        {
+            var key = Console.ReadKey(intercept: true);
+            if (key.KeyChar == '1' || key.Key == ConsoleKey.Enter) return true;
+            if (key.KeyChar == '0' || key.Key == ConsoleKey.Escape) return false;
+        }
+    }
+
     public async Task<bool> ConfirmInstallOrUpgradeAsync(
         bool upgrade,
         string? installedVersion,
@@ -1262,6 +1350,41 @@ internal sealed partial class InteractiveTerminalUi
         return -7 + progress * (BannerWidth + 14);
     }
 
+    private void RenderRegistrationFrame()
+    {
+        var canvas = CreateCanvas();
+        var head = GetAmbientSweepHead();
+
+        if (!compactLayout)
+        {
+            DrawBanner(canvas, 0, head is null ? BannerMode.Final : BannerMode.AmbientSweep, head ?? 0);
+            Center(canvas, 13, Subtitle, Palette.Dim);
+        }
+        else
+        {
+            Center(canvas, 1, "IS74W · InterSvyaz Wi-Fi Auth", Palette.BrandBright);
+        }
+
+        var boxY = compactLayout ? 5 : PaneY;
+        var boxHeight = compactLayout ? Math.Min(20, CanvasHeight - boxY - 2) : PaneHeight;
+        var boxWidth = Math.Max(20, canvasWidth - 2);
+        DrawBox(canvas, 1, boxY, boxWidth, boxHeight, "РЕГИСТРАЦИЯ");
+
+        var contentX = 4;
+        var contentWidth = Math.Max(10, boxWidth - 6);
+        PutWrapped(
+            canvas,
+            contentX,
+            boxY + 2,
+            contentWidth,
+            "Для продолжения необходимо зарегистрировать устройство.",
+            Palette.Text);
+        DrawSelectable(canvas, contentX, boxY + 7, '1', "Зарегистрировать устройство", selected == 0);
+        DrawSelectable(canvas, contentX, boxY + 8, '0', "Выход", selected == 1);
+        Center(canvas, CanvasHeight - 1, "↑ ↓ выбрать   Enter продолжить   1/0 сразу   Esc выйти", Palette.Dim);
+        Render(canvas);
+    }
+
     private void RenderInstallFrame(bool upgrade, string? installedVersion, string installDirectory)
     {
         var canvas = CreateCanvas();
@@ -1329,39 +1452,38 @@ internal sealed partial class InteractiveTerminalUi
         _ => "МЕНЮ"
     };
 
-    private static IReadOnlyList<MenuItem> GetPrimaryItems(InteractiveStatusSnapshot? snapshot)
+    private static IReadOnlyList<MenuItem> GetPrimaryItems(InteractiveStatusSnapshot? snapshot) =>
+    [
+        new MenuItem('1', "Авторизовать Wi-Fi сейчас", InteractiveMenuAction.Connect),
+        new MenuItem('2', "Скорость и рейтинг", InteractiveMenuAction.SpeedTools),
+        new MenuItem('3', "Состояние и подробный отчёт", InteractiveMenuAction.ShowDetailedStatus),
+        new MenuItem('4', "Настройки", InteractiveMenuAction.OpenSettings),
+        new MenuItem('5', "Обслуживание", InteractiveMenuAction.OpenMaintenance),
+        new MenuItem('0', "Выход", InteractiveMenuAction.Exit)
+    ];
+
+    private static IReadOnlyList<MenuItem> GetSettingsItems(InteractiveStatusSnapshot? snapshot)
     {
         var automaticEnabled = snapshot?.AutomaticAuthorizationEnabled == true;
-
         return
         [
-            new MenuItem('1', "Авторизовать Wi-Fi сейчас", InteractiveMenuAction.Connect),
             new MenuItem(
-                '2',
-                automaticEnabled ? "Отключить автоавторизацию" : "Включить автоавторизацию",
+                '1',
+                $"Автоавторизация: {(automaticEnabled ? "включена" : "выключена")}",
                 automaticEnabled ? InteractiveMenuAction.DisableAutomaticAuthorization : InteractiveMenuAction.EnableAutomaticAuthorization),
-            new MenuItem('3', "Скорость и рейтинг", InteractiveMenuAction.SpeedTools),
-            new MenuItem('4', "Состояние и подробный отчёт", InteractiveMenuAction.ShowDetailedStatus),
-            new MenuItem('5', "Настройки", InteractiveMenuAction.OpenSettings),
-            new MenuItem('6', "Обслуживание", InteractiveMenuAction.OpenMaintenance),
-            new MenuItem('0', "Выход", InteractiveMenuAction.Exit)
+            new MenuItem('2', $"Уведомления: {snapshot?.NotificationMode ?? "важные"}", InteractiveMenuAction.CycleNotifications),
+            new MenuItem(
+                '3',
+                $"Проверка сети: {(snapshot?.NetworkCheckIgnored == true ? "отключена" : "включена")}",
+                InteractiveMenuAction.ToggleNetworkCheck),
+            new MenuItem(
+                '4',
+                $"Анонимная статистика: {FormatStatisticsConsent(snapshot?.AnonymousStatisticsConsent ?? AnonymousStatisticsConsent.Unknown)}",
+                InteractiveMenuAction.ToggleAnonymousStatistics),
+            new MenuItem('5', "Обновления", InteractiveMenuAction.OpenUpdates),
+            new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
     }
-
-    private static IReadOnlyList<MenuItem> GetSettingsItems(InteractiveStatusSnapshot? snapshot) =>
-    [
-        new MenuItem('1', $"Уведомления: {snapshot?.NotificationMode ?? "важные"}", InteractiveMenuAction.CycleNotifications),
-        new MenuItem(
-            '2',
-            $"Проверка сети: {(snapshot?.NetworkCheckIgnored == true ? "отключена" : "включена")}",
-            InteractiveMenuAction.ToggleNetworkCheck),
-        new MenuItem(
-            '3',
-            $"Анонимная статистика: {FormatStatisticsConsent(snapshot?.AnonymousStatisticsConsent ?? AnonymousStatisticsConsent.Unknown)}",
-            InteractiveMenuAction.ToggleAnonymousStatistics),
-        new MenuItem('4', "Обновления", InteractiveMenuAction.OpenUpdates),
-        new MenuItem('0', "Назад", InteractiveMenuAction.Back)
-    ];
 
     private static IReadOnlyList<MenuItem> GetUpdateItems(InteractiveStatusSnapshot? snapshot)
     {
