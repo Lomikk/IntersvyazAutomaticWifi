@@ -403,6 +403,7 @@ internal static class Program
         Console.WriteLine($"Телефон              : {MaskPhone(secrets?.Phone)}");
         var automaticAuthorizationEnabled = app.Autostart.IsEnabledFor(installation.ExecutablePath);
         var agentRunning = AgentProcessControl.IsAgentRunning();
+        Console.WriteLine($"Campus через телефон/USB   : {(app.Settings.AllowAuthorizationWithoutCampusSsid ? "разрешён" : "запрещён")}");
         Console.WriteLine($"Автоматическая авторизация : {(automaticAuthorizationEnabled ? "включена" : "выключена")}");
         Console.WriteLine($"Фоновый агент              : {(agentRunning ? "работает" : "остановлен")}");
         Console.WriteLine($"Уведомления                : {FormatNotificationMode(app.Settings.NotificationMode)}");
@@ -1541,7 +1542,11 @@ internal static class Program
                     case InteractiveMenuAction.Connect:
                     {
                         var history = new InteractiveActionHistory();
-                        history.Start("Проверяю подключение к сети Интерсвязи...");
+                        history.Start(initialStatus.WifiNetwork == WifiNetworkState.Campus
+                            ? "Проверяю подключение к сети Интерсвязи..."
+                            : initialStatus.AuthorizationWithoutCampusSsidAllowed
+                                ? "Проверяю разрешённый маршрут через телефон/USB..."
+                                : "Проверяю подключение к сети Интерсвязи...");
                         ui.ShowActionProgress("АВТОРИЗАЦИЯ WI-FI", history, initialStatus);
 
                         var stepTwoAccepted = false;
@@ -1550,7 +1555,9 @@ internal static class Program
                             switch (stage)
                             {
                                 case AuthorizationProgressStage.TargetWifiConfirmed:
-                                    history.CompleteActive("Подключение к сети Интерсвязи подтверждено");
+                                    history.CompleteActive(initialStatus.WifiNetwork == WifiNetworkState.Campus
+                                        ? "Подключение к сети Интерсвязи подтверждено"
+                                        : "Разрешён маршрут через телефон/USB без видимого SSID");
                                     history.Start("Получаю состояние push-очереди...");
                                     break;
                                 case AuthorizationProgressStage.BaselineLoaded:
@@ -1624,6 +1631,34 @@ internal static class Program
                             progress => DisableAutostart(quiet: true, progress: progress),
                             "Автоматическая авторизация отключена").ConfigureAwait(false);
                         break;
+
+                    case InteractiveMenuAction.ToggleAuthorizationWithoutCampusSsid:
+                    {
+                        var enable = !initialStatus.AuthorizationWithoutCampusSsidAllowed;
+                        if (enable)
+                        {
+                            var confirmed = await ui.ConfirmAsync(
+                                "CAMPUS ЧЕРЕЗ ТЕЛЕФОН/USB",
+                                "Разрешить авторизацию по текущему сетевому маршруту, когда Windows не видит SSID Campus Wi-Fi? Включайте только если телефон подключён к Campus Wi-Fi и раздаёт его компьютеру.",
+                                "Разрешить маршрут без SSID",
+                                initialStatus).ConfigureAwait(false);
+                            if (!confirmed)
+                            {
+                                break;
+                            }
+                        }
+
+                        await RunMenuBatchActionAsync(
+                            ui,
+                            "CAMPUS ЧЕРЕЗ ТЕЛЕФОН/USB",
+                            initialStatus,
+                            enable ? "Разрешаю авторизацию без видимого SSID..." : "Запрещаю авторизацию без видимого SSID...",
+                            progress => SetAuthorizationWithoutCampusSsid(enable, progress),
+                            enable
+                                ? "Маршрут через телефон/USB разрешён"
+                                : "Авторизация снова требует видимый Campus Wi-Fi").ConfigureAwait(false);
+                        break;
+                    }
 
                     case InteractiveMenuAction.CycleNotifications:
                         CycleNotificationMode();
@@ -2007,6 +2042,7 @@ internal static class Program
             $"API-сессия: {FormatSessionEnd(session?.AccessEnd)}"
         };
 
+        lines.Add($"Campus через телефон/USB: {(app.Settings.AllowAuthorizationWithoutCampusSsid ? "разрешён" : "запрещён")}");
         var telemetryStatus = app.TelemetryQueue.GetStatus();
         lines.Add(string.Empty);
         lines.Add("=== Телеметрия ===");
@@ -2278,6 +2314,7 @@ internal static class Program
             WifiNetwork: wifiNetwork,
             WifiSsid: displayedSsid,
             WifiAuthorization: authorization,
+            AuthorizationWithoutCampusSsidAllowed: app.Settings.AllowAuthorizationWithoutCampusSsid,
             AutomaticAuthorizationEnabled: automatic,
             AgentRunning: agentRunning,
             NotificationMode: FormatNotificationMode(app.Settings.NotificationMode),
@@ -2327,6 +2364,34 @@ internal static class Program
 
         new SettingsStore(app.Paths, app.Json).Save(app.Settings with { NotificationMode = next });
         app.Logger.Write(DiagnosticLevel.Info, $"notifications.mode value={next}");
+    }
+
+    private static void SetAuthorizationWithoutCampusSsid(bool enabled, Action<string>? progress = null)
+    {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        var installation = new ProgramInstallation();
+        var restartAgent = AgentProcessControl.IsAgentRunning() &&
+                           installation.IsInstalled &&
+                           app.Autostart.IsEnabledFor(installation.ExecutablePath);
+
+        new SettingsStore(app.Paths, app.Json).Save(app.Settings with
+        {
+            AllowAuthorizationWithoutCampusSsid = enabled
+        });
+        app.Logger.Write(
+            DiagnosticLevel.Info,
+            $"authorization.network-policy allowWithoutCampusSsid={enabled.ToString().ToLowerInvariant()}");
+        ReportMenuBatchProgress(progress, "Настройка сохранена");
+
+        if (!restartAgent)
+        {
+            return;
+        }
+
+        AgentProcessControl.StopAgentOrThrow();
+        ReportMenuBatchProgress(progress, "Фоновый агент остановлен для применения настройки");
+        StartInstalledAgent(installation.ExecutablePath);
+        ReportMenuBatchProgress(progress, "Фоновый агент запущен с новой настройкой");
     }
 
     private static string FormatNotificationMode(NotificationMode mode) => mode switch

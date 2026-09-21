@@ -147,7 +147,8 @@ internal sealed class ApplicationRuntime : IDisposable
             polling,
             authorizationState,
             logger,
-            telemetry: telemetryRecorder);
+            telemetry: telemetryRecorder,
+            allowAuthorizationWithoutCampusSsid: settings.AllowAuthorizationWithoutCampusSsid);
         var notifications = new WindowsNotificationService(settingsStore, logger);
         var agent = new AgentService(
             secrets,

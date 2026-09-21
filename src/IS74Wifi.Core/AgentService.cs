@@ -86,7 +86,7 @@ public sealed class AgentService(
             return;
         }
 
-        if (runtime.UserActionRequired || !wifi.IsTargetWifiConnected())
+        if (runtime.UserActionRequired || !IsAuthorizationRouteAllowed())
         {
             return;
         }
@@ -203,7 +203,7 @@ public sealed class AgentService(
         }
 
         var remaining = expiry - now;
-        if (remaining > ExpiryReminderWindow || notifiedExpiryUtc == expiry || !wifi.IsTargetWifiConnected())
+        if (remaining > ExpiryReminderWindow || notifiedExpiryUtc == expiry || !IsAuthorizationRouteAllowed())
         {
             return;
         }
@@ -301,6 +301,9 @@ public sealed class AgentService(
                 $"notification.failed type={notification.Severity} error={ex.GetType().Name}:{ex.Message}");
         }
     }
+
+    private bool IsAuthorizationRouteAllowed() =>
+        settings.AllowAuthorizationWithoutCampusSsid || wifi.IsTargetWifiConnected();
 
     private async Task<bool> ConfirmCaptiveBeforeExpiryAsync(
         TimeSpan delay,

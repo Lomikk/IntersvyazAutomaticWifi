@@ -637,6 +637,7 @@ internal sealed partial class InteractiveTerminalUi
         Console.WriteLine();
         Console.WriteLine($"Интернет     : {FormatInternet(snapshot.InternetAvailable)}");
         Console.WriteLine($"Регистрация  : {(snapshot.Registered ? "есть" : "нет")}");
+        Console.WriteLine($"Телефон/USB  : {(snapshot.AuthorizationWithoutCampusSsidAllowed ? "разрешён" : "запрещён")}");
         Console.WriteLine($"Автовход     : {(snapshot.AutomaticAuthorizationEnabled ? "включён" : "выключен")}");
         Console.WriteLine($"Агент        : {(snapshot.AgentRunning ? "работает" : "остановлен")}");
         Console.WriteLine();
@@ -1043,7 +1044,7 @@ internal sealed partial class InteractiveTerminalUi
         Center(canvas, 13, Subtitle, Palette.Dim);
         DrawLeftPane(canvas);
         DrawStatusPane(canvas);
-        Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   1–9/0 сразу   Esc выход   R reveal", Palette.Dim);
+        Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   1–9/0/T сразу   Esc выход   R reveal", Palette.Dim);
         Render(canvas);
     }
 
@@ -1154,6 +1155,10 @@ internal sealed partial class InteractiveTerminalUi
             new MenuItem('7', "Проверить обновления", InteractiveMenuAction.Update),
             new MenuItem('8', "Удалить программу и данные", InteractiveMenuAction.Uninstall),
             new MenuItem('9', "Скорость и рейтинг", InteractiveMenuAction.SpeedTools),
+            new MenuItem(
+                't',
+                $"Телефон/USB: {(snapshot?.AuthorizationWithoutCampusSsidAllowed == true ? "разрешён" : "запрещён")}",
+                InteractiveMenuAction.ToggleAuthorizationWithoutCampusSsid),
             new MenuItem('0', "Выход", InteractiveMenuAction.Exit)
         ];
     }
@@ -1174,7 +1179,9 @@ internal sealed partial class InteractiveTerminalUi
         {
             WifiNetworkState.Campus => ($"{s.WifiSsid} ●", Palette.Good),
             WifiNetworkState.Other => ($"{s.WifiSsid} ○", Palette.Dim),
-            _ => ("не определена ◌", Palette.Highlight)
+            _ => (s.AuthorizationWithoutCampusSsidAllowed
+                ? "не определена · USB ◐"
+                : "не определена ◌", Palette.Highlight)
         };
         DrawStatusLine(canvas, PaneY + 3, "Wi-Fi сеть", wifiNetwork.Item1, wifiNetwork.Item2);
         var authorization = s.WifiAuthorization switch

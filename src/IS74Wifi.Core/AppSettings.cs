@@ -3,6 +3,10 @@ namespace IS74Wifi.Core;
 public sealed record AppSettings
 {
     public NotificationMode NotificationMode { get; init; } = NotificationMode.Important;
+    // Windows cannot expose the upstream SSID when Campus Wi-Fi is shared by a
+    // phone over USB/Ethernet. This explicit opt-in allows authorization over
+    // that current route even though no Campus SSID is visible on the PC.
+    public bool AllowAuthorizationWithoutCampusSsid { get; init; }
     public double AuthWindowHours { get; init; } = 24;
     public int AgentPollSeconds { get; init; } = 15;
     public int GuardWindowSeconds { get; init; } = 10;
