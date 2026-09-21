@@ -253,7 +253,7 @@ public sealed class AgentService(
                     "Авторизация Wi-Fi отложена",
                     outcome.RetryAfter is { } retryAfter
                         ? $"Возникла временная ошибка. Повторная попытка примерно через {Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds))} сек."
-                        : "Возникла временная ошибка; фоновый агент повторит попытку автоматически.",
+                        : "Возникла временная ошибка; программа повторит попытку автоматически.",
                     AgentNotificationImportance.Routine,
                     AgentNotificationSeverity.Warning));
                 break;

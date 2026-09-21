@@ -403,15 +403,14 @@ internal static class Program
         Console.WriteLine($"Телефон              : {MaskPhone(secrets?.Phone)}");
         var automaticAuthorizationEnabled = app.Autostart.IsEnabledFor(installation.ExecutablePath);
         var agentRunning = AgentProcessControl.IsAgentRunning();
-        Console.WriteLine($"Проверка сети              : {(app.Settings.IgnoreNetworkCheck ? "игнорируется" : "включена")}");
         Console.WriteLine($"Автоматическая авторизация : {(automaticAuthorizationEnabled ? "включена" : "выключена")}");
-        Console.WriteLine($"Фоновый агент              : {(agentRunning ? "работает" : "остановлен")}");
+        Console.WriteLine($"Фоновый режим              : {(agentRunning ? "работает" : "остановлен")}");
         Console.WriteLine($"Уведомления                : {FormatNotificationMode(app.Settings.NotificationMode)}");
         Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
         Console.WriteLine($"Интернет                     : {(internet.Online ? "доступен" : "не подтверждён")}");
         var displayedSsid = GetDisplayedWifiSsid();
-        Console.WriteLine($"Wi-Fi сеть                   : {FormatWifiNetwork(displayedSsid)}");
-        Console.WriteLine($"Wi-Fi авторизация            : {FormatWifiAuthorization(GetWifiAuthorizationState(state))}");
+        Console.WriteLine($"Сеть                         : {(app.Settings.IgnoreNetworkCheck ? "проверка отключена ○" : FormatWifiNetwork(displayedSsid))}");
+        Console.WriteLine($"Авторизация                  : {FormatWifiAuthorization(state)}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
         {
             Console.WriteLine($"API-сессия  : до {session.AccessEnd}");
@@ -426,7 +425,7 @@ internal static class Program
         }
         if (!string.IsNullOrWhiteSpace(state.LastResult))
         {
-            Console.WriteLine($"Последний результат          : {state.LastResult}");
+            Console.WriteLine($"Последний результат          : {FormatRuntimeResultForUi(state.LastResult)}");
         }
         if (state.AutomaticStepOneAttempts > 0)
         {
@@ -508,14 +507,14 @@ internal static class Program
         new WindowsInstalledAppRegistration().Register(installation, installation.ReadInstalledVersion() ?? ProductVersion);
         ReportMenuBatchProgress(progress, "Запись программы в Windows обновлена");
         app.Autostart.Enable(installation.ExecutablePath, startNow: true);
-        ReportMenuBatchProgress(progress, "Автозапуск включён, фоновый агент запущен");
+        ReportMenuBatchProgress(progress, "Автозапуск включён, фоновый режим запущен");
         app.Logger.Write(DiagnosticLevel.Info, "autostart.enabled mode=hkcu-run installed-copy=true");
         if (!quiet)
         {
             Console.WriteLine("Автоматическая авторизация включена.");
-            Console.WriteLine("Фоновый агент запущен и сразу проверит текущее подключение.");
+            Console.WriteLine("Фоновый режим запущен и сразу проверит текущее подключение.");
             Console.WriteLine("Если вы подключены к Campus Wi-Fi и требуется авторизация, программа попробует выполнить её автоматически.");
-            Console.WriteLine("Фоновый агент будет автоматически запускаться при входе в Windows.");
+            Console.WriteLine("Фоновый режим будет автоматически запускаться при входе в Windows.");
         }
         return 0;
     }
@@ -536,12 +535,12 @@ internal static class Program
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
         app.Autostart.Disable();
-        ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый агент остановлен");
+        ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый режим остановлен");
         app.Logger.Write(DiagnosticLevel.Info, "autostart.disabled mode=hkcu-run");
         if (!quiet)
         {
             Console.WriteLine("Автоматическая авторизация отключена.");
-            Console.WriteLine("Фоновый агент остановлен.");
+            Console.WriteLine("Фоновый режим остановлен.");
             Console.WriteLine("Программа больше не будет запускаться автоматически вместе с Windows.");
             Console.WriteLine("Разовая авторизация Wi-Fi по-прежнему доступна через пункт 2.");
         }
@@ -552,7 +551,7 @@ internal static class Program
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
         app.Autostart.Disable();
-        ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый агент остановлен");
+        ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый режим остановлен");
         app.Maintenance.ResetRegistration();
         ReportMenuBatchProgress(progress, "Регистрация и локальная Wi-Fi сессия удалены");
         app.Logger.Write(DiagnosticLevel.Info, "registration.reset");
@@ -576,7 +575,7 @@ internal static class Program
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
         app.Autostart.Disable();
-        ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый агент остановлен");
+        ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый режим остановлен");
         app.Maintenance.PurgeAllData();
         ReportMenuBatchProgress(progress, "Локальные данные удалены");
 
@@ -1053,10 +1052,10 @@ internal static class Program
 
         try
         {
-            history.Start("Проверяю, что фоновый агент остановлен...");
+            history.Start("Проверяю, что фоновый режим остановлен...");
             RenderProgress();
             AgentProcessControl.StopAgentOrThrow(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
-            history.CompleteActive("Фоновый агент остановлен");
+            history.CompleteActive("Фоновый режим остановлен");
             RenderProgress();
 
             Directory.CreateDirectory(installation.InstallDirectory);
@@ -1102,16 +1101,16 @@ internal static class Program
 
             if (restartAgent)
             {
-                history.Start("Запускаю фоновый агент...");
+                history.Start("Запускаю фоновый режим...");
                 RenderProgress();
                 try
                 {
                     StartInstalledAgent(installation.ExecutablePath);
-                    history.CompleteActive("Фоновый агент запущен");
+                    history.CompleteActive("Фоновый режим запущен");
                 }
                 catch (Exception agentEx)
                 {
-                    history.WarnActive($"Обновление установлено, но агент не запущен: {agentEx.Message}");
+                    history.WarnActive($"Обновление установлено, но фоновый процесс не запущен: {agentEx.Message}");
                     logger.Write(DiagnosticLevel.Warn,
                         $"update.apply agent-restart warning type={agentEx.GetType().Name} message={agentEx.Message}");
                 }
@@ -1173,11 +1172,11 @@ internal static class Program
                 try
                 {
                     StartInstalledAgent(installation.ExecutablePath);
-                    history.AddInfo("Фоновый агент предыдущей версии снова запущен");
+                    history.AddInfo("Фоновый режим предыдущей версии снова запущен");
                 }
                 catch (Exception restartEx)
                 {
-                    history.AddWarning($"Не удалось перезапустить фоновый агент: {restartEx.Message}");
+                    history.AddWarning($"Не удалось перезапустить фоновый процесс: {restartEx.Message}");
                 }
             }
             RenderProgress();
@@ -1323,7 +1322,7 @@ internal static class Program
             CreateNoWindow = true
         };
         agent.ArgumentList.Add("agent");
-        _ = Process.Start(agent) ?? throw new InvalidOperationException("Не удалось запустить фоновый агент после обновления.");
+        _ = Process.Start(agent) ?? throw new InvalidOperationException("Не удалось запустить фоновый процесс после обновления.");
     }
 
     private static void StartInstalledMenu(
@@ -1637,8 +1636,8 @@ internal static class Program
                         {
                             var confirmed = await ui.ConfirmAsync(
                                 "ПРОВЕРКА СЕТИ",
-                                "Игнорировать проверку Campus Wi-Fi перед авторизацией? Приложение будет пытаться авторизоваться независимо от обнаруженных Wi-Fi и сетевых адаптеров. Полезно при USB-раздаче, VPN, proxy/WARP, нескольких сетях и другой нестандартной маршрутизации.",
-                                "Игнорировать проверку",
+                                "Отключить проверку сети? Авторизация будет запускаться независимо от обнаруженной сети. Полезно при USB-раздаче, VPN и прокси.",
+                                "Отключить проверку",
                                 initialStatus).ConfigureAwait(false);
                             if (!confirmed)
                             {
@@ -1650,11 +1649,11 @@ internal static class Program
                             ui,
                             "ПРОВЕРКА СЕТИ",
                             initialStatus,
-                            ignore ? "Отключаю блокировку по обнаруженной сети..." : "Включаю проверку Campus Wi-Fi...",
+                            ignore ? "Отключаю проверку сети..." : "Включаю проверку сети...",
                             progress => SetIgnoreNetworkCheck(ignore, progress),
                             ignore
-                                ? "Проверка сети больше не блокирует авторизацию"
-                                : "Проверка Campus Wi-Fi снова включена").ConfigureAwait(false);
+                                ? "Проверка сети отключена"
+                                : "Проверка сети включена").ConfigureAwait(false);
                         break;
                     }
 
@@ -2030,17 +2029,16 @@ internal static class Program
             string.Empty,
             "=== Состояние ===",
             $"Интернет: {(internet.Online ? "доступен" : "не подтверждён")}",
-            $"Wi-Fi сеть: {FormatWifiNetwork(displayedSsid)}",
-            $"Wi-Fi авторизация: {FormatWifiAuthorization(GetWifiAuthorizationState(state))}",
+            $"Сеть: {(app.Settings.IgnoreNetworkCheck ? "проверка отключена ○" : FormatWifiNetwork(displayedSsid))}",
+            $"Авторизация: {FormatWifiAuthorization(state)}",
             $"Регистрация: {(secrets is null ? "нет" : "сохранена")}",
             $"Телефон: {MaskPhone(secrets?.Phone)}",
             $"Автовход: {(automatic ? "включён" : "выключен")}",
-            $"Агент: {(AgentProcessControl.IsAgentRunning() ? "работает" : "остановлен")}",
+            $"Фоновый режим: {(AgentProcessControl.IsAgentRunning() ? "работает" : "остановлен")}",
             $"Уведомления: {FormatNotificationMode(app.Settings.NotificationMode)}",
             $"API-сессия: {FormatSessionEnd(session?.AccessEnd)}"
         };
 
-        lines.Add($"Проверка сети: {(app.Settings.IgnoreNetworkCheck ? "игнорируется" : "включена")}");
         var telemetryStatus = app.TelemetryQueue.GetStatus();
         lines.Add(string.Empty);
         lines.Add("=== Телеметрия ===");
@@ -2053,7 +2051,7 @@ internal static class Program
         if (state.ExpectedExpiryUtc is { } expiry)
             lines.Add($"Ожидаемое окончание окна: {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
         if (!string.IsNullOrWhiteSpace(state.LastResult))
-            lines.Add($"Последний результат: {state.LastResult}");
+            lines.Add($"Последний результат: {FormatRuntimeResultForUi(state.LastResult)}");
         if (state.AutomaticStepOneAttempts > 0)
             lines.Add($"Автоматические попытки: {state.AutomaticStepOneAttempts}/{app.Settings.MaxAutomaticStepOneAttempts}");
         lines.Add($"Требуется действие пользователя: {(state.UserActionRequired ? "да" : "нет")}");
@@ -2147,10 +2145,10 @@ internal static class Program
                     history.CompleteActive("Скачанная версия запускается корректно");
                     break;
                 case UpdateApplyProgressStage.StoppingAgent:
-                    history.Start("Останавливаю фоновый агент...");
+                    history.Start("Останавливаю фоновый режим...");
                     break;
                 case UpdateApplyProgressStage.AgentStopped:
-                    history.CompleteActive("Фоновый агент остановлен");
+                    history.CompleteActive("Фоновый режим остановлен");
                     break;
                 case UpdateApplyProgressStage.PreparingInstalledCopy:
                     history.Start("Подготавливаю установленную копию...");
@@ -2302,8 +2300,6 @@ internal static class Program
             : displayedSsid is not null
                 ? WifiNetworkState.Other
                 : WifiNetworkState.Unknown;
-        var authorization = GetWifiAuthorizationState(runtime);
-
         var internet = internetOverride ?? runtime.InternetConfirmed;
         return new InteractiveStatusSnapshot(
             Installed: installation.IsInstalled,
@@ -2311,14 +2307,15 @@ internal static class Program
             InternetAvailable: internet,
             WifiNetwork: wifiNetwork,
             WifiSsid: displayedSsid,
-            WifiAuthorization: authorization,
+            AuthorizationExpectedExpiryUtc: runtime.ExpectedExpiryUtc,
+            AuthorizationAlreadyActive: string.Equals(runtime.LastResult, "already-authorized", StringComparison.Ordinal),
             NetworkCheckIgnored: app.Settings.IgnoreNetworkCheck,
             AutomaticAuthorizationEnabled: automatic,
             AgentRunning: agentRunning,
             NotificationMode: FormatNotificationMode(app.Settings.NotificationMode),
             MaskedPhone: MaskPhone(secrets?.Phone),
             ApiSessionEnd: FormatSessionEnd(session?.AccessEnd),
-            LastResult: string.IsNullOrWhiteSpace(runtime.LastResult) ? "—" : runtime.LastResult,
+            LastResult: FormatRuntimeResultForUi(runtime.LastResult),
             Version: ProductVersion);
     }
 
@@ -2338,16 +2335,48 @@ internal static class Program
 
     private static string FormatWifiNetwork(string? ssid) => ssid switch
     {
-        null => "не определена ◌",
+        null => "не определена ○",
         _ when SsidPolicy.IsTarget(ssid) => $"{ssid} ●",
         _ => $"{ssid} ○"
     };
 
-    private static string FormatWifiAuthorization(WifiAuthorizationState state) => state switch
+    private static string FormatWifiAuthorization(RuntimeState state)
     {
-        WifiAuthorizationState.Active => "активна ●",
-        WifiAuthorizationState.Expired => "истекла ○",
-        _ => "пока неизвестно — ожидаем авторизацию ◌"
+        if (state.ExpectedExpiryUtc is { } expiry && expiry > DateTimeOffset.UtcNow)
+        {
+            var remaining = expiry - DateTimeOffset.UtcNow;
+            var totalMinutes = Math.Max(0, (int)Math.Floor(remaining.TotalMinutes));
+            return $"до следующей ~{totalMinutes / 60:00}:{totalMinutes % 60:00} ●";
+        }
+
+        if (string.Equals(state.LastResult, "already-authorized", StringComparison.Ordinal))
+        {
+            return "уже активна ●";
+        }
+
+        return GetWifiAuthorizationState(state) switch
+        {
+            WifiAuthorizationState.Expired => "срок истёк ○",
+            _ => "ещё не выполнялась ○"
+        };
+    }
+
+    private static string FormatRuntimeResultForUi(string? result) => result switch
+    {
+        null or "" => "—",
+        "success" => "успешно",
+        "already-authorized" => "уже авторизован",
+        "step-one-sent" => "авторизация начата",
+        "step-one-retryable-error" or "pre-step-retryable-error" => "временная ошибка",
+        "automatic-step-one-limit" => "нужно действие",
+        "bearer-invalid" => "API-сессия отклонена",
+        "step-two-ambiguous" => "результат неясен",
+        "step-two-rejected" => "код отклонён",
+        "step-one-rate-limited" => "слишком много попыток",
+        "step-one-rejected" => "запрос отклонён",
+        "unexpected-step-one-redirect" => "неожиданный ответ портала",
+        "cancelled" => "отменено",
+        _ => "ошибка авторизации"
     };
 
     private static void CycleNotificationMode()
@@ -2385,9 +2414,9 @@ internal static class Program
         }
 
         AgentProcessControl.StopAgentOrThrow();
-        ReportMenuBatchProgress(progress, "Фоновый агент остановлен для применения настройки");
+        ReportMenuBatchProgress(progress, "Фоновый режим остановлен для применения настройки");
         StartInstalledAgent(installation.ExecutablePath);
-        ReportMenuBatchProgress(progress, "Фоновый агент запущен с новой настройкой");
+        ReportMenuBatchProgress(progress, "Фоновый режим запущен с новой настройкой");
     }
 
     private static string FormatNotificationMode(NotificationMode mode) => mode switch

@@ -6,7 +6,8 @@ internal sealed record InteractiveStatusSnapshot(
     bool? InternetAvailable,
     WifiNetworkState WifiNetwork,
     string? WifiSsid,
-    WifiAuthorizationState WifiAuthorization,
+    DateTimeOffset? AuthorizationExpectedExpiryUtc,
+    bool AuthorizationAlreadyActive,
     bool NetworkCheckIgnored,
     bool AutomaticAuthorizationEnabled,
     bool AgentRunning,
@@ -33,6 +34,9 @@ internal enum WifiAuthorizationState
 internal enum InteractiveMenuAction
 {
     None,
+    OpenSettings,
+    OpenMaintenance,
+    Back,
     Register,
     Connect,
     EnableAutomaticAuthorization,

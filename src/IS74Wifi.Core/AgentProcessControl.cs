@@ -110,13 +110,13 @@ public static class AgentProcessControl
         if (!TryTerminateRecordedInstalledAgent())
         {
             throw new InvalidOperationException(
-                "Фоновый агент IS74Wifi не остановился и его процесс не удалось безопасно определить.");
+                "Фоновый процесс IS74Wifi не остановился и его не удалось безопасно определить.");
         }
 
         if (!WaitForAgentExit(forced))
         {
             throw new InvalidOperationException(
-                "Фоновый агент IS74Wifi не завершился даже после принудительной остановки.");
+                "Фоновый процесс IS74Wifi не завершился даже после принудительной остановки.");
         }
 
         ClearPidFileIfAgentStopped();

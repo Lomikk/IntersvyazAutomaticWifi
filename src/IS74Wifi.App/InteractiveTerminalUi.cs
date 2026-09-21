@@ -34,6 +34,7 @@ internal sealed partial class InteractiveTerminalUi
     private readonly bool ansi;
     private InteractiveStatusSnapshot? status;
     private int selected;
+    private MenuPage menuPage = MenuPage.Main;
     private bool menuSelectionInitialized;
     private int canvasWidth = MinimumCanvasWidth;
     private int renderLeft;
@@ -168,6 +169,12 @@ internal sealed partial class InteractiveTerminalUi
 
                 if (key.Key == ConsoleKey.Escape)
                 {
+                    if (menuPage != MenuPage.Main)
+                    {
+                        NavigateTo(MenuPage.Main);
+                        keyTask = ReadKeyAsync();
+                        continue;
+                    }
                     return InteractiveMenuAction.Exit;
                 }
 
@@ -194,6 +201,7 @@ internal sealed partial class InteractiveTerminalUi
                     continue;
                 }
 
+                InteractiveMenuAction? directAction = null;
                 for (var hotkeyIndex = 0; hotkeyIndex < items.Count; hotkeyIndex++)
                 {
                     if (items[hotkeyIndex].Hotkey != key.KeyChar)
@@ -205,7 +213,18 @@ internal sealed partial class InteractiveTerminalUi
                     // so returning from an inline action (for example notifications)
                     // leaves the cursor on the item the user actually invoked.
                     selected = hotkeyIndex;
-                    return items[hotkeyIndex].Action;
+                    directAction = items[hotkeyIndex].Action;
+                    break;
+                }
+
+                if (directAction is { } hotkeyAction)
+                {
+                    if (HandleMenuNavigation(hotkeyAction))
+                    {
+                        keyTask = ReadKeyAsync();
+                        continue;
+                    }
+                    return hotkeyAction;
                 }
 
                 if (key.Key != ConsoleKey.Enter)
@@ -215,6 +234,11 @@ internal sealed partial class InteractiveTerminalUi
                 }
 
                 var item = items[selected];
+                if (HandleMenuNavigation(item.Action))
+                {
+                    keyTask = ReadKeyAsync();
+                    continue;
+                }
                 if (item.Action != InteractiveMenuAction.None)
                 {
                     return item.Action;
@@ -227,6 +251,30 @@ internal sealed partial class InteractiveTerminalUi
         {
             RestoreConsole();
         }
+    }
+
+    private bool HandleMenuNavigation(InteractiveMenuAction action)
+    {
+        switch (action)
+        {
+            case InteractiveMenuAction.OpenSettings:
+                NavigateTo(MenuPage.Settings);
+                return true;
+            case InteractiveMenuAction.OpenMaintenance:
+                NavigateTo(MenuPage.Maintenance);
+                return true;
+            case InteractiveMenuAction.Back:
+                NavigateTo(MenuPage.Main);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void NavigateTo(MenuPage page)
+    {
+        menuPage = page;
+        selected = 0;
     }
 
     public async Task<bool> ConfirmInstallOrUpgradeAsync(
@@ -632,17 +680,29 @@ internal sealed partial class InteractiveTerminalUi
 
     private InteractiveMenuAction RunCompactMenu(InteractiveStatusSnapshot snapshot)
     {
-        Console.Clear();
-        Console.WriteLine("IS74W — InterSvyaz Wi-Fi Auth");
-        Console.WriteLine();
-        Console.WriteLine($"Интернет     : {FormatInternet(snapshot.InternetAvailable)}");
-        Console.WriteLine($"Регистрация  : {(snapshot.Registered ? "есть" : "нет")}");
-        Console.WriteLine($"Проверка сети: {(snapshot.NetworkCheckIgnored ? "игнорируется" : "включена")}");
-        Console.WriteLine($"Автовход     : {(snapshot.AutomaticAuthorizationEnabled ? "включён" : "выключен")}");
-        Console.WriteLine($"Агент        : {(snapshot.AgentRunning ? "работает" : "остановлен")}");
-        Console.WriteLine();
+        status = snapshot;
+        NavigateTo(MenuPage.Main);
 
-        return RunCompactSelection(GetPrimaryItems(snapshot));
+        while (true)
+        {
+            Console.Clear();
+            Console.WriteLine("IS74W — InterSvyaz Wi-Fi Auth");
+            Console.WriteLine();
+            Console.WriteLine($"Интернет      : {FormatInternet(snapshot.InternetAvailable)}");
+            Console.WriteLine($"Сеть          : {FormatNetworkStatus(snapshot).Text}");
+            Console.WriteLine($"Авторизация   : {FormatAuthorizationStatus(snapshot).Text}");
+            Console.WriteLine($"Автовход      : {(snapshot.AutomaticAuthorizationEnabled ? "включён ●" : "выключен ○")}");
+            Console.WriteLine($"Фоновый режим : {(snapshot.AgentRunning ? "работает ●" : "остановлен ○")}");
+            Console.WriteLine();
+            Console.WriteLine($"=== {GetMenuTitle()} ===");
+
+            var action = RunCompactSelection(GetCurrentItems());
+            if (HandleMenuNavigation(action))
+            {
+                continue;
+            }
+            return action;
+        }
     }
 
     private InteractiveMenuAction RunCompactSelection(IReadOnlyList<MenuItem> items)
@@ -679,7 +739,9 @@ internal sealed partial class InteractiveTerminalUi
             }
             if (key.Key == ConsoleKey.Escape)
             {
-                return InteractiveMenuAction.Exit;
+                return menuPage == MenuPage.Main
+                    ? InteractiveMenuAction.Exit
+                    : InteractiveMenuAction.Back;
             }
 
             try
@@ -1044,7 +1106,11 @@ internal sealed partial class InteractiveTerminalUi
         Center(canvas, 13, Subtitle, Palette.Dim);
         DrawLeftPane(canvas);
         DrawStatusPane(canvas);
-        Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   1–9/0/T сразу   Esc выход   R reveal", Palette.Dim);
+        Center(canvas, 29,
+            menuPage == MenuPage.Main
+                ? "↑ ↓ выбрать   Enter открыть   цифра — сразу   Esc выход   R reveal"
+                : "↑ ↓ выбрать   Enter открыть   цифра — сразу   Esc назад   R reveal",
+            Palette.Dim);
         Render(canvas);
     }
 
@@ -1063,9 +1129,13 @@ internal sealed partial class InteractiveTerminalUi
 
         var boxY = 5;
         var boxHeight = Math.Min(20, CanvasHeight - boxY - 2);
-        DrawBox(canvas, 1, boxY, Math.Max(20, canvasWidth - 2), boxHeight, "МЕНЮ");
+        DrawBox(canvas, 1, boxY, Math.Max(20, canvasWidth - 2), boxHeight, GetMenuTitle());
         DrawCurrentItems(canvas, boxY + 2);
-        Center(canvas, CanvasHeight - 1, "↑ ↓   Enter   1–9/0   Esc выход   R reveal", Palette.Dim);
+        Center(canvas, CanvasHeight - 1,
+            menuPage == MenuPage.Main
+                ? "↑ ↓   Enter   цифра — сразу   Esc выход   R reveal"
+                : "↑ ↓   Enter   цифра — сразу   Esc назад   R reveal",
+            Palette.Dim);
         Render(canvas);
     }
 
@@ -1115,7 +1185,7 @@ internal sealed partial class InteractiveTerminalUi
 
     private void DrawLeftPane(Cell[,] canvas)
     {
-        DrawBox(canvas, leftPaneX, PaneY, paneWidth, PaneHeight, "МЕНЮ");
+        DrawBox(canvas, leftPaneX, PaneY, paneWidth, PaneHeight, GetMenuTitle());
         DrawCurrentItems(canvas, PaneY + 2);
     }
 
@@ -1130,13 +1200,24 @@ internal sealed partial class InteractiveTerminalUi
 
     private IReadOnlyList<MenuItem> GetCurrentItems()
     {
-        return GetPrimaryItems(status);
+        return menuPage switch
+        {
+            MenuPage.Settings => GetSettingsItems(status),
+            MenuPage.Maintenance => GetMaintenanceItems(status),
+            _ => GetPrimaryItems(status)
+        };
     }
+
+    private string GetMenuTitle() => menuPage switch
+    {
+        MenuPage.Settings => "НАСТРОЙКИ",
+        MenuPage.Maintenance => "ОБСЛУЖИВАНИЕ",
+        _ => "МЕНЮ"
+    };
 
     private static IReadOnlyList<MenuItem> GetPrimaryItems(InteractiveStatusSnapshot? snapshot)
     {
         var automaticEnabled = snapshot?.AutomaticAuthorizationEnabled == true;
-        var registered = snapshot?.Registered == true;
 
         return
         [
@@ -1145,21 +1226,37 @@ internal sealed partial class InteractiveTerminalUi
                 '2',
                 automaticEnabled ? "Отключить автоавторизацию" : "Включить автоавторизацию",
                 automaticEnabled ? InteractiveMenuAction.DisableAutomaticAuthorization : InteractiveMenuAction.EnableAutomaticAuthorization),
+            new MenuItem('3', "Скорость и рейтинг", InteractiveMenuAction.SpeedTools),
+            new MenuItem('4', "Состояние и подробный отчёт", InteractiveMenuAction.ShowDetailedStatus),
+            new MenuItem('5', "Настройки", InteractiveMenuAction.OpenSettings),
+            new MenuItem('6', "Обслуживание", InteractiveMenuAction.OpenMaintenance),
+            new MenuItem('0', "Выход", InteractiveMenuAction.Exit)
+        ];
+    }
+
+    private static IReadOnlyList<MenuItem> GetSettingsItems(InteractiveStatusSnapshot? snapshot) =>
+    [
+        new MenuItem('1', $"Уведомления: {snapshot?.NotificationMode ?? "важные"}", InteractiveMenuAction.CycleNotifications),
+        new MenuItem(
+            '2',
+            $"Проверка сети: {(snapshot?.NetworkCheckIgnored == true ? "отключена" : "включена")}",
+            InteractiveMenuAction.ToggleNetworkCheck),
+        new MenuItem('0', "Назад", InteractiveMenuAction.Back)
+    ];
+
+    private static IReadOnlyList<MenuItem> GetMaintenanceItems(InteractiveStatusSnapshot? snapshot)
+    {
+        var registered = snapshot?.Registered == true;
+        return
+        [
             new MenuItem(
-                '3',
+                '1',
                 registered ? "Сбросить регистрацию" : "Зарегистрировать устройство",
                 registered ? InteractiveMenuAction.ResetRegistration : InteractiveMenuAction.Register),
-            new MenuItem('4', "Открыть подробный отчёт", InteractiveMenuAction.ShowDetailedStatus),
-            new MenuItem('5', $"Уведомления: {snapshot?.NotificationMode ?? "важные"}", InteractiveMenuAction.CycleNotifications),
-            new MenuItem('6', "Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
-            new MenuItem('7', "Проверить обновления", InteractiveMenuAction.Update),
-            new MenuItem('8', "Удалить программу и данные", InteractiveMenuAction.Uninstall),
-            new MenuItem('9', "Скорость и рейтинг", InteractiveMenuAction.SpeedTools),
-            new MenuItem(
-                't',
-                $"Проверка сети: {(snapshot?.NetworkCheckIgnored == true ? "игнорируется" : "включена")}",
-                InteractiveMenuAction.ToggleNetworkCheck),
-            new MenuItem('0', "Выход", InteractiveMenuAction.Exit)
+            new MenuItem('2', "Проверить обновления", InteractiveMenuAction.Update),
+            new MenuItem('3', "Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
+            new MenuItem('4', "Удалить программу и данные", InteractiveMenuAction.Uninstall),
+            new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
     }
 
@@ -1175,45 +1272,79 @@ internal sealed partial class InteractiveTerminalUi
 
         DrawStatusLine(canvas, PaneY + 2, "Интернет", FormatInternet(s.InternetAvailable),
             s.InternetAvailable == true ? Palette.Good : s.InternetAvailable == false ? Palette.Dim : Palette.Highlight);
-        var wifiNetwork = s.WifiNetwork switch
-        {
-            WifiNetworkState.Campus => ($"{s.WifiSsid} ●", Palette.Good),
-            WifiNetworkState.Other => ($"{s.WifiSsid} ○", Palette.Dim),
-            _ => ("не определена ◌", Palette.Highlight)
-        };
-        DrawStatusLine(canvas, PaneY + 3, "Wi-Fi сеть", wifiNetwork.Item1, wifiNetwork.Item2);
-        var authorization = s.WifiAuthorization switch
-        {
-            WifiAuthorizationState.Active => ("активна ●", Palette.Good),
-            WifiAuthorizationState.Expired => ("истекла ○", Palette.Dim),
-            _ => ("пока неизвестно ◌", Palette.Highlight)
-        };
-        DrawStatusLine(canvas, PaneY + 4, "Авторизация", authorization.Item1, authorization.Item2);
+        var network = FormatNetworkStatus(s);
+        DrawStatusLine(canvas, PaneY + 3, "Сеть", network.Text, network.Color);
+        var authorization = FormatAuthorizationStatus(s);
+        DrawStatusLine(canvas, PaneY + 4, "Авторизация", authorization.Text, authorization.Color);
         DrawStatusLine(canvas, PaneY + 5, "Автовход", s.AutomaticAuthorizationEnabled ? "включён ●" : "выключен ○",
             s.AutomaticAuthorizationEnabled ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 6, "Агент", s.AgentRunning ? "работает ●" : "остановлен ○",
+        DrawStatusLine(canvas, PaneY + 6, "Фоновый режим", s.AgentRunning ? "работает ●" : "остановлен ○",
             s.AgentRunning ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 7, "Проверка сети", s.NetworkCheckIgnored ? "игнорируется ◐" : "включена ●",
-            s.NetworkCheckIgnored ? Palette.Highlight : Palette.Good);
-        DrawStatusLine(canvas, PaneY + 8, "Уведомления",
+        DrawStatusLine(canvas, PaneY + 7, "Уведомления",
             s.NotificationMode == "выкл" ? "выкл ○" : $"{s.NotificationMode} ●",
             s.NotificationMode == "выкл" ? Palette.Dim : Palette.Good);
 
-        Put(canvas, rightPaneX + 3, PaneY + 9, "Телефон", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 9, s.MaskedPhone, Palette.Text);
-        Put(canvas, rightPaneX + 3, PaneY + 10, "API-сессия", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 10, s.ApiSessionEnd, Palette.Text);
-        Put(canvas, rightPaneX + 3, PaneY + 11, "Результат", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 11, s.LastResult, Palette.Text);
-        Put(canvas, rightPaneX + 3, PaneY + 12, "Версия", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 12, s.Version, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 8, "Телефон", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 8, s.MaskedPhone, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 9, "API-сессия", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 9, s.ApiSessionEnd, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 10, "Результат", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 10, s.LastResult, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 11, "Версия", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 11, s.Version, Palette.Text);
+    }
+
+    private static (string Text, Palette Color) FormatNetworkStatus(InteractiveStatusSnapshot s)
+    {
+        if (s.NetworkCheckIgnored)
+        {
+            return ("проверка отключена ○", Palette.Dim);
+        }
+
+        return s.WifiNetwork switch
+        {
+            WifiNetworkState.Campus => ($"{s.WifiSsid} ●", Palette.Good),
+            WifiNetworkState.Other => ($"{s.WifiSsid} ○", Palette.Dim),
+            _ => ("не определена ○", Palette.Dim)
+        };
+    }
+
+    private (string Text, Palette Color) FormatAuthorizationStatus(InteractiveStatusSnapshot s)
+    {
+        if (s.AuthorizationExpectedExpiryUtc is { } expiry)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (expiry > now)
+            {
+                var remaining = expiry - now;
+                var totalMinutes = Math.Max(0, (int)Math.Floor(remaining.TotalMinutes));
+                var hours = totalMinutes / 60;
+                var minutes = totalMinutes % 60;
+                var timer = $"{hours:00}:{minutes:00}";
+                return paneWidth >= 44
+                    ? ($"до следующей ~{timer} ●", Palette.Good)
+                    : ($"до след. ~{timer} ●", Palette.Good);
+            }
+        }
+
+        if (s.AuthorizationAlreadyActive)
+        {
+            return ("уже активна ●", Palette.Good);
+        }
+
+        if (s.AuthorizationExpectedExpiryUtc is not null)
+        {
+            return ("срок истёк ○", Palette.Dim);
+        }
+
+        return ("ещё не выполнялась ○", Palette.Dim);
     }
 
     private static string FormatInternet(bool? value) => value switch
     {
         true => "доступен ●",
         false => "нет ○",
-        null => "проверка ◌"
+        null => "проверка ○"
     };
 
     private void DrawInstallStatus(Cell[,] canvas, bool installed, bool registered, bool automatic, bool agent)
@@ -1222,7 +1353,7 @@ internal sealed partial class InteractiveTerminalUi
         DrawStatusLine(canvas, PaneY + 2, "Установка", installed ? "есть ●" : "нет ○", installed ? Palette.Good : Palette.Dim);
         DrawStatusLine(canvas, PaneY + 3, "Регистрация", registered ? "есть ●" : "нет ○", registered ? Palette.Good : Palette.Dim);
         DrawStatusLine(canvas, PaneY + 4, "Автовход", automatic ? "включён ●" : "выключен ○", automatic ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 5, "Агент", agent ? "работает ●" : "остановлен ○", agent ? Palette.Good : Palette.Dim);
+        DrawStatusLine(canvas, PaneY + 5, "Фоновый режим", agent ? "работает ●" : "остановлен ○", agent ? Palette.Good : Palette.Dim);
         Put(canvas, rightPaneX + 3, PaneY + 8, "Версия", Palette.Dim);
         PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 8, productVersion, Palette.Text);
     }
@@ -1230,7 +1361,8 @@ internal sealed partial class InteractiveTerminalUi
     private void DrawStatusLine(Cell[,] canvas, int row, string label, string value, Palette valueColor)
     {
         Put(canvas, rightPaneX + 3, row, label, Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 15, rightPaneX + paneWidth - 3, row, value, valueColor);
+        var valueStart = rightPaneX + Math.Max(15, label.Length + 4);
+        PutRightAligned(canvas, valueStart, rightPaneX + paneWidth - 3, row, value, valueColor);
     }
 
     private void DrawSelectable(Cell[,] canvas, int x, int y, char hotkey, string text, bool isSelected)
@@ -1676,6 +1808,13 @@ internal sealed partial class InteractiveTerminalUi
         char Hotkey,
         string Label,
         InteractiveMenuAction Action);
+
+    private enum MenuPage
+    {
+        Main,
+        Settings,
+        Maintenance
+    }
 
     private readonly record struct ActionHistoryRow(
         InteractiveActionLineKind Kind,
