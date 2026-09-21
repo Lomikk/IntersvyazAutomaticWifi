@@ -23,8 +23,8 @@ internal sealed class InteractiveTerminalUi
         ".+*############%%%%#  MM  .     `MM     A' ,W' MM  `MM A'  `MM A'",
         "                :*%=  MM  Mb     dM    A',W'   MM   :MM;    :MM;",
         "                :+: .JMML.P\"Ybmmd\"    A' AmmmmmMMmm  VF      VF",
-        "              .-:                   A'        MM",
-        "            .:.                    A'         MM",
+        "              .-:                    A'        MM",
+        "            .:.                     A'         MM",
         "          .."
     ];
 
