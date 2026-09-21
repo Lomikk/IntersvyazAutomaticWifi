@@ -34,6 +34,7 @@ internal sealed class InteractiveTerminalUi
     private readonly bool ansi;
     private InteractiveStatusSnapshot? status;
     private int selected;
+    private bool menuSelectionInitialized;
     private int canvasWidth = MinimumCanvasWidth;
     private int renderLeft;
     private int leftPaneX = 1;
@@ -99,15 +100,25 @@ internal sealed class InteractiveTerminalUi
         CancellationToken cancellationToken = default)
     {
         status = initialStatus;
-        selected = 0;
 
         if (!CanUseInteractiveSession)
         {
+            InvalidateRenderedFrame();
+            menuSelectionInitialized = false;
             return RunCompactMenu(initialStatus);
         }
 
+        if (!menuSelectionInitialized)
+        {
+            selected = 0;
+            menuSelectionInitialized = true;
+        }
+
         UpdateLayout();
-        PrepareInteractiveConsole();
+        // Keep the previous framebuffer between menu/workflow calls. This lets
+        // the diff renderer restore only cells that actually changed instead
+        // of clearing and repainting the whole terminal on every return.
+        PrepareInteractiveConsole(clear: lastRenderedCanvas is null);
         try
         {
             if (showReveal && CanUseRichLayout)
@@ -167,6 +178,8 @@ internal sealed class InteractiveTerminalUi
                     continue;
                 }
 
+                selected = Math.Clamp(selected, 0, items.Count - 1);
+
                 if (key.Key == ConsoleKey.UpArrow)
                 {
                     selected = (selected - 1 + items.Count) % items.Count;
@@ -181,10 +194,18 @@ internal sealed class InteractiveTerminalUi
                     continue;
                 }
 
-                var hotkeyItem = items.FirstOrDefault(item => item.Hotkey == key.KeyChar);
-                if (hotkeyItem.Action != InteractiveMenuAction.None)
+                for (var hotkeyIndex = 0; hotkeyIndex < items.Count; hotkeyIndex++)
                 {
-                    return hotkeyItem.Action;
+                    if (items[hotkeyIndex].Hotkey != key.KeyChar)
+                    {
+                        continue;
+                    }
+
+                    // A direct numeric hotkey also becomes the current selection,
+                    // so returning from an inline action (for example notifications)
+                    // leaves the cursor on the item the user actually invoked.
+                    selected = hotkeyIndex;
+                    return items[hotkeyIndex].Action;
                 }
 
                 if (key.Key != ConsoleKey.Enter)
@@ -1022,7 +1043,7 @@ internal sealed class InteractiveTerminalUi
         Center(canvas, 13, Subtitle, Palette.Dim);
         DrawLeftPane(canvas);
         DrawStatusPane(canvas);
-        Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   1–7/0 сразу   Esc выход   R reveal", Palette.Dim);
+        Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   1–8/0 сразу   Esc выход   R reveal", Palette.Dim);
         Render(canvas);
     }
 
@@ -1043,7 +1064,7 @@ internal sealed class InteractiveTerminalUi
         var boxHeight = Math.Min(20, CanvasHeight - boxY - 2);
         DrawBox(canvas, 1, boxY, Math.Max(20, canvasWidth - 2), boxHeight, "МЕНЮ");
         DrawCurrentItems(canvas, boxY + 2);
-        Center(canvas, CanvasHeight - 1, "↑ ↓   Enter   1–7/0   Esc выход   R reveal", Palette.Dim);
+        Center(canvas, CanvasHeight - 1, "↑ ↓   Enter   1–8/0   Esc выход   R reveal", Palette.Dim);
         Render(canvas);
     }
 
@@ -1596,9 +1617,6 @@ internal sealed class InteractiveTerminalUi
 
     private void PrepareInteractiveConsole(bool clear = true)
     {
-        lastRenderedCanvas = null;
-        lastRenderedLeft = -1;
-        lastRenderedTerminalWidth = -1;
         try
         {
             Console.CursorVisible = false;
@@ -1606,10 +1624,21 @@ internal sealed class InteractiveTerminalUi
         catch
         {
         }
-        if (clear)
+
+        if (!clear)
         {
-            Console.Clear();
+            return;
         }
+
+        InvalidateRenderedFrame();
+        Console.Clear();
+    }
+
+    private void InvalidateRenderedFrame()
+    {
+        lastRenderedCanvas = null;
+        lastRenderedLeft = -1;
+        lastRenderedTerminalWidth = -1;
     }
 
     private static void RestoreConsole(bool showCursor = true)

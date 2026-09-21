@@ -150,6 +150,8 @@ assert "new MenuItem('4', \"Открыть подробный отчёт\", Inte
 assert 'TargetView' not in csharp_ui, 'rich UI must not reintroduce speculative submenu navigation'
 assert 'PromptDigitsAsync' in csharp_ui and 'ConsoleKey.Escape' in csharp_ui, 'interactive registration input must be cancellable in-pane'
 assert 'lastRenderedCanvas' in csharp_ui and 'cell.Equals(lastRenderedCanvas' in csharp_ui, 'terminal renderer must diff frames to avoid full-screen shimmer'
+assert 'PrepareInteractiveConsole(clear: lastRenderedCanvas is null)' in csharp_ui, 'menu/workflow transitions must preserve the framebuffer for diff rendering'
+assert 'private bool menuSelectionInitialized;' in csharp_ui and 'selected = hotkeyIndex;' in csharp_ui, 'menu selection must survive actions and direct numeric hotkeys'
 assert 'CanUseInteractiveSession' in csharp_ui and 'compactLayout' in csharp_ui, 'terminal UI must recover after temporary narrow resize'
 assert 'PrepareForAction(' not in csharp_program, 'menu actions must stay inside the terminal panes instead of reopening the legacy action screen'
 launch_settings = (root / 'src' / 'IS74Wifi.App' / 'Properties' / 'launchSettings.json').read_text(encoding='utf-8')
