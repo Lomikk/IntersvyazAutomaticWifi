@@ -140,21 +140,12 @@ internal sealed partial class InteractiveTerminalUi
         PrepareInteractiveConsole(clear: false);
         try
         {
-            var page = 0; // 0 = measurement, 1 = leaderboard/profile
             var keyTask = ReadKeyAsync();
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 UpdateLayout();
-
-                if (page == 0)
-                {
-                    RenderSpeedMeasurementFrame();
-                }
-                else
-                {
-                    RenderLeaderboardFrame();
-                }
+                RenderSpeedDashboardFrame();
 
                 var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
                 if (completed != keyTask)
@@ -168,28 +159,21 @@ internal sealed partial class InteractiveTerminalUi
                     return;
                 }
 
-                if (key.Key == ConsoleKey.LeftArrow || key.KeyChar == '1')
-                {
-                    page = 0;
-                    keyTask = ReadKeyAsync();
-                    continue;
-                }
-
-                if (key.Key == ConsoleKey.RightArrow || key.KeyChar == '2')
-                {
-                    page = 1;
-                    keyTask = ReadKeyAsync();
-                    continue;
-                }
-
-                if (page == 0 && key.Key == ConsoleKey.Enter)
+                if (key.Key == ConsoleKey.Enter || key.KeyChar == '1')
                 {
                     await ShowSpeedToolsNoticeAsync(
                         "ИЗМЕРЕНИЕ СКОРОСТИ",
-                        "Интерфейс измерителя готов. Сетевой замер и поток прогресса подключит отдельный backend-модуль.",
+                        "Интерфейс измерителя готов. Download, upload, ping, jitter и packet loss подключит отдельный backend-модуль.",
                         cancellationToken).ConfigureAwait(false);
                 }
-                else if (page == 1 && key.KeyChar == '3')
+                else if (key.KeyChar == '2' || key.Key == ConsoleKey.R)
+                {
+                    await ShowSpeedToolsNoticeAsync(
+                        "ТАБЛИЦА ЛИДЕРОВ",
+                        "Интерфейс таблицы готов. Получение и сортировку результатов кампуса подключит отдельный backend-модуль.",
+                        cancellationToken).ConfigureAwait(false);
+                }
+                else if (key.KeyChar == '3')
                 {
                     var nickname = await PromptSpeedNicknameAsync(speedNicknameDraft, cancellationToken).ConfigureAwait(false);
                     if (nickname is not null)
@@ -197,18 +181,11 @@ internal sealed partial class InteractiveTerminalUi
                         speedNicknameDraft = nickname;
                     }
                 }
-                else if (page == 1 && key.KeyChar == '4')
+                else if (key.KeyChar == '4')
                 {
                     await ShowSpeedToolsNoticeAsync(
                         "ПУБЛИКАЦИЯ РЕЗУЛЬТАТА",
                         "Экран публикации готов. Сохранение результата и отправку в рейтинг подключит отдельный backend-модуль.",
-                        cancellationToken).ConfigureAwait(false);
-                }
-                else if (page == 1 && (key.Key == ConsoleKey.Enter || key.Key == ConsoleKey.R))
-                {
-                    await ShowSpeedToolsNoticeAsync(
-                        "ТАБЛИЦА ЛИДЕРОВ",
-                        "Интерфейс таблицы готов. Получение и сортировку результатов кампуса подключит отдельный backend-модуль.",
                         cancellationToken).ConfigureAwait(false);
                 }
 
@@ -300,122 +277,144 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
-    private void RenderSpeedMeasurementFrame()
+    private void RenderSpeedDashboardFrame()
     {
-        var canvas = CreateSpeedToolsCanvas("СКОРОСТЬ · ЗАМЕР", out var contentX, out var contentY, out var contentWidth, out var contentHeight);
-        DrawSpeedPageTabs(canvas, contentX, contentY, contentWidth, page: 0);
+        var canvas = CreateSpeedToolsDashboardCanvas(
+            "ИЗМЕРЕНИЕ СКОРОСТИ",
+            out var leftContentX,
+            out var leftContentY,
+            out var leftContentWidth);
 
-        var metricY = contentY + 3;
-        DrawLargeSpeedMetric(canvas, contentX, metricY, contentWidth, "---", Palette.BrandBright);
-        CenterWithin(canvas, contentX, contentWidth, metricY + 6, "Mbit/s", Palette.Dim);
-        CenterWithin(canvas, contentX, contentWidth, metricY + 8, "↓ — Mbit/s     ↑ — Mbit/s     ping — ms", Palette.Text);
-
-        var actionY = Math.Min(contentY + contentHeight - 5, metricY + 11);
-        CenterWithin(canvas, contentX, contentWidth, actionY, "[Enter] Начать замер", Palette.Highlight);
-        CenterWithin(canvas, contentX, contentWidth, actionY + 2, "[2] Рейтинг кампуса     [0] Назад", Palette.Dim);
-        Center(canvas, CanvasHeight - 1, "← → / 1–2 страницы   Enter начать   Esc назад", Palette.Dim);
-        Render(canvas);
-    }
-
-    private void RenderLeaderboardFrame()
-    {
-        var canvas = CreateSpeedToolsCanvas("СКОРОСТЬ · РЕЙТИНГ", out var contentX, out var contentY, out var contentWidth, out var contentHeight);
-        DrawSpeedPageTabs(canvas, contentX, contentY, contentWidth, page: 1);
-
-        var tableY = contentY + 3;
-        if (contentWidth >= 68)
-        {
-            Put(canvas, contentX, tableY, Truncate("#   НИКНЕЙМ                    ↓ Mbit/s    ↑ Mbit/s    PING", contentWidth), Palette.Highlight);
-            Put(canvas, contentX, tableY + 1, new string('─', Math.Min(contentWidth, 64)), Palette.Dim);
-            var rows = Math.Min(8, Math.Max(4, contentHeight - 12));
-            for (var row = 0; row < rows; row++)
-            {
-                Put(canvas, contentX, tableY + 2 + row,
-                    Truncate($"{row + 1,-3} —                           —           —          —", contentWidth), Palette.Text);
-            }
-        }
-        else
-        {
-            Put(canvas, contentX, tableY, Truncate("#   НИКНЕЙМ              ↓     ↑   PING", contentWidth), Palette.Highlight);
-            var rows = Math.Min(6, Math.Max(4, contentHeight - 12));
-            for (var row = 0; row < rows; row++)
-            {
-                Put(canvas, contentX, tableY + 2 + row,
-                    Truncate($"{row + 1,-3} —                    —     —     —", contentWidth), Palette.Text);
-            }
-        }
-
-        var profileY = contentY + contentHeight - 7;
-        Put(canvas, contentX, profileY, Truncate($"Ваш никнейм: {speedNicknameDraft}", contentWidth), Palette.Bright);
-        Put(canvas, contentX, profileY + 1, Truncate("Ваш результат: ещё не опубликован", contentWidth), Palette.Dim);
-        Put(canvas, contentX, profileY + 3,
-            Truncate("[Enter/R] Обновить   [3] Никнейм   [4] Опубликовать   [1] Замер   [0] Назад", contentWidth), Palette.Highlight);
-        Center(canvas, CanvasHeight - 1, "← → / 1–2 страницы   3 никнейм   4 публикация   Esc назад", Palette.Dim);
+        DrawSpeedMeasurementPane(canvas, leftContentX, leftContentY, leftContentWidth);
+        DrawSpeedLeaderboardPane(canvas);
+        Center(canvas, CanvasHeight - 1, "Enter/1 замер   2/R обновить рейтинг   3 ник   4 публикация   Esc назад", Palette.Dim);
         Render(canvas);
     }
 
     private void RenderSpeedNicknamePrompt(string value)
     {
-        var canvas = CreateSpeedToolsCanvas("СКОРОСТЬ · НИКНЕЙМ", out var contentX, out var contentY, out var contentWidth, out _);
+        var canvas = CreateSpeedToolsDashboardCanvas(
+            "НИКНЕЙМ",
+            out var contentX,
+            out var contentY,
+            out var contentWidth);
+
         PutWrapped(
             canvas,
             contentX,
-            contentY + 2,
+            contentY,
             contentWidth,
             "Никнейм будет виден в таблице лидеров только после добровольной публикации результата.",
             Palette.Text);
-        CenterWithin(canvas, contentX, contentWidth, contentY + 7, "Введите никнейм:", Palette.Dim);
-        CenterWithin(canvas, contentX, contentWidth, contentY + 9, value + "_", Palette.Bright);
-        CenterWithin(canvas, contentX, contentWidth, contentY + 11, $"До {SpeedNicknameMaximumLength} символов", Palette.Dim);
+        Put(canvas, contentX, contentY + 4, "Введите никнейм:", Palette.Dim);
+        Put(canvas, contentX, contentY + 6, Truncate(value + "_", contentWidth), Palette.Bright);
+        Put(canvas, contentX, contentY + 8, $"До {SpeedNicknameMaximumLength} символов", Palette.Dim);
+
+        DrawSpeedLeaderboardPane(canvas);
         Center(canvas, CanvasHeight - 1, "Enter сохранить   Backspace удалить   Esc отмена", Palette.Dim);
         Render(canvas);
     }
 
     private void RenderSpeedNoticeFrame(string title, string message)
     {
-        var canvas = CreateSpeedToolsCanvas(title, out var contentX, out var contentY, out var contentWidth, out _);
-        PutWrapped(canvas, contentX, contentY + 4, contentWidth, message, Palette.Text);
+        var canvas = CreateSpeedToolsDashboardCanvas(
+            title,
+            out var contentX,
+            out var contentY,
+            out var contentWidth);
+
+        PutWrapped(canvas, contentX, contentY, contentWidth, message, Palette.Text);
         PutWrapped(
             canvas,
             contentX,
-            contentY + 9,
+            contentY + 6,
             contentWidth,
             "UI-ветка не выполняет сетевых запросов и не публикует данные.",
             Palette.Dim);
+
+        DrawSpeedLeaderboardPane(canvas);
         Center(canvas, CanvasHeight - 1, "Enter / Esc — вернуться", Palette.Dim);
         Render(canvas);
     }
 
-    private Cell[,] CreateSpeedToolsCanvas(
-        string title,
-        out int contentX,
-        out int contentY,
-        out int contentWidth,
-        out int contentHeight)
+    private Cell[,] CreateSpeedToolsDashboardCanvas(
+        string leftTitle,
+        out int leftContentX,
+        out int leftContentY,
+        out int leftContentWidth)
     {
         var canvas = CreateCanvas();
-        var boxX = compactLayout ? 1 : 2;
-        var boxY = 2;
-        var boxWidth = Math.Max(20, canvasWidth - (boxX * 2));
-        var boxHeight = Math.Max(16, CanvasHeight - 5);
+        var head = GetAmbientSweepHead();
 
-        DrawBox(canvas, boxX, boxY, boxWidth, boxHeight, title);
-        contentX = boxX + 3;
-        contentY = boxY + 2;
-        contentWidth = Math.Max(1, boxWidth - 6);
-        contentHeight = Math.Max(1, boxHeight - 4);
+        if (compactLayout)
+        {
+            Center(canvas, 1, "IS74W · Скорость и рейтинг", Palette.BrandBright);
+            var boxY = 4;
+            var boxHeight = Math.Min(22, CanvasHeight - boxY - 2);
+            DrawBox(canvas, 1, boxY, Math.Max(20, canvasWidth - 2), boxHeight, leftTitle);
+            leftContentX = 4;
+            leftContentY = boxY + 2;
+            leftContentWidth = Math.Max(1, canvasWidth - 8);
+            return canvas;
+        }
+
+        DrawBanner(canvas, 0, head is null ? BannerMode.Final : BannerMode.AmbientSweep, head ?? 0);
+        Center(canvas, 13, Subtitle, Palette.Dim);
+        DrawBox(canvas, leftPaneX, PaneY, paneWidth, PaneHeight, leftTitle);
+        DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, "ЛИДЕРЫ КАМПУСА");
+
+        leftContentX = leftPaneX + 3;
+        leftContentY = PaneY + 2;
+        leftContentWidth = Math.Max(1, paneWidth - 6);
         return canvas;
     }
 
-    private static void DrawSpeedPageTabs(Cell[,] canvas, int x, int y, int width, int page)
+    private static void DrawSpeedMeasurementPane(Cell[,] canvas, int x, int y, int width)
     {
-        const string measurement = "[1] ЗАМЕР";
-        const string leaderboard = "[2] РЕЙТИНГ";
-        var gap = width >= 50 ? 8 : 3;
-        var total = measurement.Length + gap + leaderboard.Length;
-        var left = x + Math.Max(0, (width - total) / 2);
-        Put(canvas, left, y, measurement, page == 0 ? Palette.BrandBright : Palette.Dim);
-        Put(canvas, left + measurement.Length + gap, y, leaderboard, page == 1 ? Palette.BrandBright : Palette.Dim);
+        DrawLargeSpeedMetric(canvas, x, y, width, "---", Palette.BrandBright);
+        CenterWithin(canvas, x, width, y + 6, "DOWNLOAD · Mbit/s", Palette.Dim);
+
+        Put(canvas, x, y + 7, Truncate("↑ Upload     — Mbit/s", width), Palette.Text);
+        Put(canvas, x, y + 8, Truncate("Ping         — ms", width), Palette.Text);
+        Put(canvas, x, y + 9, Truncate("Jitter       — ms", width), Palette.Text);
+        Put(canvas, x, y + 10, Truncate("Packet loss  — %", width), Palette.Text);
+    }
+
+    private void DrawSpeedLeaderboardPane(Cell[,] canvas)
+    {
+        if (compactLayout)
+        {
+            return;
+        }
+
+        var x = rightPaneX + 3;
+        var y = PaneY + 2;
+        var width = Math.Max(1, paneWidth - 6);
+
+        if (width >= 43)
+        {
+            Put(canvas, x, y, Truncate("#  НИК            ↓      ↑   PING  JIT", width), Palette.Highlight);
+            Put(canvas, x, y + 1, new string('─', Math.Min(width, 41)), Palette.Dim);
+            for (var row = 0; row < 5; row++)
+            {
+                Put(canvas, x, y + 2 + row,
+                    Truncate($"{row + 1,-2} —              —      —      —    —", width), Palette.Text);
+            }
+        }
+        else
+        {
+            Put(canvas, x, y, Truncate("# НИК          ↓   PING  JIT", width), Palette.Highlight);
+            Put(canvas, x, y + 1, new string('─', Math.Min(width, 29)), Palette.Dim);
+            for (var row = 0; row < 5; row++)
+            {
+                Put(canvas, x, y + 2 + row,
+                    Truncate($"{row + 1,-2} —            —     —    —", width), Palette.Text);
+            }
+        }
+
+        Put(canvas, x, y + 8, Truncate($"Ник: {speedNicknameDraft}", width), Palette.Bright);
+        Put(canvas, x, y + 9, Truncate("Ваш результат: ещё не опубликован", width), Palette.Dim);
+        Put(canvas, x, y + 10, Truncate("[2] Обновить  [3] Ник  [4] Опубликовать", width), Palette.Highlight);
     }
 
     private static void DrawLargeSpeedMetric(
@@ -469,9 +468,23 @@ internal sealed partial class InteractiveTerminalUi
             Console.Clear();
             Console.WriteLine("IS74W — Скорость и рейтинг кампуса");
             Console.WriteLine();
-            Console.WriteLine("[1] Измерить скорость");
-            Console.WriteLine("[2] Таблица лидеров кампуса");
-            Console.WriteLine("[3] Никнейм и публикация");
+            Console.WriteLine("ЗАМЕР");
+            Console.WriteLine("  Download   — Mbit/s");
+            Console.WriteLine("  Upload     — Mbit/s");
+            Console.WriteLine("  Ping       — ms");
+            Console.WriteLine("  Jitter     — ms");
+            Console.WriteLine("  Loss       — %");
+            Console.WriteLine();
+            Console.WriteLine("ЛИДЕРЫ КАМПУСА");
+            Console.WriteLine("  #  Ник          ↓   Ping  Jit");
+            Console.WriteLine("  1  —            —     —    —");
+            Console.WriteLine("  2  —            —     —    —");
+            Console.WriteLine("  3  —            —     —    —");
+            Console.WriteLine();
+            Console.WriteLine($"Ник: {speedNicknameDraft}");
+            Console.WriteLine();
+            Console.WriteLine("[1] Начать замер   [2] Обновить рейтинг");
+            Console.WriteLine("[3] Никнейм        [4] Опубликовать");
             Console.WriteLine("[0] Назад");
             Console.WriteLine();
             Console.WriteLine("UI готов; измерение и публикация будут подключены отдельным backend-модулем.");
@@ -482,7 +495,7 @@ internal sealed partial class InteractiveTerminalUi
                 return;
             }
 
-            if (key.KeyChar is '1' or '2' or '3')
+            if (key.KeyChar is '1' or '2' or '4' || key.Key == ConsoleKey.Enter || key.Key == ConsoleKey.R)
             {
                 Console.Clear();
                 Console.WriteLine("Интерфейс готов. Бизнес-логика пока не подключена.");
@@ -497,6 +510,17 @@ internal sealed partial class InteractiveTerminalUi
                     }
                 }
             }
+            else if (key.KeyChar == '3')
+            {
+                Console.Clear();
+                Console.Write("Никнейм: " );
+                var nickname = Console.ReadLine()?.Trim();
+                if (!string.IsNullOrWhiteSpace(nickname))
+                {
+                    speedNicknameDraft = nickname[..Math.Min(nickname.Length, SpeedNicknameMaximumLength)];
+                }
+            }
         }
     }
+
 }

@@ -166,8 +166,9 @@ assert 'private bool menuSelectionInitialized;' in csharp_ui and 'selected = hot
 assert 'CanUseInteractiveSession' in csharp_ui and 'compactLayout' in csharp_ui, 'terminal UI must recover after temporary narrow resize'
 assert 'PrepareForAction(' not in csharp_program, 'menu actions must stay inside the terminal panes instead of reopening the legacy action screen'
 speed_tools_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.SpeedTools.cs').read_text(encoding='utf-8')
-assert 'RunSpeedToolsAsync' in speed_tools_ui and 'Таблица лидеров кампуса' in speed_tools_ui, 'speed tools UI shell missing'
-assert 'Никнейм и публикация' in speed_tools_ui and 'PromptSpeedNicknameAsync' in speed_tools_ui, 'speed publication UI shell missing'
+assert 'RunSpeedToolsAsync' in speed_tools_ui and 'ЛИДЕРЫ КАМПУСА' in speed_tools_ui, 'speed tools UI shell missing'
+assert 'Jitter' in speed_tools_ui and 'Packet loss' in speed_tools_ui, 'speed measurement diagnostics missing'
+assert 'PromptSpeedNicknameAsync' in speed_tools_ui and '[4] Опубликовать' in speed_tools_ui, 'speed publication UI shell missing'
 assert 'UI shell only' in speed_tools_ui and 'backend' in speed_tools_ui, 'speed tools branch must remain UI-only until backend integration'
 launch_settings = (root / 'src' / 'IS74Wifi.App' / 'Properties' / 'launchSettings.json').read_text(encoding='utf-8')
 assert 'IS74Wifi.App (Local Debug)' in launch_settings and 'IS74W_RUN_LOCAL' in launch_settings, 'Visual Studio local-debug profile missing'
