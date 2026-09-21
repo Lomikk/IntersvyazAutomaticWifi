@@ -202,7 +202,7 @@ internal static class AgentContractTests
             Online: online,
             HttpResponseReceived: responseReceived,
             StatusCode: responseReceived ? HttpStatusCode.OK : null,
-            Body: responseReceived ? (online ? "Microsoft Connect Test" : "captive") : null,
+            Body: responseReceived ? (online ? null : "captive") : null,
             FailureKind: failure,
             Elapsed: TimeSpan.Zero);
 

@@ -8,7 +8,8 @@ public sealed class HttpTransport(HttpClient client)
     public async Task<HttpCallResult> SendAsync(
         HttpRequestMessage request,
         TimeSpan timeout,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool readBody = true)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
@@ -20,7 +21,9 @@ public sealed class HttpTransport(HttpClient client)
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 timeoutCts.Token).ConfigureAwait(false);
-            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+            var body = readBody
+                ? await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false)
+                : string.Empty;
             var location = response.Headers.Location;
             var serverDate = response.Headers.Date;
             return HttpCallResult.Success(new HttpResponseData(

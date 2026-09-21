@@ -100,14 +100,14 @@ Exit gate: C# solution builds on `windows-latest` and the executable can run `ve
 
 ### Phase 2 — state, secrets, logging, and platform primitives
 
-Status: **complete**. Windows CI covers typed settings/runtime stores, stable device ID, CurrentUser DPAPI secrets, redacted rotating diagnostics, native WLAN enumeration, exact Microsoft Connect Test parsing, named synchronization primitives, and typed asynchronous HTTP transport. DNS cached-IP resilience remains intentionally deferred to Phase 7. The C# runtime intentionally does not inherit the PowerShell 5.1 `ConvertFrom-SecureString` storage format; the first C# migration requires a one-time account registration instead of carrying PS5-specific secret-format compatibility into the new runtime.
+Status: **complete**. Windows CI covers typed settings/runtime stores, stable device ID, CurrentUser DPAPI secrets, redacted rotating diagnostics, native WLAN enumeration, strict local SUSU connectivity-probe parsing, named synchronization primitives, and typed asynchronous HTTP transport. DNS cached-IP resilience remains intentionally deferred to Phase 7. The C# runtime intentionally does not inherit the PowerShell 5.1 `ConvertFrom-SecureString` storage format; the first C# migration requires a one-time account registration instead of carrying PS5-specific secret-format compatibility into the new runtime.
 
 - Typed configuration/state model.
 - Stable device ID.
 - CurrentUser DPAPI per-user secret storage. PowerShell-alpha secret-file compatibility is explicitly out of scope; migration starts with one fresh registration.
 - Rotating/redacted diagnostic logger with the same privacy guarantees as the PowerShell client.
 - WLAN SSID query via Windows WLAN API.
-- Internet connectivity probe with exact `Microsoft Connect Test` validation.
+- Internet connectivity probe using `http://online.susu.ru/` with redirects disabled; Online requires a `3xx` whose `Location` is exactly `https://online.susu.ru/`.
 - Cross-process synchronization primitives; async authorization uses a named semaphore because Windows mutex ownership is thread-affine.
 
 Exit gate: unit/contract tests cover state persistence, redaction, SSID gating, connectivity probe parsing, and mutex behavior.
@@ -170,17 +170,17 @@ Exit gate: Windows 10 and Windows 11 field tests confirm no terminal window rema
 
 ### Phase 7 — DNS resilience
 
-Status: **implementation complete; field validation pending**. Windows CI covers persisted-cache behavior, cached-IP-first connection order, DNS refresh after a stale cached address, and typed DNS-failure classification. A persisted hostname-to-IP cache and `SocketsHttpHandler.ConnectCallback` allow API, portal, and Microsoft connectivity-probe TCP connections to use a cached physical address without replacing the request hostname. HTTPS therefore retains the original `api.is74.ru` Host/SNI and normal certificate-name validation. Cached addresses are attempted first; failed cached connections fall back to normal DNS and refresh the persisted cache.
+Status: **field validated; cached-IP-first rejected for production**. The C# rewrite implemented a persisted hostname-to-IP cache and `SocketsHttpHandler.ConnectCallback`, but a real Windows captive test showed that the optimization has the wrong latency trade-off for the default path. Ordinary DNS for `api.is74.ru` / `w.is74.ru` cost only tens of milliseconds, while one stale black-holed cached address consumed about the full `700 ms` cached-connect budget before DNS fallback.
 
-This is intentionally part of the C# rewrite rather than another PowerShell workaround.
+Production therefore uses ordinary system DNS and normal hostname-based connections. The cached/direct-IP connector remains only as experimental/diagnostic code and is not wired into `ApplicationRuntime`, API/portal/probe `HttpClient` profiles, agent wake-ups, or registration.
 
-- Cache resolved addresses for `api.is74.ru` and `w.is74.ru` while normal Internet is available.
-- Keep the original hostname in the request URI/HTTP Host semantics.
-- For HTTPS API connections, preserve TLS SNI and certificate hostname validation while using a cached physical IP.
-- Fall back to ordinary DNS and refresh the cache when a stored address stops working.
-- Never turn DNS failure into a raw user-facing exception string.
+- No cached-IP attempt occurs before system DNS in normal operation.
+- No background DNS warmer runs in the production agent.
+- `api.is74.ru` keeps ordinary HTTPS hostname/SNI/certificate-name semantics.
+- DNS failures remain typed transport failures rather than raw user-facing exceptions.
+- Direct-IP experiments may still be used separately when investigating a concrete captive-DNS failure, but they are not a production invariant.
 
-Exit gate: integration tests prove cached-IP connection behavior and fallback semantics; a field test reproduces captive DNS failure without breaking push polling.
+Exit gate: field measurements demonstrate that default DNS is fast enough on the target captive network and that stale cached-IP penalty is materially worse than the measured direct-IP gain. This gate is complete.
 
 ### Phase 8 — packaging and migration release
 

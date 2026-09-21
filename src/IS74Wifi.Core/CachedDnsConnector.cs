@@ -14,11 +14,13 @@ public sealed class CachedDnsUnavailableException(string host, Exception? innerE
 
 public sealed class CachedDnsConnector : IAddressCacheWarmer
 {
+    // Experimental/diagnostic connector. Production HttpClient profiles do not
+    // wire this into the authorization path after field testing showed that a
+    // stale cached address can cost far more than ordinary captive DNS.
     public static readonly string[] DefaultHosts =
     [
         "api.is74.ru",
-        "w.is74.ru",
-        "www.msftconnecttest.com"
+        "w.is74.ru"
     ];
 
     private readonly HostAddressCache cache;

@@ -1,6 +1,8 @@
 # C# Wi-Fi authorization timing audit
 
-This note records a source-level audit of the current C# authorization path. It focuses on when the background agent wakes, when `stepOne` is allowed to fire, and which transport behaviours can add latency. It is not a new protocol experiment: protocol facts still come from `docs/protocol.md` and the PowerShell experiments.
+This note records a source-level audit of the current C# authorization path. It focuses on when the background agent wakes, when `stepOne` is allowed to fire, and which transport behaviours can add latency. Protocol facts come from `docs/protocol.md` and the PowerShell/field experiments.
+
+> Update after field validation: cached-IP-first/direct-connect is no longer part of the production C# path. The historical cache fixes below describe an earlier implementation that was subsequently disconnected after real captive measurements showed a small direct-IP gain versus a much larger stale-IP penalty. Production now uses ordinary system DNS. The primary Internet probe is local `http://online.susu.ru/`, not Microsoft Connect Test.
 
 ## Current trigger model
 
@@ -8,7 +10,7 @@ The long-running per-user agent does **not** subscribe to a WLAN/network-change 
 
 - far before the predicted 24-hour edge: sleep up to `AgentPollSeconds` (15 s by default); no Internet/captive probe is performed;
 - from `expiry - 10 s` through `expiry + 10 s`: wake every 250 ms by default;
-- before the exact expiry, two nearby Microsoft Connect Test responses are required before an early `stepOne` is allowed;
+- before the exact expiry, two nearby local SUSU connectivity-probe responses are required before an early `stepOne` is allowed;
 - at/after the predicted expiry, the timer itself is authoritative and the agent does not wait for an Internet probe before entering the authorization flow;
 - once overdue and outside the guard, a machine that is not currently on `Campus Wi-Fi*` wakes roughly once per second, so joining the target SSID after expiry is noticed quickly.
 
@@ -26,25 +28,25 @@ SSID gate
 
 The baseline is intentionally completed before `stepOne`; otherwise a newly generated Wi-Fi code could be absorbed into the baseline and missed. Polls are launched at the validated absolute offsets and do not wait for older poll responses. A fresh code can therefore advance directly to `stepTwo` even while the browser-facing `stepOne` response is still pending.
 
-## Timing defects found and corrected in this audit
+## Historical timing defects found in the pre-field-validation implementation
 
 ### 1. Background DNS warming could block the only agent loop
 
 Before the guard, `AgentService` awaited `WarmKnownHostsAsync`. The previous implementation resolved tracked hosts sequentially with no warm-only timeout. A slow/wedged system DNS lookup could therefore keep one `TickAsync` alive long enough to miss the expected expiry edge.
 
-The warmer is now best-effort, parallel across stale tracked hosts, and bounded to one second per warm lookup. A failed warm remains non-fatal; the real request path still performs its normal cached-IP/DNS fallback.
+That implementation was initially hardened with parallel bounded warmups. Field testing later rejected cached-IP-first for production entirely, so the current agent performs no DNS warmup before the guard and the production request path uses ordinary system DNS.
 
 ### 2. A stale multi-address cache multiplied the cached-connect penalty
 
 The DNS connector previously applied the 700 ms cached-connect timeout **per cached address**. With several stale A/AAAA records this could spend most or all of the 3 s baseline timeout before ordinary DNS was attempted.
 
-The 700 ms value is now a budget for the whole cached-address phase. Fast failures can still try another cached address, but one black-holed address cannot multiply the penalty by the number of cached records.
+The 700 ms value was changed to a budget for the whole cached-address phase. Field testing then showed that even one black-holed cached address can cost roughly the whole ~700 ms before DNS, while ordinary DNS cost only tens of milliseconds. Production therefore no longer enters a cached-address phase at all.
 
 ### 3. DNS-cache persistence could break a live request
 
 On a DNS refresh the connector persisted the resolved addresses on the live connection path. A local cache-file write problem could fail the HTTP request even though DNS itself had succeeded.
 
-The connector now updates the persisted cache only after a fresh address has actually connected, and that persistence is best-effort. Cache maintenance must not turn a working network path into an authorization failure.
+The connector was hardened to persist only after a successful fresh connection and to treat persistence as best-effort. The connector is now retained only for experiments/diagnostics and is not wired into production `HttpClient` instances.
 
 ### 4. A portal DNS failure could waste a `stepOne` attempt and wait the full mailbox schedule
 
@@ -80,7 +82,7 @@ A future hardening pass should make the predicted 24-hour timer one signal among
 
 ### Baseline latency is unavoidable but visible
 
-The automatic trigger enters `AuthorizationFlow` and must complete one baseline API request before `stepOne`. This is required for freshness correctness. Normally the persisted IP cache and long-lived API `HttpClient` keep it small, but a cold TLS connection or failing/stale network can still add latency before `T=0` of the proven `stepOne`/polling schedule. The DNS fixes above bound the avoidable stale-cache component; the baseline itself should not be moved after or raced with `stepOne`.
+The automatic trigger enters `AuthorizationFlow` and must complete one baseline API request before `stepOne`. This is required for freshness correctness. Normally the long-lived API `HttpClient` and ordinary system DNS keep it small, but a cold TLS connection or failing network can still add latency before `T=0` of the proven `stepOne`/polling schedule. The baseline itself should not be moved after or raced with `stepOne`.
 
 ## Validation available in this workspace
 

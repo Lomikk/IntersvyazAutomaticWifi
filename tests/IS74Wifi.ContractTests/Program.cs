@@ -394,23 +394,38 @@ static HttpResponseMessage RedirectResponse(HttpStatusCode status, string locati
 
 static async Task TestInternetProbeAsync()
 {
-    using var onlineClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+    using var onlineClient = new HttpClient(new DelegateHandler((request, _) =>
     {
-        Content = new StringContent("Microsoft Connect Test\r\n")
-    })));
+        Assert(request.RequestUri == InternetConnectivityProbe.CanonicalUri,
+            "SUSU probe URI changed");
+        var response = new HttpResponseMessage(HttpStatusCode.Found);
+        response.Headers.Location = new Uri("https://online.susu.ru/");
+        return Task.FromResult(response);
+    }));
     var online = await new InternetConnectivityProbe(new HttpTransport(onlineClient))
         .ProbeAsync(TimeSpan.FromSeconds(1));
-    Assert(online.Online, "exact Microsoft Connect Test response was rejected");
+    Assert(online.Online, "validated SUSU HTTP->HTTPS redirect was rejected");
     Assert(online.HttpResponseReceived, "HTTP response was not recorded");
+    Assert(online.Body is null, "timing-critical SUSU probe unexpectedly retained a response body");
 
     using var captiveClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
     {
-        Content = new StringContent("<html>captive portal</html>")
+        Content = new StringContent("<html><script>window.location.href='http://w.is74.ru/'</script></html>")
     })));
     var captive = await new InternetConnectivityProbe(new HttpTransport(captiveClient))
         .ProbeAsync(TimeSpan.FromSeconds(1));
-    Assert(!captive.Online, "captive HTML was accepted as Internet access");
+    Assert(!captive.Online, "InterSvyaz captive HTTP 200 was accepted as Internet access");
     Assert(captive.HttpResponseReceived, "captive HTTP response should remain observable");
+
+    using var wrongRedirectClient = new HttpClient(new DelegateHandler((_, _) =>
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.Found);
+        response.Headers.Location = new Uri("http://w.is74.ru/");
+        return Task.FromResult(response);
+    }));
+    var wrongRedirect = await new InternetConnectivityProbe(new HttpTransport(wrongRedirectClient))
+        .ProbeAsync(TimeSpan.FromSeconds(1));
+    Assert(!wrongRedirect.Online, "unexpected redirect target was accepted as Internet access");
 
     using var dnsClient = new HttpClient(new DelegateHandler((_, _) =>
         throw new HttpRequestException(HttpRequestError.NameResolutionError, "host unknown", null, null)));

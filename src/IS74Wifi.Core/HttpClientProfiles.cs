@@ -4,7 +4,7 @@ namespace IS74Wifi.Core;
 
 public static class HttpClientProfiles
 {
-    public static HttpClient CreateApiClient(CachedDnsConnector? connector = null)
+    public static HttpClient CreateApiClient()
     {
         var handler = new SocketsHttpHandler
         {
@@ -13,18 +13,13 @@ public static class HttpClientProfiles
             UseProxy = false
         };
         handler.SslOptions.CertificateRevocationCheckMode = X509RevocationMode.NoCheck;
-        if (connector is not null)
-        {
-            handler.ConnectCallback = connector.ConnectAsync;
-        }
-
         return new HttpClient(handler, disposeHandler: true)
         {
             Timeout = Timeout.InfiniteTimeSpan
         };
     }
 
-    public static HttpClient CreatePortalClient(CachedDnsConnector? connector = null)
+    public static HttpClient CreatePortalClient()
     {
         var handler = new SocketsHttpHandler
         {
@@ -33,18 +28,13 @@ public static class HttpClientProfiles
             UseProxy = false
         };
         handler.SslOptions.CertificateRevocationCheckMode = X509RevocationMode.NoCheck;
-        if (connector is not null)
-        {
-            handler.ConnectCallback = connector.ConnectAsync;
-        }
-
         return new HttpClient(handler, disposeHandler: true)
         {
             Timeout = Timeout.InfiniteTimeSpan
         };
     }
 
-    public static HttpClient CreateInternetProbeClient(CachedDnsConnector? connector = null)
+    public static HttpClient CreateInternetProbeClient()
     {
         var handler = new SocketsHttpHandler
         {
@@ -52,11 +42,6 @@ public static class HttpClientProfiles
             UseProxy = false,
             MaxConnectionsPerServer = 2
         };
-        if (connector is not null)
-        {
-            handler.ConnectCallback = connector.ConnectAsync;
-        }
-
         return new HttpClient(handler, disposeHandler: true)
         {
             Timeout = Timeout.InfiniteTimeSpan

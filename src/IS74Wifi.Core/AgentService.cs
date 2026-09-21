@@ -50,7 +50,6 @@ public sealed class AgentService(
     AppSettings settings,
     DiagnosticLogger logger,
     TimeProvider? timeProvider = null,
-    IAddressCacheWarmer? addressCacheWarmer = null,
     IAgentNotificationSink? notifications = null)
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
@@ -84,10 +83,6 @@ public sealed class AgentService(
 
         if (now < guardStart)
         {
-            if (addressCacheWarmer is not null)
-            {
-                await addressCacheWarmer.WarmKnownHostsAsync(TimeSpan.FromHours(1), cancellationToken).ConfigureAwait(false);
-            }
             return;
         }
 

@@ -670,7 +670,7 @@ internal static class AuthorizationFlowContractTests
                 Online: isOnline,
                 HttpResponseReceived: true,
                 StatusCode: HttpStatusCode.OK,
-                Body: isOnline ? "Microsoft Connect Test" : "captive",
+                Body: isOnline ? null : "captive",
                 FailureKind: TransportFailureKind.None,
                 Elapsed: TimeSpan.Zero));
         }

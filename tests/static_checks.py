@@ -127,6 +127,16 @@ assert 'Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContin
 assert 'Wait-IS74ScheduledTaskStopped' in module, 'autostart replacement must wait for the old agent to stop'
 assert 'tests\\critical_path_contract.ps1' not in module  # sanity: tests stay outside runtime
 
+# C# production networking policy: use ordinary system DNS and the validated local SUSU probe.
+csharp_runtime = (root / 'src' / 'IS74Wifi.App' / 'ApplicationRuntime.cs').read_text(encoding='utf-8')
+csharp_http_profiles = (root / 'src' / 'IS74Wifi.Core' / 'HttpClientProfiles.cs').read_text(encoding='utf-8')
+csharp_internet_probe = (root / 'src' / 'IS74Wifi.Core' / 'InternetConnectivityProbe.cs').read_text(encoding='utf-8')
+assert 'new CachedDnsConnector' not in csharp_runtime and 'HostAddressCache' not in csharp_runtime, 'production runtime must not wire cached-IP/direct-connect'
+assert 'ConnectCallback' not in csharp_http_profiles, 'production HttpClient profiles must use ordinary system DNS'
+assert 'http://online.susu.ru/' in csharp_internet_probe and 'https://online.susu.ru/' in csharp_internet_probe, 'local SUSU connectivity probe contract missing'
+assert 'readBody: false' in csharp_internet_probe, 'SUSU success probe must be headers-only'
+assert 'www.msftconnecttest.com' not in csharp_internet_probe, 'Microsoft Connect Test must not remain the primary C# probe'
+
 # C# terminal UI stays a real console renderer rather than a web/TUI dependency.
 csharp_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.cs').read_text(encoding='utf-8')
 csharp_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8')

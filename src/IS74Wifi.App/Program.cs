@@ -188,7 +188,6 @@ internal static class Program
         app.Logger.Write(DiagnosticLevel.Info,
             $"registration.complete accessBegin={session.AccessBegin ?? ""} accessEnd={session.AccessEnd ?? ""}");
         Console.WriteLine("Регистрация завершена. Данные авторизации сохранены для текущего пользователя Windows.");
-        await app.Dns.WarmKnownHostsAsync(TimeSpan.Zero).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(session.AccessEnd))
         {
             Console.WriteLine($"Сессия API действует до: {session.AccessEnd}");
@@ -1723,10 +1722,6 @@ internal static class Program
             app.Logger.Write(DiagnosticLevel.Info,
                 $"registration.complete accessBegin={session.AccessBegin ?? ""} accessEnd={session.AccessEnd ?? ""}");
 
-            history.Start("Подготавливаю сетевые адреса...");
-            ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, GetInteractiveStatusSnapshot());
-            await app.Dns.WarmKnownHostsAsync(TimeSpan.Zero).ConfigureAwait(false);
-            history.CompleteActive("Сетевые адреса подготовлены");
             history.AddSuccess("Регистрация завершена");
 
             await ui.ShowActionHistoryAsync(
