@@ -148,6 +148,10 @@ assert '"Отключить автоавторизацию" : "Включить 
 assert 'registered ? "Сбросить регистрацию" : "Зарегистрировать устройство"' in csharp_ui
 assert "new MenuItem('4', \"Подробное состояние\", InteractiveMenuAction.ShowDetailedStatus)" in csharp_ui
 assert 'TargetView' not in csharp_ui, 'rich UI must not reintroduce speculative submenu navigation'
+assert 'PromptDigitsAsync' in csharp_ui and 'ConsoleKey.Escape' in csharp_ui, 'interactive registration input must be cancellable in-pane'
+assert 'lastRenderedCanvas' in csharp_ui and 'cell.Equals(lastRenderedCanvas' in csharp_ui, 'terminal renderer must diff frames to avoid full-screen shimmer'
+assert 'CanUseInteractiveSession' in csharp_ui and 'compactLayout' in csharp_ui, 'terminal UI must recover after temporary narrow resize'
+assert 'PrepareForAction(' not in csharp_program, 'menu actions must stay inside the terminal panes instead of reopening the legacy action screen'
 launch_settings = (root / 'src' / 'IS74Wifi.App' / 'Properties' / 'launchSettings.json').read_text(encoding='utf-8')
 assert 'IS74Wifi.App (Local Debug)' in launch_settings and 'IS74W_RUN_LOCAL' in launch_settings, 'Visual Studio local-debug profile missing'
 

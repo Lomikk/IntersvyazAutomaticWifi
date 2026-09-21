@@ -39,13 +39,37 @@ internal sealed class InteractiveTerminalUi
     private int leftPaneX = 1;
     private int rightPaneX = 41;
     private int paneWidth = 37;
+    private bool compactLayout;
     private DateTimeOffset nextAmbientSweepUtc = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(14);
     private DateTimeOffset? ambientSweepStartedUtc;
+    private Cell[,]? lastRenderedCanvas;
+    private int lastRenderedLeft = -1;
+    private int lastRenderedTerminalWidth = -1;
 
     public InteractiveTerminalUi(string productVersion)
     {
         this.productVersion = productVersion;
         ansi = ConsoleSession.SupportsVirtualTerminal;
+    }
+
+    private bool CanUseInteractiveSession
+    {
+        get
+        {
+            if (Console.IsInputRedirected || Console.IsOutputRedirected)
+            {
+                return false;
+            }
+
+            try
+            {
+                return Console.WindowWidth >= 30 && Console.WindowHeight >= CanvasHeight;
+            }
+            catch
+            {
+                return false;
+            }
+        }
     }
 
     public bool CanUseRichLayout
@@ -77,7 +101,7 @@ internal sealed class InteractiveTerminalUi
         status = initialStatus;
         selected = 0;
 
-        if (!CanUseRichLayout)
+        if (!CanUseInteractiveSession)
         {
             return RunCompactMenu(initialStatus);
         }
@@ -86,7 +110,7 @@ internal sealed class InteractiveTerminalUi
         PrepareInteractiveConsole();
         try
         {
-            if (showReveal)
+            if (showReveal && CanUseRichLayout)
             {
                 await PlayInitialRevealAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -99,12 +123,9 @@ internal sealed class InteractiveTerminalUi
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (!CanUseRichLayout)
-                {
-                    RestoreConsole();
-                    return RunCompactMenu(status ?? initialStatus);
-                }
-
+                // Stay in the interactive loop while the user resizes the terminal.
+                // Falling back to the blocking compact menu here made a temporary
+                // narrow resize permanent until the whole menu was restarted.
                 UpdateLayout();
 
                 if (refreshedStatusTask is { IsCompletedSuccessfully: true })
@@ -274,7 +295,7 @@ internal sealed class InteractiveTerminalUi
 
     public void ShowBusyMessage(string title, string message, InteractiveStatusSnapshot currentStatus)
     {
-        if (!CanUseRichLayout)
+        if (!CanUseInteractiveSession)
         {
             Console.Clear();
             Console.WriteLine($"=== {title} ===");
@@ -282,39 +303,229 @@ internal sealed class InteractiveTerminalUi
             return;
         }
 
-        UpdateLayout();
-        PrepareInteractiveConsole();
         status = currentStatus;
-        var canvas = CreateCanvas();
-        DrawBanner(canvas, 0, BannerMode.Final, 0);
-        Center(canvas, 13, Subtitle, Palette.Dim);
-        DrawBox(canvas, leftPaneX, PaneY, paneWidth, PaneHeight, title);
-        PutWrapped(canvas, leftPaneX + 3, PaneY + 3, paneWidth - 6, message, Palette.Bright);
-        DrawStatusPane(canvas);
-        Center(canvas, 29, "Пожалуйста, подождите...", Palette.Dim);
+        UpdateLayout();
+        PrepareInteractiveConsole(clear: false);
+        var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
+        PutWrapped(canvas, contentX, contentY + 1, contentWidth, message, Palette.Bright);
+        Center(canvas, CanvasHeight - 1, "Пожалуйста, подождите...", Palette.Dim);
         Render(canvas);
         RestoreConsole(showCursor: false);
     }
 
-    public void PrepareForAction(string title)
+    public async Task<string?> PromptDigitsAsync(
+        string title,
+        string prompt,
+        string prefix,
+        int minimumDigits,
+        int maximumDigits,
+        InteractiveStatusSnapshot currentStatus,
+        CancellationToken cancellationToken = default)
     {
-        RestoreConsole();
-        Console.Clear();
-        Console.WriteLine($"IS74W · {title}");
-        Console.WriteLine(new string('─', Math.Min(60, Math.Max(10, title.Length + 10))));
-        Console.WriteLine();
-    }
-
-    public void PauseAfterAction()
-    {
-        if (Console.IsInputRedirected)
+        if (minimumDigits < 0 || maximumDigits < minimumDigits)
         {
-            return;
+            throw new ArgumentOutOfRangeException(nameof(maximumDigits));
         }
 
-        Console.WriteLine();
-        Console.Write("Нажмите любую клавишу, чтобы вернуться в меню...");
-        _ = Console.ReadKey(intercept: true);
+        status = currentStatus;
+        var digits = new StringBuilder();
+        PrepareInteractiveConsole(clear: false);
+        try
+        {
+            var keyTask = ReadKeyAsync();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                UpdateLayout();
+                UpdateAmbientSweepState();
+                RenderPromptFrame(title, prompt, prefix, digits.ToString(), minimumDigits, maximumDigits);
+
+                var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
+                {
+                    continue;
+                }
+
+                var key = await keyTask.ConfigureAwait(false);
+                if (key.Key == ConsoleKey.Escape)
+                {
+                    return null;
+                }
+
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (digits.Length > 0)
+                    {
+                        digits.Length--;
+                    }
+                    keyTask = ReadKeyAsync();
+                    continue;
+                }
+
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    if (digits.Length >= minimumDigits)
+                    {
+                        return digits.ToString();
+                    }
+                    keyTask = ReadKeyAsync();
+                    continue;
+                }
+
+                if (char.IsAsciiDigit(key.KeyChar) && digits.Length < maximumDigits)
+                {
+                    digits.Append(key.KeyChar);
+                }
+                keyTask = ReadKeyAsync();
+            }
+        }
+        finally
+        {
+            RestoreConsole();
+        }
+    }
+
+    public async Task ShowMessageAsync(
+        string title,
+        string message,
+        InteractiveStatusSnapshot currentStatus,
+        bool isError = false,
+        CancellationToken cancellationToken = default)
+    {
+        status = currentStatus;
+        PrepareInteractiveConsole(clear: false);
+        try
+        {
+            var keyTask = ReadKeyAsync();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                UpdateLayout();
+                UpdateAmbientSweepState();
+                RenderMessageFrame(title, message, isError);
+
+                var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
+                {
+                    continue;
+                }
+
+                var key = await keyTask.ConfigureAwait(false);
+                if (key.Key is ConsoleKey.Enter or ConsoleKey.Escape)
+                {
+                    return;
+                }
+                keyTask = ReadKeyAsync();
+            }
+        }
+        finally
+        {
+            RestoreConsole();
+        }
+    }
+
+    public async Task<bool> ConfirmAsync(
+        string title,
+        string message,
+        string confirmLabel,
+        InteractiveStatusSnapshot currentStatus,
+        CancellationToken cancellationToken = default)
+    {
+        status = currentStatus;
+        selected = 0;
+        PrepareInteractiveConsole(clear: false);
+        try
+        {
+            var keyTask = ReadKeyAsync();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                UpdateLayout();
+                UpdateAmbientSweepState();
+                RenderConfirmFrame(title, message, confirmLabel);
+
+                var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
+                {
+                    continue;
+                }
+
+                var key = await keyTask.ConfigureAwait(false);
+                if (key.Key is ConsoleKey.UpArrow or ConsoleKey.DownArrow)
+                {
+                    selected = selected == 0 ? 1 : 0;
+                    keyTask = ReadKeyAsync();
+                    continue;
+                }
+                if (key.Key == ConsoleKey.Escape || key.KeyChar == '0')
+                {
+                    return false;
+                }
+                if (key.KeyChar == '1')
+                {
+                    return true;
+                }
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    return selected == 0;
+                }
+                keyTask = ReadKeyAsync();
+            }
+        }
+        finally
+        {
+            RestoreConsole();
+        }
+    }
+
+    public async Task ShowDetailsAsync(
+        string title,
+        IReadOnlyList<string> lines,
+        InteractiveStatusSnapshot currentStatus,
+        CancellationToken cancellationToken = default)
+    {
+        status = currentStatus;
+        var offset = 0;
+        PrepareInteractiveConsole(clear: false);
+        try
+        {
+            var keyTask = ReadKeyAsync();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                UpdateLayout();
+                UpdateAmbientSweepState();
+                var visibleRows = compactLayout ? 15 : PaneHeight - 4;
+                var maxOffset = Math.Max(0, lines.Count - visibleRows);
+                offset = Math.Clamp(offset, 0, maxOffset);
+                RenderDetailsFrame(title, lines, offset, visibleRows);
+
+                var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
+                {
+                    continue;
+                }
+
+                var key = await keyTask.ConfigureAwait(false);
+                if (key.Key is ConsoleKey.Enter or ConsoleKey.Escape)
+                {
+                    return;
+                }
+                if (key.Key == ConsoleKey.UpArrow)
+                {
+                    offset = Math.Max(0, offset - 1);
+                }
+                else if (key.Key == ConsoleKey.DownArrow)
+                {
+                    offset = Math.Min(maxOffset, offset + 1);
+                }
+                keyTask = ReadKeyAsync();
+            }
+        }
+        finally
+        {
+            RestoreConsole();
+        }
     }
 
     private InteractiveMenuAction RunCompactMenu(InteractiveStatusSnapshot snapshot)
@@ -490,8 +701,104 @@ internal sealed class InteractiveTerminalUi
         }
     }
 
+    private void RenderPromptFrame(
+        string title,
+        string prompt,
+        string prefix,
+        string digits,
+        int minimumDigits,
+        int maximumDigits)
+    {
+        var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
+        PutWrapped(canvas, contentX, contentY, contentWidth, prompt, Palette.Text);
+        Put(canvas, contentX, contentY + 3, Truncate(prefix + digits + "_", contentWidth), Palette.Bright);
+        var requirement = minimumDigits == maximumDigits
+            ? $"Нужно цифр: {minimumDigits}"
+            : $"Цифр: {minimumDigits}–{maximumDigits}";
+        Put(canvas, contentX, contentY + 5, requirement, Palette.Dim);
+        Center(canvas, CanvasHeight - 1, "Enter продолжить   Backspace удалить   Esc отмена", Palette.Dim);
+        Render(canvas);
+    }
+
+    private void RenderMessageFrame(string title, string message, bool isError)
+    {
+        var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
+        PutWrapped(canvas, contentX, contentY, contentWidth, message, isError ? Palette.Bright : Palette.Text);
+        Center(canvas, CanvasHeight - 1, "Enter / Esc — вернуться", Palette.Dim);
+        Render(canvas);
+    }
+
+    private void RenderConfirmFrame(string title, string message, string confirmLabel)
+    {
+        var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
+        PutWrapped(canvas, contentX, contentY, contentWidth, message, Palette.Text);
+        DrawSelectable(canvas, contentX, contentY + 5, '1', confirmLabel, selected == 0);
+        DrawSelectable(canvas, contentX, contentY + 6, '0', "Отмена", selected == 1);
+        Center(canvas, CanvasHeight - 1, "↑ ↓ выбрать   Enter продолжить   1/0 сразу   Esc отмена", Palette.Dim);
+        Render(canvas);
+    }
+
+    private void RenderDetailsFrame(
+        string title,
+        IReadOnlyList<string> lines,
+        int offset,
+        int visibleRows)
+    {
+        var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
+        var count = Math.Min(visibleRows, Math.Max(0, lines.Count - offset));
+        for (var i = 0; i < count; i++)
+        {
+            Put(canvas, contentX, contentY + i, Truncate(lines[offset + i], contentWidth), Palette.Text);
+        }
+
+        if (lines.Count > visibleRows)
+        {
+            PutRightAligned(canvas, contentX, contentX + contentWidth, contentY + visibleRows,
+                $"{offset + 1}–{offset + count} / {lines.Count}", Palette.Dim);
+        }
+        Center(canvas, CanvasHeight - 1, "↑ ↓ прокрутка   Enter / Esc — вернуться", Palette.Dim);
+        Render(canvas);
+    }
+
+    private Cell[,] CreateActionCanvas(
+        string title,
+        out int contentX,
+        out int contentY,
+        out int contentWidth)
+    {
+        var canvas = CreateCanvas();
+        var head = GetAmbientSweepHead();
+
+        if (compactLayout)
+        {
+            Center(canvas, 1, "IS74W · InterSvyaz Wi-Fi Auth", Palette.BrandBright);
+            var boxY = 4;
+            var boxHeight = Math.Min(22, CanvasHeight - boxY - 2);
+            DrawBox(canvas, 1, boxY, Math.Max(20, canvasWidth - 2), boxHeight, title);
+            contentX = 4;
+            contentY = boxY + 2;
+            contentWidth = Math.Max(10, canvasWidth - 8);
+            return canvas;
+        }
+
+        DrawBanner(canvas, 0, head is null ? BannerMode.Final : BannerMode.AmbientSweep, head ?? 0);
+        Center(canvas, 13, Subtitle, Palette.Dim);
+        DrawBox(canvas, leftPaneX, PaneY, paneWidth, PaneHeight, title);
+        DrawStatusPane(canvas);
+        contentX = leftPaneX + 3;
+        contentY = PaneY + 2;
+        contentWidth = paneWidth - 6;
+        return canvas;
+    }
+
     private void RenderInteractiveFrame()
     {
+        if (compactLayout)
+        {
+            RenderCompactInteractiveFrame();
+            return;
+        }
+
         var canvas = CreateCanvas();
         var head = GetAmbientSweepHead();
         DrawBanner(canvas, 0, head is null ? BannerMode.Final : BannerMode.AmbientSweep, head ?? 0);
@@ -499,6 +806,27 @@ internal sealed class InteractiveTerminalUi
         DrawLeftPane(canvas);
         DrawStatusPane(canvas);
         Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   1–7/0 сразу   Esc назад   R reveal", Palette.Dim);
+        Render(canvas);
+    }
+
+    private void RenderCompactInteractiveFrame()
+    {
+        var canvas = CreateCanvas();
+        Center(canvas, 1, "IS74W · InterSvyaz Wi-Fi Auth", Palette.BrandBright);
+
+        var s = status;
+        if (s is not null)
+        {
+            Center(canvas, 3,
+                $"Интернет: {FormatInternet(s.InternetAvailable)}   Автовход: {(s.AutomaticAuthorizationEnabled ? "вкл ●" : "выкл ○")}",
+                Palette.Dim);
+        }
+
+        var boxY = 5;
+        var boxHeight = Math.Min(20, CanvasHeight - boxY - 2);
+        DrawBox(canvas, 1, boxY, Math.Max(20, canvasWidth - 2), boxHeight, "МЕНЮ");
+        DrawCurrentItems(canvas, boxY + 2);
+        Center(canvas, CanvasHeight - 1, "↑ ↓   Enter   1–7/0   R reveal", Palette.Dim);
         Render(canvas);
     }
 
@@ -719,9 +1047,10 @@ internal sealed class InteractiveTerminalUi
                     var absolute = Math.Abs(distance);
                     color = absolute switch
                     {
-                        < 0.8 => Palette.Highlight,
-                        < 2.5 => Palette.BrandBright,
-                        < 5 => Palette.Brand,
+                        < 0.9 => Palette.Bright,
+                        < 2.4 => Palette.Highlight,
+                        < 4.8 => Palette.BrandBright,
+                        < 7.0 => Palette.Brand,
                         _ => Palette.Brand
                     };
                 }
@@ -792,51 +1121,112 @@ internal sealed class InteractiveTerminalUi
     {
         var width = canvas.GetLength(1);
         var height = canvas.GetLength(0);
-        var output = new StringBuilder(height * (width + 48));
+        var terminalWidth = GetWindowWidthSafe();
+        var fullRender = lastRenderedCanvas is null ||
+                         lastRenderedCanvas.GetLength(0) != height ||
+                         lastRenderedCanvas.GetLength(1) != width ||
+                         lastRenderedLeft != renderLeft ||
+                         lastRenderedTerminalWidth != terminalWidth;
+
+        var output = new StringBuilder(height * (fullRender ? width + 48 : 32));
         Palette? active = null;
-        for (var y = 0; y < height; y++)
+
+        if (fullRender)
         {
-            output.Append("\u001b[").Append(y + 1).Append(";1H\u001b[2K");
-            output.Append("\u001b[").Append(y + 1).Append(';').Append(renderLeft + 1).Append('H');
-            active = null;
-            for (var x = 0; x < width; x++)
+            for (var y = 0; y < height; y++)
             {
-                var cell = canvas[y, x];
-                if (active != cell.Color)
+                output.Append("\u001b[").Append(y + 1).Append(";1H\u001b[2K");
+                output.Append("\u001b[").Append(y + 1).Append(';').Append(renderLeft + 1).Append('H');
+                active = null;
+                for (var x = 0; x < width; x++)
                 {
-                    output.Append(ToAnsi(cell.Color));
-                    active = cell.Color;
+                    var cell = canvas[y, x];
+                    if (active != cell.Color)
+                    {
+                        output.Append(ToAnsi(cell.Color));
+                        active = cell.Color;
+                    }
+                    output.Append(cell.Character);
                 }
-                output.Append(cell.Character);
             }
         }
+        else
+        {
+            // Only repaint cells that actually changed. Redrawing and clearing the
+            // complete banner at 60 FPS made static glyphs appear to shimmer in
+            // Windows Terminal even though their coordinates never moved.
+            for (var y = 0; y < height; y++)
+            {
+                for (var x = 0; x < width; x++)
+                {
+                    var cell = canvas[y, x];
+                    if (cell.Equals(lastRenderedCanvas![y, x]))
+                    {
+                        continue;
+                    }
+
+                    output.Append("\u001b[").Append(y + 1).Append(';').Append(renderLeft + x + 1).Append('H');
+                    if (active != cell.Color)
+                    {
+                        output.Append(ToAnsi(cell.Color));
+                        active = cell.Color;
+                    }
+                    output.Append(cell.Character);
+                }
+            }
+        }
+
         output.Append("\u001b[0m");
         Console.Write(output.ToString());
+        RememberRenderedCanvas(canvas, terminalWidth);
     }
 
     private void RenderConsoleColors(Cell[,] canvas)
     {
         var width = canvas.GetLength(1);
         var height = canvas.GetLength(0);
+        var terminalWidth = GetWindowWidthSafe();
+        var fullRender = lastRenderedCanvas is null ||
+                         lastRenderedCanvas.GetLength(0) != height ||
+                         lastRenderedCanvas.GetLength(1) != width ||
+                         lastRenderedLeft != renderLeft ||
+                         lastRenderedTerminalWidth != terminalWidth;
+
+        if (fullRender)
+        {
+            for (var y = 0; y < height; y++)
+            {
+                try
+                {
+                    Console.SetCursorPosition(0, y);
+                    Console.Write(new string(' ', Math.Max(1, terminalWidth - 1)));
+                }
+                catch
+                {
+                }
+            }
+        }
+
         Palette? active = null;
         for (var y = 0; y < height; y++)
         {
-            try
-            {
-                Console.SetCursorPosition(0, y);
-                Console.Write(new string(' ', Math.Max(1, Console.WindowWidth - 1)));
-                Console.SetCursorPosition(renderLeft, y);
-            }
-            catch
-            {
-                Console.Clear();
-                Console.SetCursorPosition(renderLeft, y);
-            }
-
-            active = null;
             for (var x = 0; x < width; x++)
             {
                 var cell = canvas[y, x];
+                if (!fullRender && cell.Equals(lastRenderedCanvas![y, x]))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    Console.SetCursorPosition(renderLeft + x, y);
+                }
+                catch
+                {
+                    continue;
+                }
+
                 if (active != cell.Color)
                 {
                     Console.ForegroundColor = ToConsoleColor(cell.Color);
@@ -846,6 +1236,26 @@ internal sealed class InteractiveTerminalUi
             }
         }
         Console.ResetColor();
+        RememberRenderedCanvas(canvas, terminalWidth);
+    }
+
+    private void RememberRenderedCanvas(Cell[,] canvas, int terminalWidth)
+    {
+        lastRenderedCanvas = (Cell[,])canvas.Clone();
+        lastRenderedLeft = renderLeft;
+        lastRenderedTerminalWidth = terminalWidth;
+    }
+
+    private static int GetWindowWidthSafe()
+    {
+        try
+        {
+            return Console.WindowWidth;
+        }
+        catch
+        {
+            return MinimumTerminalWidth;
+        }
     }
 
     private static string ToAnsi(Palette color) => color switch
@@ -887,6 +1297,18 @@ internal sealed class InteractiveTerminalUi
         try
         {
             var terminalWidth = Console.WindowWidth;
+            compactLayout = terminalWidth < MinimumTerminalWidth;
+
+            if (compactLayout)
+            {
+                canvasWidth = Math.Max(20, terminalWidth - 1);
+                renderLeft = 0;
+                paneWidth = Math.Max(18, canvasWidth - 2);
+                leftPaneX = 1;
+                rightPaneX = 1;
+                return;
+            }
+
             var drawableWidth = Math.Max(MinimumCanvasWidth, terminalWidth - 1);
             canvasWidth = Math.Min(PreferredCanvasWidth, drawableWidth);
             renderLeft = Math.Max(0, (terminalWidth - canvasWidth) / 2);
@@ -898,6 +1320,7 @@ internal sealed class InteractiveTerminalUi
         }
         catch
         {
+            compactLayout = false;
             canvasWidth = MinimumCanvasWidth;
             renderLeft = 0;
             paneWidth = 37;
@@ -906,8 +1329,11 @@ internal sealed class InteractiveTerminalUi
         }
     }
 
-    private static void PrepareInteractiveConsole()
+    private void PrepareInteractiveConsole(bool clear = true)
     {
+        lastRenderedCanvas = null;
+        lastRenderedLeft = -1;
+        lastRenderedTerminalWidth = -1;
         try
         {
             Console.CursorVisible = false;
@@ -915,7 +1341,10 @@ internal sealed class InteractiveTerminalUi
         catch
         {
         }
-        Console.Clear();
+        if (clear)
+        {
+            Console.Clear();
+        }
     }
 
     private static void RestoreConsole(bool showCursor = true)

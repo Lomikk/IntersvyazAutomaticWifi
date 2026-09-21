@@ -195,20 +195,24 @@ internal static class Program
 
     private static async Task<int> ConnectAsync()
     {
+        Console.WriteLine("Проверяю подключение и выполняю разовую авторизацию Wi-Fi...");
+        var outcome = await RunManualAuthorizationAsync().ConfigureAwait(false);
+        return PrintAuthorizationOutcome(outcome);
+    }
+
+    private static async Task<AuthorizationOutcome> RunManualAuthorizationAsync()
+    {
         using var app = ApplicationRuntime.Create();
         app.Logger.Write(DiagnosticLevel.Info, "cli.start command=connect runtime=csharp");
         var secrets = app.Secrets.Load() ?? throw new InvalidOperationException("Устройство не зарегистрировано. Сначала выполните register.");
         var deviceId = app.DeviceIdentity.GetOrCreate();
 
-        Console.WriteLine("Проверяю подключение и выполняю разовую авторизацию Wi-Fi...");
-        var outcome = await app.Authorization.RunAsync(new AuthorizationRequest(
+        return await app.Authorization.RunAsync(new AuthorizationRequest(
             secrets.Token,
             secrets.Phone,
             deviceId,
             AuthorizationAttemptReason.Manual,
             Force: true)).ConfigureAwait(false);
-
-        return PrintAuthorizationOutcome(outcome);
     }
 
     private static int PrintAuthorizationOutcome(AuthorizationOutcome outcome)
@@ -360,7 +364,7 @@ internal static class Program
         return 0;
     }
 
-    private static int EnableAutomaticAuthorization()
+    private static int EnableAutomaticAuthorization(bool quiet = false)
     {
         using var app = ApplicationRuntime.Create();
         if (app.Secrets.Load() is null)
@@ -377,32 +381,41 @@ internal static class Program
         new WindowsInstalledAppRegistration().Register(installation, installation.ReadInstalledVersion() ?? ProductVersion);
         app.Autostart.Enable(installation.ExecutablePath, startNow: true);
         app.Logger.Write(DiagnosticLevel.Info, "autostart.enabled mode=hkcu-run installed-copy=true");
-        Console.WriteLine("Автоматическая авторизация включена.");
-        Console.WriteLine("Фоновый агент запущен и сразу проверит текущее подключение.");
-        Console.WriteLine("Если вы подключены к Campus Wi-Fi и требуется авторизация, программа попробует выполнить её автоматически.");
-        Console.WriteLine("Фоновый агент будет автоматически запускаться при входе в Windows.");
+        if (!quiet)
+        {
+            Console.WriteLine("Автоматическая авторизация включена.");
+            Console.WriteLine("Фоновый агент запущен и сразу проверит текущее подключение.");
+            Console.WriteLine("Если вы подключены к Campus Wi-Fi и требуется авторизация, программа попробует выполнить её автоматически.");
+            Console.WriteLine("Фоновый агент будет автоматически запускаться при входе в Windows.");
+        }
         return 0;
     }
 
-    private static int DisableAutostart()
+    private static int DisableAutostart(bool quiet = false)
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
         app.Logger.Write(DiagnosticLevel.Info, "autostart.disabled mode=hkcu-run");
-        Console.WriteLine("Автоматическая авторизация отключена.");
-        Console.WriteLine("Фоновый агент остановлен.");
-        Console.WriteLine("Программа больше не будет запускаться автоматически вместе с Windows.");
-        Console.WriteLine("Разовая авторизация Wi-Fi по-прежнему доступна через пункт 2.");
+        if (!quiet)
+        {
+            Console.WriteLine("Автоматическая авторизация отключена.");
+            Console.WriteLine("Фоновый агент остановлен.");
+            Console.WriteLine("Программа больше не будет запускаться автоматически вместе с Windows.");
+            Console.WriteLine("Разовая авторизация Wi-Fi по-прежнему доступна через пункт 2.");
+        }
         return 0;
     }
 
-    private static int ResetRegistration()
+    private static int ResetRegistration(bool quiet = false)
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
         app.Maintenance.ResetRegistration();
         app.Logger.Write(DiagnosticLevel.Info, "registration.reset");
-        Console.WriteLine("Регистрация и локальная Wi-Fi сессия удалены. Настройки и диагностические логи сохранены.");
+        if (!quiet)
+        {
+            Console.WriteLine("Регистрация и локальная Wi-Fi сессия удалены. Настройки и диагностические логи сохранены.");
+        }
         return 0;
     }
 
@@ -415,7 +428,7 @@ internal static class Program
         return 0;
     }
 
-    private static int Uninstall()
+    private static int Uninstall(bool quiet = false)
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
@@ -426,29 +439,35 @@ internal static class Program
         var current = Environment.ProcessPath;
         if (!installation.IsInstalled)
         {
-            Console.WriteLine("Автоматическая авторизация отключена, локальные данные и запись программы в Windows удалены.");
+            if (!quiet) Console.WriteLine("Автоматическая авторизация отключена, локальные данные и запись программы в Windows удалены.");
             return 0;
         }
 
         if (!installation.IsInstalledExecutable(current))
         {
             installation.DeleteInstalledFilesIfNotRunning(current);
-            Console.WriteLine("Программа полностью удалена: автозапуск, локальные данные, установленная копия и запись в Windows очищены.");
+            if (!quiet) Console.WriteLine("Программа полностью удалена: автозапуск, локальные данные, установленная копия и запись в Windows очищены.");
             return 0;
         }
 
         ScheduleDeferredUninstall(installation);
-        Console.WriteLine("Автозапуск, локальные данные и запись программы в Windows удалены.");
-        Console.WriteLine("Установленная копия программы будет удалена после закрытия текущего процесса.");
+        if (!quiet)
+        {
+            Console.WriteLine("Автозапуск, локальные данные и запись программы в Windows удалены.");
+            Console.WriteLine("Установленная копия программы будет удалена после закрытия текущего процесса.");
+        }
         return 0;
     }
 
-    private static int OpenLogs()
+    private static int OpenLogs(bool quiet = false)
     {
         using var app = ApplicationRuntime.Create();
         app.Paths.EnsureDirectories();
-        Console.WriteLine($"Журнал: {app.Paths.DiagnosticLogFile}");
-        Console.WriteLine("Для диагностики можно прислать diagnostic.log и diagnostic.N.log из этой папки.");
+        if (!quiet)
+        {
+            Console.WriteLine($"Журнал: {app.Paths.DiagnosticLogFile}");
+            Console.WriteLine("Для диагностики можно прислать diagnostic.log и diagnostic.N.log из этой папки.");
+        }
         try
         {
             _ = Process.Start(new ProcessStartInfo(app.Paths.LogDirectory) { UseShellExecute = true });
@@ -637,7 +656,7 @@ internal static class Program
         return 0;
     }
 
-    private static async Task<bool> UpdateAsync(bool restartMenu, bool askConfirmation = true)
+    private static async Task<bool> UpdateAsync(bool restartMenu, bool askConfirmation = true, bool quiet = false)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         var updater = new GitHubUpdateClient(http);
@@ -647,12 +666,15 @@ internal static class Program
 
         if (update is null)
         {
-            Console.WriteLine($"Обновлений нет. Текущая версия: {ProductVersion}");
+            if (!quiet) Console.WriteLine($"Обновлений нет. Текущая версия: {ProductVersion}");
             return false;
         }
 
-        Console.WriteLine($"Доступна новая версия: {update.TagName}");
-        Console.WriteLine($"Текущая версия       : {ProductVersion}");
+        if (!quiet)
+        {
+            Console.WriteLine($"Доступна новая версия: {update.TagName}");
+            Console.WriteLine($"Текущая версия       : {ProductVersion}");
+        }
         if (askConfirmation)
         {
             Console.Write("Скачать и установить обновление? [Y/N]: ");
@@ -663,7 +685,7 @@ internal static class Program
             }
         }
 
-        Console.WriteLine("Скачиваю обновление с GitHub Releases и проверяю SHA-256...");
+        if (!quiet) Console.WriteLine("Скачиваю обновление с GitHub Releases и проверяю SHA-256...");
         var prepared = await updater.DownloadAndVerifyAsync(update).ConfigureAwait(false);
 
         try
@@ -707,9 +729,12 @@ internal static class Program
             app.Logger.Write(DiagnosticLevel.Info,
                 $"update.scheduled from={ProductVersion} to={update.TagName} autostart={autostartWasEnabled}");
 
-            Console.WriteLine($"Обновление {update.TagName} проверено и подготовлено.");
-            Console.WriteLine($"Установленная программа: {installedExecutable}");
-            Console.WriteLine("Текущий процесс завершится, после чего EXE будет заменён.");
+            if (!quiet)
+            {
+                Console.WriteLine($"Обновление {update.TagName} проверено и подготовлено.");
+                Console.WriteLine($"Установленная программа: {installedExecutable}");
+                Console.WriteLine("Текущий процесс завершится, после чего EXE будет заменён.");
+            }
             return true;
         }
         catch
@@ -944,59 +969,80 @@ internal static class Program
                 switch (action)
                 {
                     case InteractiveMenuAction.Register:
-                        ui.PrepareForAction("Регистрация устройства");
-                        await RegisterAsync().ConfigureAwait(false);
-                        ui.PauseAfterAction();
+                        await RegisterFromMenuAsync(ui, initialStatus).ConfigureAwait(false);
                         break;
 
                     case InteractiveMenuAction.Connect:
-                        ui.PrepareForAction("Авторизация Wi-Fi");
-                        await ConnectAsync().ConfigureAwait(false);
-                        ui.PauseAfterAction();
+                    {
+                        ui.ShowBusyMessage("АВТОРИЗАЦИЯ WI-FI", "Проверяю сеть и выполняю разовую авторизацию...", initialStatus);
+                        var outcome = await RunManualAuthorizationAsync().ConfigureAwait(false);
+                        if (!IsSuccessfulMenuAuthorization(outcome))
+                        {
+                            await ui.ShowMessageAsync(
+                                "АВТОРИЗАЦИЯ WI-FI",
+                                DescribeAuthorizationOutcomeForUi(outcome),
+                                GetInteractiveStatusSnapshot(),
+                                isError: true).ConfigureAwait(false);
+                        }
                         break;
+                    }
 
                     case InteractiveMenuAction.EnableAutomaticAuthorization:
-                        ui.PrepareForAction("Автоматическая авторизация");
-                        EnableAutomaticAuthorization();
-                        ui.PauseAfterAction();
+                        EnableAutomaticAuthorization(quiet: true);
                         break;
 
                     case InteractiveMenuAction.DisableAutomaticAuthorization:
-                        ui.PrepareForAction("Автоматическая авторизация");
-                        DisableAutostart();
-                        ui.PauseAfterAction();
+                        DisableAutostart(quiet: true);
                         break;
 
                     case InteractiveMenuAction.ShowDetailedStatus:
-                        ui.PrepareForAction("Подробное состояние");
-                        await PrintStatusAsync().ConfigureAwait(false);
-                        ui.PauseAfterAction();
+                    {
+                        var lines = await BuildDetailedStatusLinesAsync().ConfigureAwait(false);
+                        await ui.ShowDetailsAsync(
+                            "ПОДРОБНОЕ СОСТОЯНИЕ",
+                            lines,
+                            GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                         break;
+                    }
 
                     case InteractiveMenuAction.ResetRegistration:
-                        ui.PrepareForAction("Сброс регистрации");
-                        ResetRegistration();
-                        ui.PauseAfterAction();
+                    {
+                        var confirmed = await ui.ConfirmAsync(
+                            "СБРОС РЕГИСТРАЦИИ",
+                            "Удалить сохранённую регистрацию и локальную Wi-Fi сессию? Настройки и диагностические логи останутся.",
+                            "Сбросить регистрацию",
+                            initialStatus).ConfigureAwait(false);
+                        if (confirmed)
+                        {
+                            ResetRegistration(quiet: true);
+                        }
                         break;
+                    }
 
                     case InteractiveMenuAction.Uninstall:
-                        ui.PrepareForAction("Удаление IS74W");
-                        Uninstall();
+                    {
+                        var confirmed = await ui.ConfirmAsync(
+                            "УДАЛЕНИЕ IS74W",
+                            "Удалить программу, автозапуск и все локальные данные IS74W?",
+                            "Удалить IS74W",
+                            initialStatus).ConfigureAwait(false);
+                        if (!confirmed)
+                        {
+                            break;
+                        }
+                        Uninstall(quiet: true);
                         return 0;
+                    }
 
                     case InteractiveMenuAction.OpenLogs:
-                        ui.PrepareForAction("Диагностические логи");
-                        OpenLogs();
-                        ui.PauseAfterAction();
+                        OpenLogs(quiet: true);
                         break;
 
                     case InteractiveMenuAction.Update:
-                        ui.PrepareForAction("Обновления");
-                        if (await UpdateAsync(restartMenu: true).ConfigureAwait(false))
+                        if (await CheckForUpdatesFromMenuAsync(ui, initialStatus).ConfigureAwait(false))
                         {
                             return 0;
                         }
-                        ui.PauseAfterAction();
                         break;
 
                     case InteractiveMenuAction.Exit:
@@ -1009,10 +1055,207 @@ internal static class Program
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine(ex.Message);
-                ui.PauseAfterAction();
+                await ui.ShowMessageAsync(
+                    "ОШИБКА",
+                    ex.Message,
+                    GetInteractiveStatusSnapshot(),
+                    isError: true).ConfigureAwait(false);
             }
         }
+    }
+
+    private static async Task RegisterFromMenuAsync(
+        InteractiveTerminalUi ui,
+        InteractiveStatusSnapshot currentStatus)
+    {
+        using var app = ApplicationRuntime.Create();
+        app.Logger.Write(DiagnosticLevel.Info, "cli.start command=register runtime=csharp-ui");
+        if (app.Secrets.Load() is not null)
+        {
+            await ui.ShowMessageAsync(
+                "РЕГИСТРАЦИЯ",
+                "Устройство уже зарегистрировано. Сначала сбросьте текущую регистрацию.",
+                currentStatus,
+                isError: true).ConfigureAwait(false);
+            return;
+        }
+
+        var phoneInput = await ui.PromptDigitsAsync(
+            "РЕГИСТРАЦИЯ",
+            "Введите номер телефона без +7. Esc отменяет регистрацию.",
+            "+7 ",
+            minimumDigits: 10,
+            maximumDigits: 10,
+            currentStatus: currentStatus).ConfigureAwait(false);
+        if (phoneInput is null)
+        {
+            return;
+        }
+
+        var phone = NormalizePhone(phoneInput);
+        var deviceId = app.DeviceIdentity.GetOrCreate();
+
+        ui.ShowBusyMessage("РЕГИСТРАЦИЯ", "Запрашиваю код подтверждения...", currentStatus);
+        var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
+        if (!requested.IsSuccess)
+        {
+            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-confirm failure={requested.Failure!.Kind}");
+            throw new InvalidOperationException(DescribeApiFailure(requested.Failure));
+        }
+
+        var smsCode = await ui.PromptDigitsAsync(
+            "РЕГИСТРАЦИЯ",
+            "Введите SMS-код. Esc отменяет продолжение регистрации.",
+            string.Empty,
+            minimumDigits: 1,
+            maximumDigits: 8,
+            currentStatus: currentStatus).ConfigureAwait(false);
+        if (smsCode is null)
+        {
+            return;
+        }
+
+        ui.ShowBusyMessage("РЕГИСТРАЦИЯ", "Проверяю код и создаю API-сессию...", currentStatus);
+        var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
+        if (!checkedCode.IsSuccess)
+        {
+            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=check-confirm failure={checkedCode.Failure!.Kind}");
+            throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure));
+        }
+
+        var confirmation = checkedCode.Value!;
+        app.Logger.Write(DiagnosticLevel.Info, "registration.confirmed mode=phone-only");
+
+        var sessionResult = await app.Api.GetTokenAsync(confirmation.AuthId, deviceId).ConfigureAwait(false);
+        if (!sessionResult.IsSuccess)
+        {
+            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
+            throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure));
+        }
+
+        var session = sessionResult.Value!;
+        app.Secrets.Save(new StoredSecrets(session.Token, phone));
+        app.Session.Save(new SessionMetadata
+        {
+            DeviceId = deviceId,
+            UserId = session.UserId,
+            ProfileId = session.ProfileId,
+            AccessBegin = session.AccessBegin,
+            AccessEnd = session.AccessEnd,
+            RegisteredAtUtc = DateTimeOffset.UtcNow
+        });
+
+        var osVersion = Environment.OSVersion.VersionString;
+        var deviceModel = Environment.MachineName;
+        var metadata = await app.Api.RegisterDeviceMetadataAsync(
+            session.Token,
+            new DeviceMetadataRegistration(deviceId, phone, osVersion, deviceModel)).ConfigureAwait(false);
+        if (metadata.IsSuccess)
+        {
+            app.Json.Write(
+                app.Paths.DeviceMetadataFile,
+                new DeviceMetadataSnapshot(deviceId, deviceModel, osVersion, DateTimeOffset.UtcNow),
+                AppJsonContext.Default.DeviceMetadataSnapshot);
+        }
+        else
+        {
+            app.Logger.Write(DiagnosticLevel.Warn, $"device-metadata failure={metadata.Failure?.Kind}");
+        }
+
+        app.Logger.Write(DiagnosticLevel.Info,
+            $"registration.complete accessBegin={session.AccessBegin ?? ""} accessEnd={session.AccessEnd ?? ""}");
+        await app.Dns.WarmKnownHostsAsync(TimeSpan.Zero).ConfigureAwait(false);
+    }
+
+    private static bool IsSuccessfulMenuAuthorization(AuthorizationOutcome outcome) =>
+        outcome.Kind is AuthorizationOutcomeKind.Success or
+            AuthorizationOutcomeKind.AlreadyAuthorized or
+            AuthorizationOutcomeKind.AlreadyOnline;
+
+    private static string DescribeAuthorizationOutcomeForUi(AuthorizationOutcome outcome) => outcome.Kind switch
+    {
+        AuthorizationOutcomeKind.WrongWifi =>
+            $"Авторизация работает только в сети {ProtocolContract.CampusSsidPrefix}*. Подключитесь к кампусной сети.",
+        AuthorizationOutcomeKind.Busy => "Другая Wi-Fi авторизация уже выполняется.",
+        AuthorizationOutcomeKind.BearerInvalid => "API-сессия отклонена сервером. Сбросьте регистрацию и зарегистрируйте устройство заново.",
+        AuthorizationOutcomeKind.RetryableBeforeStepOne => "Сервер Интерсвязи временно недоступен до отправки captive-запроса. Попробуйте ещё раз.",
+        AuthorizationOutcomeKind.RetryableStepOne => "Captive portal временно не завершил stepOne. Попробуйте ещё раз.",
+        AuthorizationOutcomeKind.StepTwoAmbiguous => "Ответ stepTwo потерян, а Интернет не подтвердился. Код повторно не отправлялся.",
+        AuthorizationOutcomeKind.UserActionRequired => "Автоматическое продолжение остановлено. Подробности есть в diagnostic.log.",
+        AuthorizationOutcomeKind.Cancelled => "Операция отменена.",
+        _ => $"Неожиданный результат: {outcome.Kind}"
+    };
+
+    private static async Task<IReadOnlyList<string>> BuildDetailedStatusLinesAsync()
+    {
+        using var app = ApplicationRuntime.Create();
+        var installation = new ProgramInstallation();
+        var secrets = app.Secrets.Load();
+        var session = app.Session.Load();
+        var state = app.RuntimeState.Load();
+        var internet = await app.Internet.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        var automatic = installation.IsInstalled && app.Autostart.IsEnabledFor(installation.ExecutablePath);
+
+        var lines = new List<string>
+        {
+            $"Интернет: {(internet.Online ? "доступен" : "не подтверждён")}",
+            $"Регистрация: {(secrets is null ? "нет" : "сохранена")}",
+            $"Телефон: {MaskPhone(secrets?.Phone)}",
+            $"Автовход: {(automatic ? "включён" : "выключен")}",
+            $"Агент: {(AgentProcessControl.IsAgentRunning() ? "работает" : "остановлен")}",
+            $"API-сессия: {FormatSessionEnd(session?.AccessEnd)}"
+        };
+
+        if (state.LastAuthUtc is { } lastAuth)
+            lines.Add($"Последняя Wi-Fi: {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+        if (state.ExpectedExpiryUtc is { } expiry)
+            lines.Add($"Окно до: {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+        if (!string.IsNullOrWhiteSpace(state.LastResult))
+            lines.Add($"Результат: {state.LastResult}");
+        if (state.AutomaticStepOneAttempts > 0)
+            lines.Add($"Попытки: {state.AutomaticStepOneAttempts}/{app.Settings.MaxAutomaticStepOneAttempts}");
+        if (state.UserActionRequired)
+            lines.Add("Требуется действие пользователя");
+        if (installation.IsInstalled)
+            lines.Add($"EXE: {installation.ExecutablePath}");
+        lines.Add($"Данные: {app.Paths.Root}");
+        lines.Add($"Лог: {app.Paths.DiagnosticLogFile}");
+        return lines;
+    }
+
+    private static async Task<bool> CheckForUpdatesFromMenuAsync(
+        InteractiveTerminalUi ui,
+        InteractiveStatusSnapshot currentStatus)
+    {
+        ui.ShowBusyMessage("ОБНОВЛЕНИЯ", "Проверяю GitHub Releases...", currentStatus);
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        var updater = new GitHubUpdateClient(http);
+        var update = await updater.CheckForUpdateAsync(
+            ProductVersion,
+            includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
+
+        if (update is null)
+        {
+            ui.ShowBusyMessage(
+                "ОБНОВЛЕНИЯ",
+                $"Обновлений нет. Установлена {ProductVersion}.",
+                GetInteractiveStatusSnapshot());
+            await Task.Delay(650).ConfigureAwait(false);
+            return false;
+        }
+
+        var install = await ui.ConfirmAsync(
+            "ОБНОВЛЕНИЕ",
+            $"Доступна {update.TagName}. Скачать, проверить SHA-256 и установить её сейчас?",
+            "Установить обновление",
+            GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+        if (!install)
+        {
+            return false;
+        }
+
+        ui.ShowBusyMessage("ОБНОВЛЕНИЕ", $"Скачиваю и проверяю {update.TagName}...", GetInteractiveStatusSnapshot());
+        return await UpdateAsync(restartMenu: true, askConfirmation: false, quiet: true).ConfigureAwait(false);
     }
 
     private static InteractiveStatusSnapshot GetInteractiveStatusSnapshot(bool? internetOverride = null)
