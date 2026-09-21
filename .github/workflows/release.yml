@@ -2,6 +2,10 @@ name: Release
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/release-trigger'
 
 permissions:
   contents: write
@@ -38,6 +42,14 @@ jobs:
           }
 
           $isPrerelease = $tag.Contains('-alpha.')
+
+          if ('${{ github.event_name }}' -eq 'push') {
+            $triggerTag = (Get-Content './.github/release-trigger' -Raw).Trim()
+            if ($triggerTag -ne $tag) {
+              throw "Release trigger $triggerTag does not match ProductVersion $tag."
+            }
+          }
+
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "prerelease=$($isPrerelease.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
