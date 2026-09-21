@@ -28,12 +28,25 @@ public enum WifiCodeSource
     Fallback
 }
 
+public enum AuthorizationProgressStage
+{
+    TargetWifiConfirmed,
+    BaselineLoaded,
+    CaptiveRequestStarted,
+    FreshCodeReceived,
+    StepTwoStarted,
+    StepTwoAccepted,
+    InternetCheckStarted,
+    InternetConfirmed
+}
+
 public sealed record AuthorizationRequest(
     string BearerToken,
     string Phone,
     string DeviceId,
     AuthorizationAttemptReason Reason = AuthorizationAttemptReason.Manual,
-    bool Force = false);
+    bool Force = false,
+    Action<AuthorizationProgressStage>? Progress = null);
 
 public sealed record AuthorizationTiming(
     int PreStepOneMilliseconds,

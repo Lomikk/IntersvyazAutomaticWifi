@@ -200,7 +200,8 @@ internal static class Program
         return PrintAuthorizationOutcome(outcome);
     }
 
-    private static async Task<AuthorizationOutcome> RunManualAuthorizationAsync()
+    private static async Task<AuthorizationOutcome> RunManualAuthorizationAsync(
+        Action<AuthorizationProgressStage>? progress = null)
     {
         using var app = ApplicationRuntime.Create();
         app.Logger.Write(DiagnosticLevel.Info, "cli.start command=connect runtime=csharp");
@@ -212,7 +213,8 @@ internal static class Program
             secrets.Phone,
             deviceId,
             AuthorizationAttemptReason.Manual,
-            Force: true)).ConfigureAwait(false);
+            Force: true,
+            Progress: progress)).ConfigureAwait(false);
     }
 
     private static int PrintAuthorizationOutcome(AuthorizationOutcome outcome)
@@ -364,22 +366,26 @@ internal static class Program
         return 0;
     }
 
-    private static int EnableAutomaticAuthorization(bool quiet = false)
+    private static int EnableAutomaticAuthorization(bool quiet = false, Action<string>? progress = null)
     {
         using var app = ApplicationRuntime.Create();
         if (app.Secrets.Load() is null)
         {
             throw new InvalidOperationException("Сначала зарегистрируйте устройство.");
         }
+        ReportMenuBatchProgress(progress, "Регистрация устройства проверена");
 
         var installation = new ProgramInstallation();
         if (!installation.IsInstalled)
         {
             throw new InvalidOperationException("IS74Wifi не установлена. Сначала запустите программу обычным способом и выполните установку.");
         }
+        ReportMenuBatchProgress(progress, "Установленная копия найдена");
 
         new WindowsInstalledAppRegistration().Register(installation, installation.ReadInstalledVersion() ?? ProductVersion);
+        ReportMenuBatchProgress(progress, "Запись программы в Windows обновлена");
         app.Autostart.Enable(installation.ExecutablePath, startNow: true);
+        ReportMenuBatchProgress(progress, "Автозапуск включён, фоновый агент запущен");
         app.Logger.Write(DiagnosticLevel.Info, "autostart.enabled mode=hkcu-run installed-copy=true");
         if (!quiet)
         {
@@ -391,10 +397,23 @@ internal static class Program
         return 0;
     }
 
-    private static int DisableAutostart(bool quiet = false)
+    private static void ReportMenuBatchProgress(Action<string>? progress, string message)
+    {
+        try
+        {
+            progress?.Invoke(message);
+        }
+        catch
+        {
+            // Interactive progress rendering is best-effort only.
+        }
+    }
+
+    private static int DisableAutostart(bool quiet = false, Action<string>? progress = null)
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
+        ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый агент остановлен");
         app.Logger.Write(DiagnosticLevel.Info, "autostart.disabled mode=hkcu-run");
         if (!quiet)
         {
@@ -406,11 +425,13 @@ internal static class Program
         return 0;
     }
 
-    private static int ResetRegistration(bool quiet = false)
+    private static int ResetRegistration(bool quiet = false, Action<string>? progress = null)
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
+        ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый агент остановлен");
         app.Maintenance.ResetRegistration();
+        ReportMenuBatchProgress(progress, "Регистрация и локальная Wi-Fi сессия удалены");
         app.Logger.Write(DiagnosticLevel.Info, "registration.reset");
         if (!quiet)
         {
@@ -428,14 +449,17 @@ internal static class Program
         return 0;
     }
 
-    private static int Uninstall(bool quiet = false)
+    private static int Uninstall(bool quiet = false, Action<string>? progress = null)
     {
         using var app = ApplicationRuntime.Create();
         app.Autostart.Disable();
+        ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый агент остановлен");
         app.Maintenance.PurgeAllData();
+        ReportMenuBatchProgress(progress, "Локальные данные удалены");
 
         var installation = new ProgramInstallation();
         new WindowsInstalledAppRegistration().Unregister();
+        ReportMenuBatchProgress(progress, "Запись программы в Windows удалена");
         var current = Environment.ProcessPath;
         if (!installation.IsInstalled)
         {
@@ -446,11 +470,13 @@ internal static class Program
         if (!installation.IsInstalledExecutable(current))
         {
             installation.DeleteInstalledFilesIfNotRunning(current);
+            ReportMenuBatchProgress(progress, "Установленная копия удалена");
             if (!quiet) Console.WriteLine("Программа полностью удалена: автозапуск, локальные данные, установленная копия и запись в Windows очищены.");
             return 0;
         }
 
         ScheduleDeferredUninstall(installation);
+        ReportMenuBatchProgress(progress, "Удаление запущенного EXE запланировано после выхода");
         if (!quiet)
         {
             Console.WriteLine("Автозапуск, локальные данные и запись программы в Windows удалены.");
@@ -656,13 +682,19 @@ internal static class Program
         return 0;
     }
 
-    private static async Task<bool> UpdateAsync(bool restartMenu, bool askConfirmation = true, bool quiet = false)
+    private static async Task<bool> UpdateAsync(
+        bool restartMenu,
+        bool askConfirmation = true,
+        bool quiet = false,
+        Action<UpdateProgressStage>? downloadProgress = null,
+        Action<UpdateApplyProgressStage>? applyProgress = null)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         var updater = new GitHubUpdateClient(http);
         var update = await updater.CheckForUpdateAsync(
             ProductVersion,
-            includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
+            includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase),
+            progress: downloadProgress).ConfigureAwait(false);
 
         if (update is null)
         {
@@ -685,12 +717,32 @@ internal static class Program
             }
         }
 
+        return await PrepareAndScheduleUpdateAsync(
+            updater,
+            update,
+            restartMenu,
+            quiet,
+            downloadProgress,
+            applyProgress).ConfigureAwait(false);
+    }
+
+    private static async Task<bool> PrepareAndScheduleUpdateAsync(
+        GitHubUpdateClient updater,
+        UpdateDescriptor update,
+        bool restartMenu,
+        bool quiet,
+        Action<UpdateProgressStage>? downloadProgress = null,
+        Action<UpdateApplyProgressStage>? applyProgress = null)
+    {
         if (!quiet) Console.WriteLine("Скачиваю обновление с GitHub Releases и проверяю SHA-256...");
-        var prepared = await updater.DownloadAndVerifyAsync(update).ConfigureAwait(false);
+        var prepared = await updater.DownloadAndVerifyAsync(update, downloadProgress).ConfigureAwait(false);
 
         try
         {
+            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.ValidatingExecutable);
             ValidatePreparedExecutable(prepared.ExecutablePath);
+            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.ExecutableValidated);
+
             using var app = ApplicationRuntime.Create();
             var currentExecutable = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(currentExecutable) || !File.Exists(currentExecutable))
@@ -699,15 +751,21 @@ internal static class Program
             var installation = new ProgramInstallation();
             _ = app.Autostart.RemoveIfStale(installation.ExecutablePath);
             var autostartWasEnabled = app.Autostart.IsEnabledFor(installation.ExecutablePath);
-            AgentProcessControl.StopAgentOrThrow();
 
+            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.StoppingAgent);
+            AgentProcessControl.StopAgentOrThrow();
+            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.AgentStopped);
+
+            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.PreparingInstalledCopy);
             var installedExecutable = installation.InstallFrom(currentExecutable, ProductVersion);
             new WindowsInstalledAppRegistration().Register(installation, ProductVersion);
             if (autostartWasEnabled)
             {
                 app.Autostart.Enable(installedExecutable, startNow: false);
             }
+            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.InstalledCopyPrepared);
 
+            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.SchedulingReplacement);
             var helperPath = Path.Combine(prepared.WorkingDirectory, "IS74Wifi-updater.exe");
             File.Copy(currentExecutable, helperPath, overwrite: true);
 
@@ -728,6 +786,7 @@ internal static class Program
             _ = Process.Start(startInfo) ?? throw new InvalidOperationException("Не удалось запустить процесс применения обновления.");
             app.Logger.Write(DiagnosticLevel.Info,
                 $"update.scheduled from={ProductVersion} to={update.TagName} autostart={autostartWasEnabled}");
+            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.ReplacementScheduled);
 
             if (!quiet)
             {
@@ -741,6 +800,20 @@ internal static class Program
         {
             GitHubUpdateClient.TryDeleteDirectory(prepared.WorkingDirectory);
             throw;
+        }
+    }
+
+    private static void ReportUpdateApplyProgress(
+        Action<UpdateApplyProgressStage>? progress,
+        UpdateApplyProgressStage stage)
+    {
+        try
+        {
+            progress?.Invoke(stage);
+        }
+        catch
+        {
+            // Rendering progress is best-effort and must not interfere with applying an update.
         }
     }
 
@@ -974,22 +1047,89 @@ internal static class Program
 
                     case InteractiveMenuAction.Connect:
                     {
-                        ui.ShowBusyMessage("АВТОРИЗАЦИЯ WI-FI", "Проверяю сеть и выполняю разовую авторизацию...", initialStatus);
-                        var outcome = await RunManualAuthorizationAsync().ConfigureAwait(false);
-                        await ui.ShowMessageAsync(
+                        var history = new InteractiveActionHistory();
+                        history.Start("Проверяю подключение к сети Интерсвязи...");
+                        ui.ShowActionProgress("АВТОРИЗАЦИЯ WI-FI", history, initialStatus);
+
+                        var stepTwoAccepted = false;
+                        var outcome = await RunManualAuthorizationAsync(stage =>
+                        {
+                            switch (stage)
+                            {
+                                case AuthorizationProgressStage.TargetWifiConfirmed:
+                                    history.CompleteActive("Подключение к сети Интерсвязи подтверждено");
+                                    history.Start("Получаю состояние push-очереди...");
+                                    break;
+                                case AuthorizationProgressStage.BaselineLoaded:
+                                    history.CompleteActive("Состояние push-очереди получено");
+                                    history.Start("Отправляю captive-запрос и жду 4-значный код...");
+                                    break;
+                                case AuthorizationProgressStage.CaptiveRequestStarted:
+                                case AuthorizationProgressStage.StepTwoStarted:
+                                    break;
+                                case AuthorizationProgressStage.FreshCodeReceived:
+                                    history.CompleteActive("Получен свежий 4-значный код");
+                                    history.Start("Отправляю код captive portal...");
+                                    break;
+                                case AuthorizationProgressStage.StepTwoAccepted:
+                                    stepTwoAccepted = true;
+                                    history.CompleteActive("Код принят captive portal");
+                                    history.Start("Проверяю доступ в Интернет...");
+                                    break;
+                                case AuthorizationProgressStage.InternetCheckStarted:
+                                    if (!stepTwoAccepted)
+                                    {
+                                        history.WarnActive("Ответ captive portal не подтверждён");
+                                        history.Start("Проверяю Интернет после неоднозначного ответа...");
+                                    }
+                                    break;
+                                case AuthorizationProgressStage.InternetConfirmed:
+                                    history.CompleteActive("Доступ в Интернет подтверждён");
+                                    break;
+                            }
+
+                            ui.ShowActionProgress(
+                                "АВТОРИЗАЦИЯ WI-FI",
+                                history,
+                                GetInteractiveStatusSnapshot());
+                        }).ConfigureAwait(false);
+
+                        history.FinishActiveAsInfo();
+                        var outcomeText = DescribeAuthorizationOutcomeForUi(outcome);
+                        if (IsSuccessfulMenuAuthorization(outcome))
+                        {
+                            history.AddSuccess(outcomeText);
+                        }
+                        else
+                        {
+                            history.AddError(outcomeText);
+                        }
+
+                        await ui.ShowActionHistoryAsync(
                             "АВТОРИЗАЦИЯ WI-FI",
-                            DescribeAuthorizationOutcomeForUi(outcome),
-                            GetInteractiveStatusSnapshot(),
-                            isError: !IsSuccessfulMenuAuthorization(outcome)).ConfigureAwait(false);
+                            history,
+                            GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                         break;
                     }
 
                     case InteractiveMenuAction.EnableAutomaticAuthorization:
-                        EnableAutomaticAuthorization(quiet: true);
+                        await RunMenuBatchActionAsync(
+                            ui,
+                            "АВТОМАТИЧЕСКАЯ АВТОРИЗАЦИЯ",
+                            initialStatus,
+                            "Включаю автоматическую авторизацию...",
+                            progress => EnableAutomaticAuthorization(quiet: true, progress: progress),
+                            "Автоматическая авторизация включена").ConfigureAwait(false);
                         break;
 
                     case InteractiveMenuAction.DisableAutomaticAuthorization:
-                        DisableAutostart(quiet: true);
+                        await RunMenuBatchActionAsync(
+                            ui,
+                            "АВТОМАТИЧЕСКАЯ АВТОРИЗАЦИЯ",
+                            initialStatus,
+                            "Отключаю автоматическую авторизацию...",
+                            progress => DisableAutostart(quiet: true, progress: progress),
+                            "Автоматическая авторизация отключена").ConfigureAwait(false);
                         break;
 
                     case InteractiveMenuAction.ShowDetailedStatus:
@@ -1007,7 +1147,13 @@ internal static class Program
                             initialStatus).ConfigureAwait(false);
                         if (confirmed)
                         {
-                            ResetRegistration(quiet: true);
+                            await RunMenuBatchActionAsync(
+                                ui,
+                                "СБРОС РЕГИСТРАЦИИ",
+                                initialStatus,
+                                "Сбрасываю регистрацию...",
+                                progress => ResetRegistration(quiet: true, progress: progress),
+                                "Регистрация сброшена").ConfigureAwait(false);
                         }
                         break;
                     }
@@ -1023,8 +1169,19 @@ internal static class Program
                         {
                             break;
                         }
-                        Uninstall(quiet: true);
-                        return 0;
+                        var uninstalled = await RunMenuBatchActionAsync(
+                            ui,
+                            "УДАЛЕНИЕ IS74W",
+                            initialStatus,
+                            "Удаляю IS74W и локальные данные...",
+                            progress => Uninstall(quiet: true, progress: progress),
+                            "Удаление подготовлено",
+                            refreshStatus: false).ConfigureAwait(false);
+                        if (uninstalled)
+                        {
+                            return 0;
+                        }
+                        break;
                     }
 
                     case InteractiveMenuAction.OpenLogs:
@@ -1073,91 +1230,204 @@ internal static class Program
             return;
         }
 
-        var phoneInput = await ui.PromptDigitsAsync(
-            "РЕГИСТРАЦИЯ",
-            "Введите номер телефона без +7. Esc отменяет регистрацию.",
-            "+7 ",
-            minimumDigits: 10,
-            maximumDigits: 10,
-            currentStatus: currentStatus).ConfigureAwait(false);
-        if (phoneInput is null)
+        var history = new InteractiveActionHistory();
+        try
         {
-            return;
+            var phoneInput = await ui.PromptDigitsAsync(
+                "РЕГИСТРАЦИЯ",
+                "Введите номер телефона без +7. Esc отменяет регистрацию.",
+                "+7 ",
+                minimumDigits: 10,
+                maximumDigits: 10,
+                currentStatus: currentStatus,
+                history: history).ConfigureAwait(false);
+            if (phoneInput is null)
+            {
+                return;
+            }
+
+            history.AddSuccess("Номер телефона введён");
+            var phone = NormalizePhone(phoneInput);
+            var deviceId = app.DeviceIdentity.GetOrCreate();
+
+            history.Start("Запрашиваю 4-значный SMS-код...");
+            ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
+            var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
+            if (!requested.IsSuccess)
+            {
+                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-confirm failure={requested.Failure!.Kind}");
+                history.FailActive("Не удалось запросить SMS-код");
+                history.AddError(DescribeApiFailure(requested.Failure));
+                await ui.ShowActionHistoryAsync(
+                    "РЕГИСТРАЦИЯ",
+                    history,
+                    GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                return;
+            }
+            history.CompleteActive("SMS-код запрошен");
+
+            var smsCode = await ui.PromptDigitsAsync(
+                "РЕГИСТРАЦИЯ",
+                "Введите 4-значный SMS-код. Esc отменяет продолжение регистрации.",
+                string.Empty,
+                minimumDigits: 4,
+                maximumDigits: 4,
+                currentStatus: currentStatus,
+                history: history).ConfigureAwait(false);
+            if (smsCode is null)
+            {
+                return;
+            }
+            history.AddSuccess("4-значный SMS-код введён");
+
+            history.Start("Проверяю код подтверждения...");
+            ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
+            var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
+            if (!checkedCode.IsSuccess)
+            {
+                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=check-confirm failure={checkedCode.Failure!.Kind}");
+                history.FailActive("Код подтверждения отклонён");
+                history.AddError(DescribeApiFailure(checkedCode.Failure));
+                await ui.ShowActionHistoryAsync(
+                    "РЕГИСТРАЦИЯ",
+                    history,
+                    GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                return;
+            }
+
+            history.CompleteActive("Код подтверждения принят");
+            var confirmation = checkedCode.Value!;
+            app.Logger.Write(DiagnosticLevel.Info, "registration.confirmed mode=phone-only");
+
+            history.Start("Получаю API-сессию...");
+            ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
+            var sessionResult = await app.Api.GetTokenAsync(confirmation.AuthId, deviceId).ConfigureAwait(false);
+            if (!sessionResult.IsSuccess)
+            {
+                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
+                history.FailActive("Не удалось получить API-сессию");
+                history.AddError(DescribeApiFailure(sessionResult.Failure));
+                await ui.ShowActionHistoryAsync(
+                    "РЕГИСТРАЦИЯ",
+                    history,
+                    GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                return;
+            }
+
+            history.CompleteActive("API-сессия получена");
+            var session = sessionResult.Value!;
+
+            history.Start("Сохраняю регистрацию локально...");
+            ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
+            app.Secrets.Save(new StoredSecrets(session.Token, phone));
+            app.Session.Save(new SessionMetadata
+            {
+                DeviceId = deviceId,
+                UserId = session.UserId,
+                ProfileId = session.ProfileId,
+                AccessBegin = session.AccessBegin,
+                AccessEnd = session.AccessEnd,
+                RegisteredAtUtc = DateTimeOffset.UtcNow
+            });
+            history.CompleteActive("Регистрация сохранена локально");
+
+            history.Start("Регистрирую сведения об устройстве...");
+            ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, GetInteractiveStatusSnapshot());
+            var osVersion = Environment.OSVersion.VersionString;
+            var deviceModel = Environment.MachineName;
+            var metadata = await app.Api.RegisterDeviceMetadataAsync(
+                session.Token,
+                new DeviceMetadataRegistration(deviceId, phone, osVersion, deviceModel)).ConfigureAwait(false);
+            if (metadata.IsSuccess)
+            {
+                app.Json.Write(
+                    app.Paths.DeviceMetadataFile,
+                    new DeviceMetadataSnapshot(deviceId, deviceModel, osVersion, DateTimeOffset.UtcNow),
+                    AppJsonContext.Default.DeviceMetadataSnapshot);
+                history.CompleteActive("Сведения об устройстве зарегистрированы");
+            }
+            else
+            {
+                app.Logger.Write(DiagnosticLevel.Warn, $"device-metadata failure={metadata.Failure?.Kind}");
+                history.WarnActive("Регистрация сохранена; сведения об устройстве не отправлены");
+            }
+
+            app.Logger.Write(DiagnosticLevel.Info,
+                $"registration.complete accessBegin={session.AccessBegin ?? ""} accessEnd={session.AccessEnd ?? ""}");
+
+            history.Start("Подготавливаю сетевые адреса...");
+            ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, GetInteractiveStatusSnapshot());
+            await app.Dns.WarmKnownHostsAsync(TimeSpan.Zero).ConfigureAwait(false);
+            history.CompleteActive("Сетевые адреса подготовлены");
+            history.AddSuccess("Регистрация завершена");
+
+            await ui.ShowActionHistoryAsync(
+                "РЕГИСТРАЦИЯ",
+                history,
+                GetInteractiveStatusSnapshot()).ConfigureAwait(false);
         }
-
-        var phone = NormalizePhone(phoneInput);
-        var deviceId = app.DeviceIdentity.GetOrCreate();
-
-        ui.ShowBusyMessage("РЕГИСТРАЦИЯ", "Запрашиваю код подтверждения...", currentStatus);
-        var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
-        if (!requested.IsSuccess)
+        catch (Exception ex)
         {
-            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-confirm failure={requested.Failure!.Kind}");
-            throw new InvalidOperationException(DescribeApiFailure(requested.Failure));
+            history.FailActive("Операция прервана");
+            history.AddError(ex.Message);
+            await ui.ShowActionHistoryAsync(
+                "РЕГИСТРАЦИЯ",
+                history,
+                GetInteractiveStatusSnapshot()).ConfigureAwait(false);
         }
+    }
 
-        var smsCode = await ui.PromptDigitsAsync(
-            "РЕГИСТРАЦИЯ",
-            "Введите 4-значный SMS-код. Esc отменяет продолжение регистрации.",
-            string.Empty,
-            minimumDigits: 4,
-            maximumDigits: 4,
-            currentStatus: currentStatus).ConfigureAwait(false);
-        if (smsCode is null)
+    private static async Task<bool> RunMenuBatchActionAsync(
+        InteractiveTerminalUi ui,
+        string title,
+        InteractiveStatusSnapshot currentStatus,
+        string startingMessage,
+        Action<Action<string>> action,
+        string finalMessage,
+        bool refreshStatus = true)
+    {
+        var history = new InteractiveActionHistory();
+        history.Start(startingMessage);
+        ui.ShowActionProgress(title, history, currentStatus);
+        var firstProgress = true;
+
+        try
         {
-            return;
+            action(message =>
+            {
+                if (firstProgress)
+                {
+                    history.CompleteActive(message);
+                    firstProgress = false;
+                }
+                else
+                {
+                    history.AddSuccess(message);
+                }
+                ui.ShowActionProgress(
+                    title,
+                    history,
+                    refreshStatus ? GetInteractiveStatusSnapshot() : currentStatus);
+            });
+
+            history.FinishActiveAsInfo();
+            history.AddSuccess(finalMessage);
+            await ui.ShowActionHistoryAsync(
+                title,
+                history,
+                refreshStatus ? GetInteractiveStatusSnapshot() : currentStatus).ConfigureAwait(false);
+            return true;
         }
-
-        ui.ShowBusyMessage("РЕГИСТРАЦИЯ", "Проверяю код и создаю API-сессию...", currentStatus);
-        var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
-        if (!checkedCode.IsSuccess)
+        catch (Exception ex)
         {
-            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=check-confirm failure={checkedCode.Failure!.Kind}");
-            throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure));
+            history.FailActive("Операция прервана");
+            history.AddError(ex.Message);
+            await ui.ShowActionHistoryAsync(
+                title,
+                history,
+                refreshStatus ? GetInteractiveStatusSnapshot() : currentStatus).ConfigureAwait(false);
+            return false;
         }
-
-        var confirmation = checkedCode.Value!;
-        app.Logger.Write(DiagnosticLevel.Info, "registration.confirmed mode=phone-only");
-
-        var sessionResult = await app.Api.GetTokenAsync(confirmation.AuthId, deviceId).ConfigureAwait(false);
-        if (!sessionResult.IsSuccess)
-        {
-            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
-            throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure));
-        }
-
-        var session = sessionResult.Value!;
-        app.Secrets.Save(new StoredSecrets(session.Token, phone));
-        app.Session.Save(new SessionMetadata
-        {
-            DeviceId = deviceId,
-            UserId = session.UserId,
-            ProfileId = session.ProfileId,
-            AccessBegin = session.AccessBegin,
-            AccessEnd = session.AccessEnd,
-            RegisteredAtUtc = DateTimeOffset.UtcNow
-        });
-
-        var osVersion = Environment.OSVersion.VersionString;
-        var deviceModel = Environment.MachineName;
-        var metadata = await app.Api.RegisterDeviceMetadataAsync(
-            session.Token,
-            new DeviceMetadataRegistration(deviceId, phone, osVersion, deviceModel)).ConfigureAwait(false);
-        if (metadata.IsSuccess)
-        {
-            app.Json.Write(
-                app.Paths.DeviceMetadataFile,
-                new DeviceMetadataSnapshot(deviceId, deviceModel, osVersion, DateTimeOffset.UtcNow),
-                AppJsonContext.Default.DeviceMetadataSnapshot);
-        }
-        else
-        {
-            app.Logger.Write(DiagnosticLevel.Warn, $"device-metadata failure={metadata.Failure?.Kind}");
-        }
-
-        app.Logger.Write(DiagnosticLevel.Info,
-            $"registration.complete accessBegin={session.AccessBegin ?? ""} accessEnd={session.AccessEnd ?? ""}");
-        await app.Dns.WarmKnownHostsAsync(TimeSpan.Zero).ConfigureAwait(false);
     }
 
     private static bool IsSuccessfulMenuAuthorization(AuthorizationOutcome outcome) =>
@@ -1252,35 +1522,158 @@ internal static class Program
         InteractiveTerminalUi ui,
         InteractiveStatusSnapshot currentStatus)
     {
-        ui.ShowBusyMessage("ОБНОВЛЕНИЯ", "Проверяю GitHub Releases...", currentStatus);
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        var history = new InteractiveActionHistory();
+        history.Start("Запрашиваю список GitHub Releases...");
+        ui.ShowActionProgress("ОБНОВЛЕНИЯ", history, currentStatus);
+        var progressTitle = "ОБНОВЛЕНИЯ";
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         var updater = new GitHubUpdateClient(http);
-        var update = await updater.CheckForUpdateAsync(
-            ProductVersion,
-            includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
 
-        if (update is null)
+        void RenderProgress() => ui.ShowActionProgress(
+            progressTitle,
+            history,
+            GetInteractiveStatusSnapshot());
+
+        void ReportDownloadProgress(UpdateProgressStage stage)
         {
-            ui.ShowBusyMessage(
+            switch (stage)
+            {
+                case UpdateProgressStage.RequestingReleases:
+                    break;
+                case UpdateProgressStage.ReleasesLoaded:
+                    history.CompleteActive("Список GitHub Releases получен");
+                    history.Start("Сравниваю доступные версии...");
+                    break;
+                case UpdateProgressStage.DownloadingPackage:
+                    history.Start("Скачиваю пакет обновления...");
+                    break;
+                case UpdateProgressStage.PackageDownloaded:
+                    history.CompleteActive("Пакет обновления скачан");
+                    break;
+                case UpdateProgressStage.DownloadingChecksum:
+                    history.Start("Скачиваю файл SHA-256...");
+                    break;
+                case UpdateProgressStage.ChecksumDownloaded:
+                    history.CompleteActive("Файл SHA-256 скачан");
+                    break;
+                case UpdateProgressStage.VerifyingChecksum:
+                    history.Start("Проверяю SHA-256 пакета...");
+                    break;
+                case UpdateProgressStage.ChecksumVerified:
+                    history.CompleteActive("SHA-256 пакета совпадает");
+                    break;
+                case UpdateProgressStage.ExtractingPackage:
+                    history.Start("Распаковываю IS74Wifi.exe...");
+                    break;
+                case UpdateProgressStage.PackageExtracted:
+                    history.CompleteActive("IS74Wifi.exe распакован");
+                    break;
+            }
+            RenderProgress();
+        }
+
+        void ReportApplyProgress(UpdateApplyProgressStage stage)
+        {
+            switch (stage)
+            {
+                case UpdateApplyProgressStage.ValidatingExecutable:
+                    history.Start("Проверяю запуск скачанной версии...");
+                    break;
+                case UpdateApplyProgressStage.ExecutableValidated:
+                    history.CompleteActive("Скачанная версия запускается корректно");
+                    break;
+                case UpdateApplyProgressStage.StoppingAgent:
+                    history.Start("Останавливаю фоновый агент...");
+                    break;
+                case UpdateApplyProgressStage.AgentStopped:
+                    history.CompleteActive("Фоновый агент остановлен");
+                    break;
+                case UpdateApplyProgressStage.PreparingInstalledCopy:
+                    history.Start("Подготавливаю установленную копию...");
+                    break;
+                case UpdateApplyProgressStage.InstalledCopyPrepared:
+                    history.CompleteActive("Установленная копия подготовлена");
+                    break;
+                case UpdateApplyProgressStage.SchedulingReplacement:
+                    history.Start("Планирую замену EXE после закрытия программы...");
+                    break;
+                case UpdateApplyProgressStage.ReplacementScheduled:
+                    history.CompleteActive("Замена EXE запланирована");
+                    break;
+            }
+            RenderProgress();
+        }
+
+        try
+        {
+            var update = await updater.CheckForUpdateAsync(
+                ProductVersion,
+                includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase),
+                progress: ReportDownloadProgress).ConfigureAwait(false);
+
+            if (update is null)
+            {
+                history.CompleteActive("Новых версий не найдено");
+                history.AddSuccess($"Установлена актуальная версия {ProductVersion}");
+                await ui.ShowActionHistoryAsync(
+                    "ОБНОВЛЕНИЯ",
+                    history,
+                    GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                return false;
+            }
+
+            history.CompleteActive($"Найдена версия {update.TagName}");
+            history.AddInfo($"Текущая версия: {ProductVersion}");
+
+            var install = await ui.ConfirmAsync(
+                "ОБНОВЛЕНИЕ",
+                $"Доступна {update.TagName}. Скачать, проверить SHA-256 и установить её сейчас?",
+                "Установить обновление",
+                GetInteractiveStatusSnapshot(),
+                history).ConfigureAwait(false);
+            if (!install)
+            {
+                history.AddInfo("Обновление отменено пользователем");
+                await ui.ShowActionHistoryAsync(
+                    "ОБНОВЛЕНИЯ",
+                    history,
+                    GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                return false;
+            }
+
+            history.AddSuccess("Установка обновления подтверждена");
+            progressTitle = "ОБНОВЛЕНИЕ";
+            var scheduled = await PrepareAndScheduleUpdateAsync(
+                updater,
+                update,
+                restartMenu: true,
+                quiet: true,
+                downloadProgress: ReportDownloadProgress,
+                applyProgress: ReportApplyProgress).ConfigureAwait(false);
+
+            if (scheduled)
+            {
+                history.AddSuccess($"Обновление {update.TagName} подготовлено к установке");
+                history.AddInfo("После возврата программа закроется и заменит EXE");
+            }
+
+            await ui.ShowActionHistoryAsync(
+                "ОБНОВЛЕНИЕ",
+                history,
+                GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+            return scheduled;
+        }
+        catch (Exception ex)
+        {
+            history.FailActive("Операция обновления прервана");
+            history.AddError(ex.Message);
+            await ui.ShowActionHistoryAsync(
                 "ОБНОВЛЕНИЯ",
-                $"Обновлений нет. Установлена {ProductVersion}.",
-                GetInteractiveStatusSnapshot());
-            await Task.Delay(650).ConfigureAwait(false);
+                history,
+                GetInteractiveStatusSnapshot()).ConfigureAwait(false);
             return false;
         }
-
-        var install = await ui.ConfirmAsync(
-            "ОБНОВЛЕНИЕ",
-            $"Доступна {update.TagName}. Скачать, проверить SHA-256 и установить её сейчас?",
-            "Установить обновление",
-            GetInteractiveStatusSnapshot()).ConfigureAwait(false);
-        if (!install)
-        {
-            return false;
-        }
-
-        ui.ShowBusyMessage("ОБНОВЛЕНИЕ", $"Скачиваю и проверяю {update.TagName}...", GetInteractiveStatusSnapshot());
-        return await UpdateAsync(restartMenu: true, askConfirmation: false, quiet: true).ConfigureAwait(false);
     }
 
     private static InteractiveStatusSnapshot GetInteractiveStatusSnapshot(bool? internetOverride = null)
@@ -1449,6 +1842,18 @@ internal static class Program
                 "API Интерсвязи вернул неожиданный формат ответа.",
             _ => $"Ошибка API Интерсвязи: {failure.Kind}."
         };
+    }
+
+    private enum UpdateApplyProgressStage
+    {
+        ValidatingExecutable,
+        ExecutableValidated,
+        StoppingAgent,
+        AgentStopped,
+        PreparingInstalledCopy,
+        InstalledCopyPrepared,
+        SchedulingReplacement,
+        ReplacementScheduled
     }
 
     private static int UnknownCommand(string command)

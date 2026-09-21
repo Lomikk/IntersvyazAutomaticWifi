@@ -313,6 +313,30 @@ internal sealed class InteractiveTerminalUi
         RestoreConsole(showCursor: false);
     }
 
+    public void ShowActionProgress(
+        string title,
+        InteractiveActionHistory history,
+        InteractiveStatusSnapshot currentStatus)
+    {
+        if (!CanUseInteractiveSession)
+        {
+            Console.Clear();
+            Console.WriteLine($"=== {title} ===");
+            foreach (var line in history.Lines)
+            {
+                Console.WriteLine($"{ActionLineSymbol(line.Kind)} {line.Text}");
+            }
+            return;
+        }
+
+        status = currentStatus;
+        UpdateLayout();
+        UpdateAmbientSweepState();
+        PrepareInteractiveConsole(clear: false);
+        RenderActionHistoryFrame(title, history.Lines, offset: null, waitingForDismiss: false);
+        RestoreConsole(showCursor: false);
+    }
+
     public async Task<string?> PromptDigitsAsync(
         string title,
         string prompt,
@@ -320,6 +344,7 @@ internal sealed class InteractiveTerminalUi
         int minimumDigits,
         int maximumDigits,
         InteractiveStatusSnapshot currentStatus,
+        InteractiveActionHistory? history = null,
         CancellationToken cancellationToken = default)
     {
         if (minimumDigits < 0 || maximumDigits < minimumDigits)
@@ -338,7 +363,7 @@ internal sealed class InteractiveTerminalUi
                 cancellationToken.ThrowIfCancellationRequested();
                 UpdateLayout();
                 UpdateAmbientSweepState();
-                RenderPromptFrame(title, prompt, prefix, digits.ToString(), minimumDigits, maximumDigits);
+                RenderPromptFrame(title, prompt, prefix, digits.ToString(), minimumDigits, maximumDigits, history?.Lines);
 
                 var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
                 if (completed != keyTask)
@@ -424,11 +449,62 @@ internal sealed class InteractiveTerminalUi
         }
     }
 
+    public async Task ShowActionHistoryAsync(
+        string title,
+        InteractiveActionHistory history,
+        InteractiveStatusSnapshot currentStatus,
+        CancellationToken cancellationToken = default)
+    {
+        status = currentStatus;
+        var offset = int.MaxValue;
+        PrepareInteractiveConsole(clear: false);
+        try
+        {
+            var keyTask = ReadKeyAsync();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                UpdateLayout();
+                UpdateAmbientSweepState();
+                var visibleRows = GetActionHistoryVisibleRows();
+                var maxOffset = Math.Max(0, history.Lines.Count - visibleRows);
+                offset = Math.Clamp(offset, 0, maxOffset);
+                RenderActionHistoryFrame(title, history.Lines, offset, waitingForDismiss: true);
+
+                var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
+                {
+                    continue;
+                }
+
+                var key = await keyTask.ConfigureAwait(false);
+                if (key.Key is ConsoleKey.Enter or ConsoleKey.Escape)
+                {
+                    return;
+                }
+                if (key.Key == ConsoleKey.UpArrow)
+                {
+                    offset = Math.Max(0, offset - 1);
+                }
+                else if (key.Key == ConsoleKey.DownArrow)
+                {
+                    offset = Math.Min(maxOffset, offset + 1);
+                }
+                keyTask = ReadKeyAsync();
+            }
+        }
+        finally
+        {
+            RestoreConsole();
+        }
+    }
+
     public async Task<bool> ConfirmAsync(
         string title,
         string message,
         string confirmLabel,
         InteractiveStatusSnapshot currentStatus,
+        InteractiveActionHistory? history = null,
         CancellationToken cancellationToken = default)
     {
         status = currentStatus;
@@ -442,7 +518,7 @@ internal sealed class InteractiveTerminalUi
                 cancellationToken.ThrowIfCancellationRequested();
                 UpdateLayout();
                 UpdateAmbientSweepState();
-                RenderConfirmFrame(title, message, confirmLabel);
+                RenderConfirmFrame(title, message, confirmLabel, history?.Lines);
 
                 var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
                 if (completed != keyTask)
@@ -707,15 +783,18 @@ internal sealed class InteractiveTerminalUi
         string prefix,
         string digits,
         int minimumDigits,
-        int maximumDigits)
+        int maximumDigits,
+        IReadOnlyList<InteractiveActionLine>? history)
     {
         var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
-        PutWrapped(canvas, contentX, contentY, contentWidth, prompt, Palette.Text);
-        Put(canvas, contentX, contentY + 3, Truncate(prefix + digits + "_", contentWidth), Palette.Bright);
+        var historyRows = DrawActionHistoryTail(canvas, contentX, contentY, contentWidth, history, maxRows: 3);
+        var promptY = contentY + historyRows + (historyRows > 0 ? 1 : 0);
+        Put(canvas, contentX, promptY, Truncate(prompt, contentWidth), Palette.Text);
+        Put(canvas, contentX, promptY + 2, Truncate(prefix + digits + "_", contentWidth), Palette.Bright);
         var requirement = minimumDigits == maximumDigits
             ? $"Нужно цифр: {minimumDigits}"
             : $"Цифр: {minimumDigits}–{maximumDigits}";
-        Put(canvas, contentX, contentY + 5, requirement, Palette.Dim);
+        Put(canvas, contentX, promptY + 4, requirement, Palette.Dim);
         Center(canvas, CanvasHeight - 1, "Enter продолжить   Backspace удалить   Esc отмена", Palette.Dim);
         Render(canvas);
     }
@@ -728,14 +807,120 @@ internal sealed class InteractiveTerminalUi
         Render(canvas);
     }
 
-    private void RenderConfirmFrame(string title, string message, string confirmLabel)
+    private void RenderConfirmFrame(
+        string title,
+        string message,
+        string confirmLabel,
+        IReadOnlyList<InteractiveActionLine>? history)
     {
         var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
-        PutWrapped(canvas, contentX, contentY, contentWidth, message, Palette.Text);
-        DrawSelectable(canvas, contentX, contentY + 5, '1', confirmLabel, selected == 0);
-        DrawSelectable(canvas, contentX, contentY + 6, '0', "Отмена", selected == 1);
+        var historyRows = DrawActionHistoryTail(canvas, contentX, contentY, contentWidth, history, maxRows: 3);
+        if (historyRows == 0)
+        {
+            PutWrapped(canvas, contentX, contentY, contentWidth, message, Palette.Text);
+            DrawSelectable(canvas, contentX, contentY + 5, '1', confirmLabel, selected == 0);
+            DrawSelectable(canvas, contentX, contentY + 6, '0', "Отмена", selected == 1);
+        }
+        else
+        {
+            var messageY = contentY + historyRows + 1;
+            Put(canvas, contentX, messageY, Truncate(message, contentWidth), Palette.Text);
+            DrawSelectable(canvas, contentX, messageY + 3, '1', confirmLabel, selected == 0);
+            DrawSelectable(canvas, contentX, messageY + 4, '0', "Отмена", selected == 1);
+        }
         Center(canvas, CanvasHeight - 1, "↑ ↓ выбрать   Enter продолжить   1/0 сразу   Esc отмена", Palette.Dim);
         Render(canvas);
+    }
+
+    private void RenderActionHistoryFrame(
+        string title,
+        IReadOnlyList<InteractiveActionLine> lines,
+        int? offset,
+        bool waitingForDismiss)
+    {
+        var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
+        var visibleRows = GetActionHistoryVisibleRows();
+        var start = offset ?? Math.Max(0, lines.Count - visibleRows);
+        start = Math.Clamp(start, 0, Math.Max(0, lines.Count - visibleRows));
+        var count = Math.Min(visibleRows, Math.Max(0, lines.Count - start));
+
+        for (var index = 0; index < count; index++)
+        {
+            DrawActionHistoryLine(canvas, contentX, contentY + index, contentWidth, lines[start + index]);
+        }
+
+        if (lines.Count > visibleRows)
+        {
+            PutRightAligned(
+                canvas,
+                contentX,
+                contentX + contentWidth,
+                contentY + visibleRows,
+                $"{start + 1}–{start + count} / {lines.Count}",
+                Palette.Dim);
+        }
+
+        Center(
+            canvas,
+            CanvasHeight - 1,
+            waitingForDismiss
+                ? "↑ ↓ история   Enter / Esc — вернуться"
+                : "Выполняется...",
+            Palette.Dim);
+        Render(canvas);
+    }
+
+    private int DrawActionHistoryTail(
+        Cell[,] canvas,
+        int x,
+        int y,
+        int width,
+        IReadOnlyList<InteractiveActionLine>? lines,
+        int maxRows)
+    {
+        if (lines is null || lines.Count == 0 || maxRows <= 0)
+        {
+            return 0;
+        }
+
+        var count = Math.Min(maxRows, lines.Count);
+        var start = lines.Count - count;
+        for (var index = 0; index < count; index++)
+        {
+            DrawActionHistoryLine(canvas, x, y + index, width, lines[start + index]);
+        }
+        return count;
+    }
+
+    private static char ActionLineSymbol(InteractiveActionLineKind kind) => kind switch
+    {
+        InteractiveActionLineKind.Active => '›',
+        InteractiveActionLineKind.Success => '✓',
+        InteractiveActionLineKind.Warning => '!',
+        InteractiveActionLineKind.Error => '×',
+        _ => '·'
+    };
+
+    private static Palette ActionLinePalette(InteractiveActionLineKind kind) => kind switch
+    {
+        InteractiveActionLineKind.Active => Palette.Highlight,
+        InteractiveActionLineKind.Success => Palette.Good,
+        InteractiveActionLineKind.Warning => Palette.Warning,
+        InteractiveActionLineKind.Error => Palette.Error,
+        _ => Palette.Text
+    };
+
+    private static int GetActionHistoryVisibleRows() => PaneHeight - 4;
+
+    private void DrawActionHistoryLine(
+        Cell[,] canvas,
+        int x,
+        int y,
+        int width,
+        InteractiveActionLine line)
+    {
+        Put(canvas, x, y, ActionLineSymbol(line.Kind).ToString(), ActionLinePalette(line.Kind));
+        Put(canvas, x + 2, y, Truncate(line.Text, Math.Max(1, width - 2)), ActionLinePalette(line.Kind));
     }
 
     private void RenderDetailsFrame(
@@ -1267,6 +1452,8 @@ internal sealed class InteractiveTerminalUi
         Palette.Highlight => "\u001b[38;2;132;220;255m",
         Palette.Bright => "\u001b[38;2;238;250;255m",
         Palette.Good => "\u001b[38;2;104;207;174m",
+        Palette.Warning => "\u001b[38;2;255;205;96m",
+        Palette.Error => "\u001b[38;2;255;116;116m",
         Palette.Dim => "\u001b[38;2;92;122;139m",
         _ => "\u001b[38;2;166;194;208m"
     };
@@ -1280,6 +1467,8 @@ internal sealed class InteractiveTerminalUi
         Palette.Highlight => ConsoleColor.Cyan,
         Palette.Bright => ConsoleColor.White,
         Palette.Good => ConsoleColor.Green,
+        Palette.Warning => ConsoleColor.Yellow,
+        Palette.Error => ConsoleColor.Red,
         Palette.Dim => ConsoleColor.DarkGray,
         _ => ConsoleColor.Gray
     };
@@ -1375,6 +1564,8 @@ internal sealed class InteractiveTerminalUi
         Highlight,
         Bright,
         Good,
+        Warning,
+        Error,
         Dim,
         Text
     }

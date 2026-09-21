@@ -159,8 +159,15 @@ assert 'IS74Wifi.App (Local Debug)' in launch_settings and 'IS74W_RUN_LOCAL' in 
 # successful manual authorization remains visible until the user returns, and technical details open copy-friendly.
 assert 'Esc выход' in csharp_ui, 'main menu must label Esc as exit'
 assert 'minimumDigits: 4' in csharp_program and 'maximumDigits: 4' in csharp_program, 'SMS confirmation must require exactly four digits'
-assert 'isError: !IsSuccessfulMenuAuthorization(outcome)' in csharp_program, 'manual authorization result must stay visible for success and failure'
+assert 'ShowActionHistoryAsync' in csharp_program and 'DescribeAuthorizationOutcomeForUi(outcome)' in csharp_program, 'manual authorization history must stay visible for success and failure'
 assert 'IS74Wifi-status.txt' in csharp_program and 'notepad.exe' in csharp_program, 'detailed status must open as a copy-friendly external report'
 assert 'smsCode.Length != 4' in csharp_program, 'non-interactive registration must enforce the same four-digit SMS contract'
+
+# Multi-step interactive actions keep a readable, scrollable history instead of replacing the pane with only a final verdict.
+action_history = (root / 'src' / 'IS74Wifi.App' / 'InteractiveActionHistory.cs').read_text(encoding='utf-8')
+assert 'InteractiveActionHistory' in action_history and 'InteractiveActionLineKind.Active' in action_history
+assert 'ShowActionProgress' in csharp_ui and 'ShowActionHistoryAsync' in csharp_ui, 'terminal action journal rendering missing'
+assert 'UpdateProgressStage.VerifyingChecksum' in csharp_program and 'UpdateApplyProgressStage.ValidatingExecutable' in csharp_program, 'update workflow must expose package verification/apply history'
+assert 'history: history' in csharp_program, 'registration prompts must preserve prior action history'
 
 print('static checks: OK')

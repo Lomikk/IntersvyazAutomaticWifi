@@ -24,6 +24,7 @@ public sealed class AuthorizationFlow(
         {
             return Outcome(AuthorizationOutcomeKind.WrongWifi);
         }
+        ReportProgress(request, AuthorizationProgressStage.TargetWifiConfirmed);
 
         if (!request.Force)
         {
@@ -72,6 +73,7 @@ public sealed class AuthorizationFlow(
         {
             return HandleBaselineFailure(baseline.Failure!, request.Reason);
         }
+        ReportProgress(request, AuthorizationProgressStage.BaselineLoaded);
 
         var budget = state.RegisterStepOneSend(request.Reason);
         if (!budget.Allowed)
@@ -95,6 +97,7 @@ public sealed class AuthorizationFlow(
             baselineId,
             criticalClock,
             pollCts.Token);
+        ReportProgress(request, AuthorizationProgressStage.CaptiveRequestStarted);
 
         CaptivePortalResult<StepOneResponse>? stepOne = null;
         PushPollingResult? pollResult = null;
@@ -214,6 +217,7 @@ public sealed class AuthorizationFlow(
         state.ClearPreStepFailure();
 
         var candidate = pollResult.Candidate!;
+        ReportProgress(request, AuthorizationProgressStage.FreshCodeReceived);
         var codeObservation = pollResult.Observations
             .Where(observation => observation.MessageId == candidate.MessageId && observation.Failure is null)
             .OrderBy(observation => observation.ObservedMilliseconds)
@@ -228,6 +232,7 @@ public sealed class AuthorizationFlow(
             observedStepTwoLocation = stepOne.Value.StepTwoUri;
         }
 
+        ReportProgress(request, AuthorizationProgressStage.StepTwoStarted);
         var stepTwo = await portal.SendStepTwoAsync(
             request.Phone,
             candidate.Code,
@@ -259,6 +264,7 @@ public sealed class AuthorizationFlow(
         {
             if (stepTwo.Failure?.Kind == CaptivePortalFailureKind.Transport)
             {
+                ReportProgress(request, AuthorizationProgressStage.InternetCheckStarted);
                 var recovered = await ConfirmInternetOnScheduleAsync(
                     options.LostStepTwoProbeOffsetsMilliseconds,
                     options.RecoveryInternetProbeTimeout,
@@ -266,6 +272,7 @@ public sealed class AuthorizationFlow(
                 if (recovered)
                 {
                     var authorizedAt = state.MarkSuccess(serverDate: stepTwoStartedAt, internetConfirmed: true);
+                    ReportProgress(request, AuthorizationProgressStage.InternetConfirmed);
                     return new AuthorizationOutcome(
                         AuthorizationOutcomeKind.Success,
                         InternetConfirmed: true,
@@ -292,7 +299,9 @@ public sealed class AuthorizationFlow(
                 Timing: timing);
         }
 
+        ReportProgress(request, AuthorizationProgressStage.StepTwoAccepted);
         var acceptedAt = state.MarkSuccess(stepTwo.Value!.ServerDate, internetConfirmed: false);
+        ReportProgress(request, AuthorizationProgressStage.InternetCheckStarted);
         var internetConfirmed = await ConfirmInternetOnScheduleAsync(
             options.PostSuccessProbeOffsetsMilliseconds,
             options.PostSuccessInternetProbeTimeout,
@@ -300,6 +309,7 @@ public sealed class AuthorizationFlow(
         if (internetConfirmed)
         {
             state.MarkInternetConfirmed();
+            ReportProgress(request, AuthorizationProgressStage.InternetConfirmed);
         }
 
         return new AuthorizationOutcome(
@@ -478,6 +488,18 @@ public sealed class AuthorizationFlow(
             $"targetMs={timing.CodeTargetMilliseconds?.ToString() ?? ""} pollStartMs={timing.CodePollStartMilliseconds?.ToString() ?? ""} " +
             $"codeObservedMs={timing.CodeObservedMilliseconds?.ToString() ?? ""} stepTwoStartMs={timing.StepTwoStartMilliseconds?.ToString() ?? ""} " +
             $"stepTwoDoneMs={timing.StepTwoDoneMilliseconds?.ToString() ?? ""} polls=[{pollSummary}]");
+    }
+
+    private static void ReportProgress(AuthorizationRequest request, AuthorizationProgressStage stage)
+    {
+        try
+        {
+            request.Progress?.Invoke(stage);
+        }
+        catch
+        {
+            // Progress reporting is observational and must never change authorization semantics.
+        }
     }
 
     private AuthorizationOutcome Cancel(AuthorizationAttemptReason reason, AuthorizationTiming? timing = null)

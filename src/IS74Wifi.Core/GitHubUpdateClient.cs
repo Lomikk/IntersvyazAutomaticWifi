@@ -20,6 +20,20 @@ public sealed record PreparedUpdate(
     string ExecutablePath,
     string ZipSha256);
 
+public enum UpdateProgressStage
+{
+    RequestingReleases,
+    ReleasesLoaded,
+    DownloadingPackage,
+    PackageDownloaded,
+    DownloadingChecksum,
+    ChecksumDownloaded,
+    VerifyingChecksum,
+    ChecksumVerified,
+    ExtractingPackage,
+    PackageExtracted
+}
+
 internal sealed record GitHubReleaseDocument(
     [property: JsonPropertyName("tag_name")] string TagName,
     [property: JsonPropertyName("draft")] bool Draft,
@@ -39,6 +53,7 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
     public async Task<UpdateDescriptor?> CheckForUpdateAsync(
         string currentVersion,
         bool includePrerelease,
+        Action<UpdateProgressStage>? progress = null,
         CancellationToken cancellationToken = default)
     {
         if (!SemanticVersion.TryParse(currentVersion, out var current))
@@ -49,6 +64,7 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
         request.Headers.UserAgent.ParseAdd($"IS74Wifi/{currentVersion.TrimStart('v')}");
         request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2026-03-10");
 
+        ReportProgress(progress, UpdateProgressStage.RequestingReleases);
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
@@ -58,6 +74,7 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
             stream,
             UpdateJsonContext.Default.GitHubReleaseDocumentArray,
             cancellationToken).ConfigureAwait(false) ?? [];
+        ReportProgress(progress, UpdateProgressStage.ReleasesLoaded);
 
         UpdateDescriptor? selected = null;
         SemanticVersion selectedVersion = default;
@@ -96,6 +113,7 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
 
     public async Task<PreparedUpdate> DownloadAndVerifyAsync(
         UpdateDescriptor descriptor,
+        Action<UpdateProgressStage>? progress = null,
         CancellationToken cancellationToken = default)
     {
         var work = Path.Combine(Path.GetTempPath(), "IS74Wifi-update-" + Guid.NewGuid().ToString("N"));
@@ -105,24 +123,44 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
 
         try
         {
+            ReportProgress(progress, UpdateProgressStage.DownloadingPackage);
             await DownloadFileAsync(descriptor.ZipDownloadUrl, zipPath, cancellationToken).ConfigureAwait(false);
+            ReportProgress(progress, UpdateProgressStage.PackageDownloaded);
+            ReportProgress(progress, UpdateProgressStage.DownloadingChecksum);
             await DownloadFileAsync(descriptor.ChecksumDownloadUrl, checksumPath, cancellationToken).ConfigureAwait(false);
+            ReportProgress(progress, UpdateProgressStage.ChecksumDownloaded);
 
+            ReportProgress(progress, UpdateProgressStage.VerifyingChecksum);
             var expected = ParseChecksum(await File.ReadAllTextAsync(checksumPath, cancellationToken).ConfigureAwait(false), descriptor.ZipAssetName);
             var actual = await ComputeSha256Async(zipPath, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException($"SHA-256 обновления не совпал. Ожидалось {expected}, получено {actual}.");
             }
+            ReportProgress(progress, UpdateProgressStage.ChecksumVerified);
 
             var executablePath = Path.Combine(work, "IS74Wifi-new.exe");
+            ReportProgress(progress, UpdateProgressStage.ExtractingPackage);
             ExtractSingleExecutable(zipPath, executablePath);
+            ReportProgress(progress, UpdateProgressStage.PackageExtracted);
             return new PreparedUpdate(descriptor, work, executablePath, actual);
         }
         catch
         {
             TryDeleteDirectory(work);
             throw;
+        }
+    }
+
+    private static void ReportProgress(Action<UpdateProgressStage>? progress, UpdateProgressStage stage)
+    {
+        try
+        {
+            progress?.Invoke(stage);
+        }
+        catch
+        {
+            // Progress reporting is observational and must not affect update integrity.
         }
     }
 
