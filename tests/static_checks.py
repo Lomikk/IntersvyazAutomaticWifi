@@ -169,5 +169,7 @@ assert 'InteractiveActionHistory' in action_history and 'InteractiveActionLineKi
 assert 'ShowActionProgress' in csharp_ui and 'ShowActionHistoryAsync' in csharp_ui, 'terminal action journal rendering missing'
 assert 'UpdateProgressStage.VerifyingChecksum' in csharp_program and 'UpdateApplyProgressStage.ValidatingExecutable' in csharp_program, 'update workflow must expose package verification/apply history'
 assert 'history: history' in csharp_program, 'registration prompts must preserve prior action history'
+assert 'BuildActionHistoryRows' in csharp_ui and 'WrapText(line.Text' in csharp_ui, 'action history must wrap to the current pane width'
+assert 'Truncate(line.Text' not in csharp_ui, 'action history must wrap instead of truncating long entries'
 
 print('static checks: OK')

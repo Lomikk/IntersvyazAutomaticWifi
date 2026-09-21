@@ -456,7 +456,8 @@ internal sealed class InteractiveTerminalUi
         CancellationToken cancellationToken = default)
     {
         status = currentStatus;
-        var offset = int.MaxValue;
+        var offset = 0;
+        var pinnedToEnd = true;
         PrepareInteractiveConsole(clear: false);
         try
         {
@@ -467,8 +468,9 @@ internal sealed class InteractiveTerminalUi
                 UpdateLayout();
                 UpdateAmbientSweepState();
                 var visibleRows = GetActionHistoryVisibleRows();
-                var maxOffset = Math.Max(0, history.Lines.Count - visibleRows);
-                offset = Math.Clamp(offset, 0, maxOffset);
+                var physicalRowCount = BuildActionHistoryRows(history.Lines, GetActionContentWidth()).Count;
+                var maxOffset = Math.Max(0, physicalRowCount - visibleRows);
+                offset = pinnedToEnd ? maxOffset : Math.Clamp(offset, 0, maxOffset);
                 RenderActionHistoryFrame(title, history.Lines, offset, waitingForDismiss: true);
 
                 var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
@@ -485,10 +487,12 @@ internal sealed class InteractiveTerminalUi
                 if (key.Key == ConsoleKey.UpArrow)
                 {
                     offset = Math.Max(0, offset - 1);
+                    pinnedToEnd = false;
                 }
                 else if (key.Key == ConsoleKey.DownArrow)
                 {
                     offset = Math.Min(maxOffset, offset + 1);
+                    pinnedToEnd = offset >= maxOffset;
                 }
                 keyTask = ReadKeyAsync();
             }
@@ -839,24 +843,25 @@ internal sealed class InteractiveTerminalUi
         bool waitingForDismiss)
     {
         var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
+        var rows = BuildActionHistoryRows(lines, contentWidth);
         var visibleRows = GetActionHistoryVisibleRows();
-        var start = offset ?? Math.Max(0, lines.Count - visibleRows);
-        start = Math.Clamp(start, 0, Math.Max(0, lines.Count - visibleRows));
-        var count = Math.Min(visibleRows, Math.Max(0, lines.Count - start));
+        var maxOffset = Math.Max(0, rows.Count - visibleRows);
+        var start = Math.Clamp(offset ?? maxOffset, 0, maxOffset);
+        var count = Math.Min(visibleRows, Math.Max(0, rows.Count - start));
 
         for (var index = 0; index < count; index++)
         {
-            DrawActionHistoryLine(canvas, contentX, contentY + index, contentWidth, lines[start + index]);
+            DrawActionHistoryRow(canvas, contentX, contentY + index, rows[start + index]);
         }
 
-        if (lines.Count > visibleRows)
+        if (rows.Count > visibleRows)
         {
             PutRightAligned(
                 canvas,
                 contentX,
                 contentX + contentWidth,
                 contentY + visibleRows,
-                $"{start + 1}–{start + count} / {lines.Count}",
+                $"{start + 1}–{start + count} / {rows.Count}",
                 Palette.Dim);
         }
 
@@ -883,11 +888,12 @@ internal sealed class InteractiveTerminalUi
             return 0;
         }
 
-        var count = Math.Min(maxRows, lines.Count);
-        var start = lines.Count - count;
+        var rows = BuildActionHistoryRows(lines, width);
+        var count = Math.Min(maxRows, rows.Count);
+        var start = rows.Count - count;
         for (var index = 0; index < count; index++)
         {
-            DrawActionHistoryLine(canvas, x, y + index, width, lines[start + index]);
+            DrawActionHistoryRow(canvas, x, y + index, rows[start + index]);
         }
         return count;
     }
@@ -912,15 +918,39 @@ internal sealed class InteractiveTerminalUi
 
     private static int GetActionHistoryVisibleRows() => PaneHeight - 4;
 
-    private void DrawActionHistoryLine(
+    private int GetActionContentWidth() => compactLayout
+        ? Math.Max(10, canvasWidth - 8)
+        : Math.Max(1, paneWidth - 6);
+
+    private static List<ActionHistoryRow> BuildActionHistoryRows(
+        IReadOnlyList<InteractiveActionLine> lines,
+        int contentWidth)
+    {
+        var textWidth = Math.Max(1, contentWidth - 2);
+        var rows = new List<ActionHistoryRow>();
+        foreach (var line in lines)
+        {
+            var wrapped = WrapText(line.Text, textWidth);
+            for (var index = 0; index < wrapped.Count; index++)
+            {
+                rows.Add(new ActionHistoryRow(line.Kind, wrapped[index], ShowSymbol: index == 0));
+            }
+        }
+        return rows;
+    }
+
+    private static void DrawActionHistoryRow(
         Cell[,] canvas,
         int x,
         int y,
-        int width,
-        InteractiveActionLine line)
+        ActionHistoryRow row)
     {
-        Put(canvas, x, y, ActionLineSymbol(line.Kind).ToString(), ActionLinePalette(line.Kind));
-        Put(canvas, x + 2, y, Truncate(line.Text, Math.Max(1, width - 2)), ActionLinePalette(line.Kind));
+        var palette = ActionLinePalette(row.Kind);
+        if (row.ShowSymbol)
+        {
+            Put(canvas, x, y, ActionLineSymbol(row.Kind).ToString(), palette);
+        }
+        Put(canvas, x + 2, y, row.Text, palette);
     }
 
     private void RenderDetailsFrame(
@@ -962,7 +992,7 @@ internal sealed class InteractiveTerminalUi
             DrawBox(canvas, 1, boxY, Math.Max(20, canvasWidth - 2), boxHeight, title);
             contentX = 4;
             contentY = boxY + 2;
-            contentWidth = Math.Max(10, canvasWidth - 8);
+            contentWidth = GetActionContentWidth();
             return canvas;
         }
 
@@ -972,7 +1002,7 @@ internal sealed class InteractiveTerminalUi
         DrawStatusPane(canvas);
         contentX = leftPaneX + 3;
         contentY = PaneY + 2;
-        contentWidth = paneWidth - 6;
+        contentWidth = GetActionContentWidth();
         return canvas;
     }
 
@@ -1181,23 +1211,63 @@ internal sealed class InteractiveTerminalUi
 
     private static void PutWrapped(Cell[,] canvas, int x, int y, int width, string text, Palette color)
     {
-        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var row = y;
+        var lines = WrapText(text, Math.Max(1, width));
+        for (var index = 0; index < lines.Count; index++)
+        {
+            Put(canvas, x, y + index, lines[index], color);
+        }
+    }
+
+    private static List<string> WrapText(string? text, int width)
+    {
+        width = Math.Max(1, width);
+        var value = string.IsNullOrWhiteSpace(text) ? "—" : text.Trim();
+        var words = value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var result = new List<string>();
         var line = new StringBuilder();
+
         foreach (var word in words)
         {
             if (line.Length > 0 && line.Length + 1 + word.Length > width)
             {
-                Put(canvas, x, row++, line.ToString(), color);
+                result.Add(line.ToString());
                 line.Clear();
             }
-            if (line.Length > 0) line.Append(' ');
-            line.Append(word);
+
+            var remaining = word;
+            while (remaining.Length > width)
+            {
+                if (line.Length > 0)
+                {
+                    result.Add(line.ToString());
+                    line.Clear();
+                }
+                result.Add(remaining[..width]);
+                remaining = remaining[width..];
+            }
+
+            if (remaining.Length == 0)
+            {
+                continue;
+            }
+
+            if (line.Length > 0)
+            {
+                line.Append(' ');
+            }
+            line.Append(remaining);
         }
+
         if (line.Length > 0)
         {
-            Put(canvas, x, row, line.ToString(), color);
+            result.Add(line.ToString());
         }
+
+        if (result.Count == 0)
+        {
+            result.Add("—");
+        }
+        return result;
     }
 
     private static int BannerWidth => Banner.Max(line => line.Length);
@@ -1552,6 +1622,11 @@ internal sealed class InteractiveTerminalUi
         char Hotkey,
         string Label,
         InteractiveMenuAction Action);
+
+    private readonly record struct ActionHistoryRow(
+        InteractiveActionLineKind Kind,
+        string Text,
+        bool ShowSymbol);
 
     private readonly record struct Cell(char Character, Palette Color);
 
