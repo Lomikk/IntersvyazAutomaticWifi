@@ -432,8 +432,6 @@ internal static class Program
         Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
         Console.WriteLine($"Интернет                     : {(internet.Online ? "доступен" : "не подтверждён")}");
         var displayedSsid = GetDisplayedWifiSsid();
-        var updateMaintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
-        var updateState = updateMaintenance.LoadState();
         Console.WriteLine($"Сеть                         : {(app.Settings.IgnoreNetworkCheck ? "проверка отключена ○" : FormatWifiNetwork(displayedSsid))}");
         Console.WriteLine($"Авторизация                  : {FormatWifiAuthorization(state)}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
@@ -2135,6 +2133,8 @@ internal static class Program
         var automatic = installation.IsInstalled && app.Autostart.IsEnabledFor(installation.ExecutablePath);
         var installedVersion = installation.ReadInstalledVersion();
         var displayedSsid = GetDisplayedWifiSsid();
+        var updateMaintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
+        var updateState = updateMaintenance.LoadState();
 
         var lines = new List<string>
         {
