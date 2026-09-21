@@ -188,6 +188,9 @@ public sealed record TelemetryLeaderboardEntry
     public double? LatencyMs { get; init; }
     public double? JitterMs { get; init; }
     public double? PacketLossPct { get; init; }
+    public string WifiSignalBucket { get; init; } = "unknown";
+    public string WifiBand { get; init; } = "unknown";
+    public string TimeBucket { get; init; } = "unknown";
 }
 
 public sealed record TelemetryUploadState(

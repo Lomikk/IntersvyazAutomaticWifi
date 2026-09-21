@@ -219,4 +219,20 @@ assert 'Guid.NewGuid().ToString("N")' in telemetry_store, 'telemetry install ID 
 assert 'IS74W_TELEMETRY_URL' in csharp_runtime, 'telemetry endpoint override missing'
 assert 'delay >= TimeSpan.FromMinutes(1)' in csharp_program and 'TryFlushIfDueAsync' in csharp_program, 'agent must upload telemetry only away from the near-expiry critical window'
 
+# Campus speed test: reproduce the provider's observed standalone LibreSpeed
+# measurement traffic without leaking the captured public IP or calling the
+# provider's own telemetry endpoint.
+speedtest = (root / 'src' / 'IS74Wifi.Core' / 'Is74SpeedTestProvider.cs').read_text(encoding='utf-8')
+speedtest_models = (root / 'src' / 'IS74Wifi.Core' / 'SpeedTestModels.cs').read_text(encoding='utf-8')
+telemetry_client = (root / 'src' / 'IS74Wifi.Core' / 'TelemetryClient.cs').read_text(encoding='utf-8')
+assert 'PingCount { get; init; } = 10' in speedtest, 'IS74 LibreSpeed ping count changed'
+assert 'DownloadStreams { get; init; } = 5' in speedtest and 'UploadStreams { get; init; } = 3' in speedtest, 'IS74 LibreSpeed stream profile changed'
+assert 'DownloadGraceTime { get; init; } = TimeSpan.FromSeconds(1.5)' in speedtest and 'UploadGraceTime { get; init; } = TimeSpan.FromSeconds(3)' in speedtest, 'IS74 LibreSpeed grace windows changed'
+assert 'OverheadCompensationFactor { get; init; } = 1.06' in speedtest, 'IS74 LibreSpeed bandwidth calibration changed'
+assert 'backend/garbage.php' in speedtest and 'backend/empty.php' in speedtest, 'IS74 speed-test endpoints missing'
+assert 'BuildUri("backend/getIP.php"' not in speedtest and 'BuildUri("results/telemetry.php"' not in speedtest, 'native speed test must not fetch public IP or submit provider telemetry'
+assert 'PacketLossPct: null' in speedtest, 'unsupported packet loss must remain unmeasured'
+assert 'IProgress<SpeedTestProgress>' in speedtest_models and 'CancellationToken' in speedtest_models, 'speed-test UI progress/cancellation contract missing'
+assert 'new HttpRequestMessage(HttpMethod.Post, endpoint)' in telemetry_client, 'generic Apps Script POST must not depend on undeployed route query parameters'
+
 print('static checks: OK')

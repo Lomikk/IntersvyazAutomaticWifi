@@ -91,27 +91,17 @@ If no HTTPS telemetry endpoint is configured, local collection continues and not
 
 ## Ingestion API contract
 
-The client models four logical interfaces. The Apps Script source is intentionally kept outside this public repository; production upload must stay disabled until the deployed script is verified to implement the same wire contract:
+The Apps Script source is intentionally kept outside this public repository. The currently supplied schema-v3 receiver exposes one generic JSON POST endpoint rather than route-specific POST handlers:
 
 ```text
-POST ?route=telemetry
-POST ?route=speedtest
-POST ?route=leaderboard
-GET  ?route=leaderboard
+POST <web-app endpoint>
 ```
 
-`POST telemetry` accepts only authorization attempts, mailbox polls, Internet probes, portal responses, and errors. A batch must belong to one `install_id`.
+The payload `event_type` selects the row schema (`attempt`, `mailbox_poll`, `internet_probe`, `portal_response`, `error`, `speed_test`, or `leaderboard_entry`). Authorization traces may use a `{batch_id, events[]}` envelope; a speed-test or leaderboard event may be posted as one flat JSON object. The receiver currently guards each request at 64 events / 64 KiB, which is why the local queue emits at most 64 events and targets roughly 60 KiB per transport batch.
 
-The intended backend anti-abuse limits are deliberately much higher than normal-client traffic and must be verified against the external Apps Script before deployment:
+The currently supplied `doGet()` is health/schema metadata only. It does **not** expose a public leaderboard view yet. `TelemetryClient.GetLeaderboardJsonAsync` therefore remains a future-facing client stub and must not be wired into the UI until the external backend adds a response that omits private `install_id` / `test_id`.
 
-- global write guard: 120 POST requests/minute;
-- telemetry: at most 8 upload requests per 6-hour window per `install_id`;
-- speed tests: at most 5 accepted tests per UTC day per `install_id`;
-- leaderboard publication: at most 50 entries per UTC day per `install_id`.
-
-These are safety/bug guards, not a cryptographic trust boundary. Because the client is open source, a deliberate attacker can generate new installation IDs. A future public deployment can put a rate-limiting gateway in front of the Apps Script if stronger abuse resistance becomes necessary.
-
-The external Apps Script design includes an `INGESTION_ENABLED=false` emergency write kill switch; because that backend is intentionally not versioned here, deployment verification must confirm it is present.
+No route-specific rate limits, accepted-tests-per-day limit, or ingestion kill switch are present in the supplied receiver. Those remain possible backend hardening work, not assumptions the current client may rely on. Because the client is open source, any future anti-abuse controls should be treated as operational guards rather than an identity/security boundary.
 
 ## Storage model
 

@@ -48,6 +48,22 @@ public static class HttpClientProfiles
         };
     }
 
+    public static HttpClient CreateSpeedTestClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = true,
+            UseProxy = false,
+            MaxConnectionsPerServer = 8,
+            AutomaticDecompression = System.Net.DecompressionMethods.None
+        };
+        handler.SslOptions.CertificateRevocationCheckMode = X509RevocationMode.NoCheck;
+        return new HttpClient(handler, disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+    }
+
     public static HttpClient CreateInternetProbeClient()
     {
         var handler = new SocketsHttpHandler

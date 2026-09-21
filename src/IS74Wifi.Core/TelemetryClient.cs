@@ -16,7 +16,7 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
         CancellationToken cancellationToken = default)
     {
         var body = BuildBatchEnvelope(batch.BatchId, batch.EventJson);
-        return await PostAsync("telemetry", body, timeout, cancellationToken).ConfigureAwait(false);
+        return await PostAsync(body, timeout, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<TelemetryWriteResult> SubmitSpeedTestAsync(
@@ -24,7 +24,6 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
         TimeSpan timeout,
         CancellationToken cancellationToken = default) =>
         PostAsync(
-            "speedtest",
             TelemetrySerialization.Serialize(value),
             timeout,
             cancellationToken);
@@ -34,7 +33,6 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
         TimeSpan timeout,
         CancellationToken cancellationToken = default) =>
         PostAsync(
-            "leaderboard",
             TelemetrySerialization.Serialize(value),
             timeout,
             cancellationToken);
@@ -59,14 +57,13 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
     }
 
     private async Task<TelemetryWriteResult> PostAsync(
-        string route,
         string json,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
-        using var request = new HttpRequestMessage(HttpMethod.Post, BuildRouteUri(route));
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         try

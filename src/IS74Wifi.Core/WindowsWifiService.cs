@@ -162,6 +162,135 @@ public static partial class WindowsWifiService
 
     public static bool IsTargetWifiConnected() => GetConnectedSsids().Any(SsidPolicy.IsTarget);
 
+    public static SpeedTestRadioSnapshot GetSpeedTestRadioSnapshot()
+    {
+        nint client = 0;
+        nint list = 0;
+        var candidates = new List<(string Ssid, WlanAssociationAttributes Association)>();
+
+        try
+        {
+            if (WlanOpenHandle(WlanClientVersionLonghorn, 0, out _, out client) != 0 || client == 0)
+            {
+                return new SpeedTestRadioSnapshot();
+            }
+
+            if (WlanEnumInterfaces(client, 0, out list) != 0 || list == 0)
+            {
+                return new SpeedTestRadioSnapshot();
+            }
+
+            var count = Marshal.ReadInt32(list, 0);
+            var itemSize = Marshal.SizeOf<WlanInterfaceInfo>();
+            var item = list + 8;
+
+            for (var i = 0; i < count; i++)
+            {
+                var info = Marshal.PtrToStructure<WlanInterfaceInfo>(item);
+                item += itemSize;
+
+                nint data = 0;
+                try
+                {
+                    var guid = info.InterfaceGuid;
+                    if (WlanQueryInterface(
+                            client,
+                            ref guid,
+                            WlanIntfOpcodeCurrentConnection,
+                            0,
+                            out _,
+                            out data,
+                            out _) != 0 ||
+                        data == 0)
+                    {
+                        continue;
+                    }
+
+                    var connection = Marshal.PtrToStructure<WlanConnectionAttributes>(data);
+                    var association = connection.AssociationAttributes;
+                    var nativeSsid = association.Dot11Ssid;
+                    var length = (int)Math.Min(nativeSsid.SsidLength, 32u);
+                    if (length <= 0 || nativeSsid.Ssid is null)
+                    {
+                        continue;
+                    }
+
+                    var ssid = Encoding.UTF8.GetString(nativeSsid.Ssid, 0, length);
+                    if (!string.IsNullOrEmpty(ssid))
+                    {
+                        candidates.Add((ssid, association));
+                    }
+                }
+                finally
+                {
+                    if (data != 0)
+                    {
+                        WlanFreeMemory(data);
+                    }
+                }
+            }
+        }
+        catch (DllNotFoundException)
+        {
+            return new SpeedTestRadioSnapshot();
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return new SpeedTestRadioSnapshot();
+        }
+        finally
+        {
+            if (list != 0)
+            {
+                WlanFreeMemory(list);
+            }
+            if (client != 0)
+            {
+                _ = WlanCloseHandle(client, 0);
+            }
+        }
+
+        var selected = candidates.FirstOrDefault(item => SsidPolicy.IsTarget(item.Ssid));
+        if (string.IsNullOrEmpty(selected.Ssid))
+        {
+            selected = candidates.FirstOrDefault();
+        }
+        if (string.IsNullOrEmpty(selected.Ssid))
+        {
+            return new SpeedTestRadioSnapshot();
+        }
+
+        var association = selected.Association;
+        return new SpeedTestRadioSnapshot(
+            WifiSignalBucket: SignalBucket(association.WlanSignalQuality),
+            WifiBand: "unknown",
+            ConnectionType: SsidPolicy.IsTarget(selected.Ssid) ? "campus_wifi" : "other_wifi",
+            LinkRxMbps: association.RxRate > 0 ? association.RxRate / 1000d : null,
+            LinkTxMbps: association.TxRate > 0 ? association.TxRate / 1000d : null,
+            WifiProtocol: WifiProtocol(association.Dot11PhyType));
+    }
+
+    private static string SignalBucket(uint quality) => quality switch
+    {
+        >= 80 => "excellent",
+        >= 60 => "good",
+        >= 40 => "fair",
+        _ => "poor"
+    };
+
+    private static string? WifiProtocol(int phyType) => phyType switch
+    {
+        2 or 5 => "802.11b",
+        4 => "802.11a",
+        6 => "802.11g",
+        7 => "802.11n",
+        8 => "802.11ac",
+        9 => "802.11ad",
+        10 => "802.11ax",
+        11 => "802.11be",
+        _ => null
+    };
+
     [LibraryImport("wlanapi.dll")]
     private static partial uint WlanOpenHandle(
         uint clientVersion,
