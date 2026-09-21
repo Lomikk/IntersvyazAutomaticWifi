@@ -34,7 +34,6 @@ internal sealed class InteractiveTerminalUi
     private readonly string productVersion;
     private readonly bool ansi;
     private InteractiveStatusSnapshot? status;
-    private string view = "main";
     private int selected;
     private DateTimeOffset nextAmbientSweepUtc = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(14);
     private DateTimeOffset? ambientSweepStartedUtc;
@@ -72,7 +71,6 @@ internal sealed class InteractiveTerminalUi
         CancellationToken cancellationToken = default)
     {
         status = initialStatus;
-        view = "main";
         selected = 0;
 
         if (!CanUseRichLayout)
@@ -127,14 +125,7 @@ internal sealed class InteractiveTerminalUi
 
                 if (key.Key == ConsoleKey.Escape)
                 {
-                    if (view == "main")
-                    {
-                        return InteractiveMenuAction.Exit;
-                    }
-
-                    view = "main";
-                    selected = 0;
-                    continue;
+                    return InteractiveMenuAction.Exit;
                 }
 
                 var items = GetCurrentItems();
@@ -161,13 +152,6 @@ internal sealed class InteractiveTerminalUi
                 }
 
                 var item = items[selected];
-                if (item.TargetView is not null)
-                {
-                    view = item.TargetView;
-                    selected = 0;
-                    continue;
-                }
-
                 if (item.Action != InteractiveMenuAction.None)
                 {
                     return item.Action;
@@ -301,21 +285,7 @@ internal sealed class InteractiveTerminalUi
         Console.WriteLine($"Агент        : {(snapshot.AgentRunning ? "работает" : "остановлен")}");
         Console.WriteLine();
 
-        var compactItems = new List<MenuItem>
-        {
-            new("Авторизовать Wi-Fi", InteractiveMenuAction.Connect),
-            new(snapshot.AutomaticAuthorizationEnabled ? "Отключить автоматическую авторизацию" : "Включить автоматическую авторизацию",
-                snapshot.AutomaticAuthorizationEnabled ? InteractiveMenuAction.DisableAutomaticAuthorization : InteractiveMenuAction.EnableAutomaticAuthorization),
-            new(snapshot.Registered ? "Сбросить регистрацию" : "Зарегистрировать устройство",
-                snapshot.Registered ? InteractiveMenuAction.ResetRegistration : InteractiveMenuAction.Register),
-            new("Показать подробное состояние", InteractiveMenuAction.ShowDetailedStatus),
-            new("Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
-            new("Проверить обновления", InteractiveMenuAction.Update),
-            new("Удалить IS74W", InteractiveMenuAction.Uninstall),
-            new("Выход", InteractiveMenuAction.Exit)
-        };
-
-        return RunCompactSelection(compactItems);
+        return RunCompactSelection(GetPrimaryItems(snapshot));
     }
 
     private InteractiveMenuAction RunCompactSelection(IReadOnlyList<MenuItem> items)
@@ -517,75 +487,7 @@ internal sealed class InteractiveTerminalUi
 
     private void DrawLeftPane(Cell[,] canvas)
     {
-        var title = view switch
-        {
-            "auto" => "АВТОМАТИЧЕСКИЙ ВХОД",
-            "registration" => "РЕГИСТРАЦИЯ",
-            "diagnostics" => "ДИАГНОСТИКА",
-            "updates" => "ОБНОВЛЕНИЯ",
-            "uninstall" => "УДАЛЕНИЕ",
-            "reset-confirm" => "ПОДТВЕРЖДЕНИЕ",
-            _ => "МЕНЮ"
-        };
-
-        DrawBox(canvas, LeftPaneX, PaneY, PaneWidth, PaneHeight, title);
-
-        if (view == "auto")
-        {
-            Put(canvas, LeftPaneX + 3, PaneY + 2, "Автоматическая авторизация", Palette.Dim);
-            Put(canvas, LeftPaneX + 5, PaneY + 3,
-                status?.AutomaticAuthorizationEnabled == true ? "● Включена" : "○ Выключена",
-                status?.AutomaticAuthorizationEnabled == true ? Palette.Good : Palette.Dim);
-            DrawCurrentItems(canvas, PaneY + 7);
-            return;
-        }
-
-        if (view == "registration")
-        {
-            Put(canvas, LeftPaneX + 3, PaneY + 2,
-                status?.Registered == true ? "● Устройство зарегистрировано" : "○ Регистрация отсутствует",
-                status?.Registered == true ? Palette.Good : Palette.Dim);
-            Put(canvas, LeftPaneX + 3, PaneY + 4, "Телефон", Palette.Dim);
-            Put(canvas, LeftPaneX + 14, PaneY + 4, Truncate(status?.MaskedPhone ?? "—", 17), Palette.Text);
-            Put(canvas, LeftPaneX + 3, PaneY + 5, "API-сессия", Palette.Dim);
-            Put(canvas, LeftPaneX + 14, PaneY + 5, Truncate(status?.ApiSessionEnd ?? "—", 17), Palette.Text);
-            DrawCurrentItems(canvas, PaneY + 8);
-            return;
-        }
-
-        if (view == "diagnostics")
-        {
-            Put(canvas, LeftPaneX + 3, PaneY + 2, "Состояние и журналы", Palette.Dim);
-            PutWrapped(canvas, LeftPaneX + 3, PaneY + 4, 29,
-                "Подробные технические данные вынесены из главного экрана.", Palette.Text);
-            DrawCurrentItems(canvas, PaneY + 8);
-            return;
-        }
-
-        if (view == "updates")
-        {
-            Put(canvas, LeftPaneX + 3, PaneY + 2, "Текущая версия", Palette.Dim);
-            Put(canvas, LeftPaneX + 3, PaneY + 3, Truncate(productVersion, 29), Palette.Text);
-            DrawCurrentItems(canvas, PaneY + 7);
-            return;
-        }
-
-        if (view == "uninstall")
-        {
-            PutWrapped(canvas, LeftPaneX + 3, PaneY + 2, 29,
-                "Будут удалены программа, автозапуск и все локальные данные.", Palette.Bright);
-            DrawCurrentItems(canvas, PaneY + 8);
-            return;
-        }
-
-        if (view == "reset-confirm")
-        {
-            PutWrapped(canvas, LeftPaneX + 3, PaneY + 2, 29,
-                "Удалить регистрацию и локальную Wi-Fi сессию?", Palette.Bright);
-            DrawCurrentItems(canvas, PaneY + 8);
-            return;
-        }
-
+        DrawBox(canvas, LeftPaneX, PaneY, PaneWidth, PaneHeight, "МЕНЮ");
         DrawCurrentItems(canvas, PaneY + 2);
     }
 
@@ -600,61 +502,29 @@ internal sealed class InteractiveTerminalUi
 
     private IReadOnlyList<MenuItem> GetCurrentItems()
     {
-        var automaticEnabled = status?.AutomaticAuthorizationEnabled == true;
-        var registered = status?.Registered == true;
+        return GetPrimaryItems(status);
+    }
 
-        return view switch
-        {
-            "auto" =>
-            [
-                new MenuItem(
-                    automaticEnabled ? "Отключить автовход" : "Включить автовход",
-                    automaticEnabled ? InteractiveMenuAction.DisableAutomaticAuthorization : InteractiveMenuAction.EnableAutomaticAuthorization),
-                new MenuItem("Назад", InteractiveMenuAction.None, "main")
-            ],
-            "registration" => registered
-                ?
-                [
-                    new MenuItem("Сбросить регистрацию", InteractiveMenuAction.None, "reset-confirm"),
-                    new MenuItem("Назад", InteractiveMenuAction.None, "main")
-                ]
-                :
-                [
-                    new MenuItem("Зарегистрировать устройство", InteractiveMenuAction.Register),
-                    new MenuItem("Назад", InteractiveMenuAction.None, "main")
-                ],
-            "reset-confirm" =>
-            [
-                new MenuItem("Да, удалить регистрацию", InteractiveMenuAction.ResetRegistration),
-                new MenuItem("Назад", InteractiveMenuAction.None, "registration")
-            ],
-            "diagnostics" =>
-            [
-                new MenuItem("Подробное состояние", InteractiveMenuAction.ShowDetailedStatus),
-                new MenuItem("Открыть логи", InteractiveMenuAction.OpenLogs),
-                new MenuItem("Назад", InteractiveMenuAction.None, "main")
-            ],
-            "updates" =>
-            [
-                new MenuItem("Проверить обновления", InteractiveMenuAction.Update),
-                new MenuItem("Назад", InteractiveMenuAction.None, "main")
-            ],
-            "uninstall" =>
-            [
-                new MenuItem("Удалить программу и данные", InteractiveMenuAction.Uninstall),
-                new MenuItem("Назад", InteractiveMenuAction.None, "main")
-            ],
-            _ =>
-            [
-                new MenuItem("Авторизовать Wi-Fi", InteractiveMenuAction.Connect),
-                new MenuItem("Автоматический вход", InteractiveMenuAction.None, "auto"),
-                new MenuItem("Регистрация", InteractiveMenuAction.None, "registration"),
-                new MenuItem("Диагностика", InteractiveMenuAction.None, "diagnostics"),
-                new MenuItem("Обновления", InteractiveMenuAction.None, "updates"),
-                new MenuItem("Удалить IS74W", InteractiveMenuAction.None, "uninstall"),
-                new MenuItem("Выход", InteractiveMenuAction.Exit)
-            ]
-        };
+    private static IReadOnlyList<MenuItem> GetPrimaryItems(InteractiveStatusSnapshot? snapshot)
+    {
+        var automaticEnabled = snapshot?.AutomaticAuthorizationEnabled == true;
+        var registered = snapshot?.Registered == true;
+
+        return
+        [
+            new MenuItem("Авторизовать Wi-Fi сейчас", InteractiveMenuAction.Connect),
+            new MenuItem(
+                automaticEnabled ? "Отключить автоавторизацию" : "Включить автоавторизацию",
+                automaticEnabled ? InteractiveMenuAction.DisableAutomaticAuthorization : InteractiveMenuAction.EnableAutomaticAuthorization),
+            new MenuItem(
+                registered ? "Сбросить регистрацию" : "Зарегистрировать устройство",
+                registered ? InteractiveMenuAction.ResetRegistration : InteractiveMenuAction.Register),
+            new MenuItem("Подробное состояние", InteractiveMenuAction.ShowDetailedStatus),
+            new MenuItem("Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
+            new MenuItem("Проверить обновления", InteractiveMenuAction.Update),
+            new MenuItem("Удалить программу и данные", InteractiveMenuAction.Uninstall),
+            new MenuItem("Выход", InteractiveMenuAction.Exit)
+        ];
     }
 
     private void DrawStatusPane(Cell[,] canvas)
@@ -950,8 +820,7 @@ internal sealed class InteractiveTerminalUi
 
     private readonly record struct MenuItem(
         string Label,
-        InteractiveMenuAction Action = InteractiveMenuAction.None,
-        string? TargetView = null);
+        InteractiveMenuAction Action);
 
     private readonly record struct Cell(char Character, Palette Color);
 
