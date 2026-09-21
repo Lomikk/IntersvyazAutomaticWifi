@@ -740,7 +740,8 @@ internal static class Program
         bool quiet,
         Action<UpdateProgressStage>? downloadProgress = null,
         Action<UpdateTransferProgress>? transferProgress = null,
-        Action<UpdateApplyProgressStage>? applyProgress = null)
+        Action<UpdateApplyProgressStage>? applyProgress = null,
+        Func<Task<bool>>? confirmApply = null)
     {
         if (!quiet) Console.WriteLine("Скачиваю обновление с GitHub Releases и проверяю SHA-256...");
         var prepared = await updater.DownloadAndVerifyAsync(update, downloadProgress, transferProgress).ConfigureAwait(false);
@@ -779,6 +780,26 @@ internal static class Program
             // This lets updater fixes ship with the update itself instead of
             // being delayed until the following release.
             File.Copy(prepared.ExecutablePath, helperPath, overwrite: true);
+            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.ReplacementScheduled);
+
+            if (confirmApply is not null && !await confirmApply().ConfigureAwait(false))
+            {
+                if (autostartWasEnabled)
+                {
+                    try
+                    {
+                        StartInstalledAgent(installedExecutable);
+                    }
+                    catch (Exception restartEx)
+                    {
+                        app.Logger.Write(DiagnosticLevel.Warn,
+                            $"update.cancel agent-restart warning type={restartEx.GetType().Name} message={restartEx.Message}");
+                    }
+                }
+
+                GitHubUpdateClient.TryDeleteDirectory(prepared.WorkingDirectory);
+                return false;
+            }
 
             var startInfo = new ProcessStartInfo(helperPath)
             {
@@ -797,7 +818,6 @@ internal static class Program
             _ = Process.Start(startInfo) ?? throw new InvalidOperationException("Не удалось запустить процесс применения обновления.");
             app.Logger.Write(DiagnosticLevel.Info,
                 $"update.scheduled from={ProductVersion} to={update.TagName} autostart={autostartWasEnabled}");
-            ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.ReplacementScheduled);
 
             if (!quiet)
             {
@@ -873,7 +893,7 @@ internal static class Program
         logger.Write(DiagnosticLevel.Info,
             $"update.apply start targetVersion={version} parentPid={parentPid} restartAgent={restartAgent} restartMenu={restartMenu}");
 
-        if (!WaitForProcessExit(parentPid, TimeSpan.FromSeconds(30)))
+        if (!WaitForProcessExit(parentPid))
         {
             logger.Write(DiagnosticLevel.Error, "update.apply failed waiting for parent process exit");
             return 3;
@@ -1251,6 +1271,21 @@ internal static class Program
 
         ScheduleDirectoryCleanup(work);
         return Directory.Exists(installDirectory) ? 3 : 0;
+    }
+
+    private static bool WaitForProcessExit(int processId)
+    {
+        if (processId <= 0 || processId == Environment.ProcessId) return true;
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            process.WaitForExit();
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
     }
 
     private static bool WaitForProcessExit(int processId, TimeSpan timeout)
@@ -1946,10 +1981,10 @@ internal static class Program
                     history.CompleteActive("Установленная копия подготовлена");
                     break;
                 case UpdateApplyProgressStage.SchedulingReplacement:
-                    history.Start("Планирую замену EXE после закрытия программы...");
+                    history.Start("Подготавливаю модуль установки обновления...");
                     break;
                 case UpdateApplyProgressStage.ReplacementScheduled:
-                    history.CompleteActive("Замена EXE запланирована");
+                    history.CompleteActive("Модуль установки обновления подготовлен");
                     break;
             }
             RenderProgress();
@@ -2001,21 +2036,23 @@ internal static class Program
                 quiet: true,
                 downloadProgress: ReportDownloadProgress,
                 transferProgress: ReportTransferProgress,
-                applyProgress: ReportApplyProgress).ConfigureAwait(false);
+                applyProgress: ReportApplyProgress,
+                confirmApply: async () =>
+                {
+                    history.AddSuccess($"Обновление {update.TagName} готово к установке");
+                    var confirmed = await ui.ConfirmAsync(
+                        "ОБНОВЛЕНИЕ ГОТОВО",
+                        $"Закрыть текущую версию IS74Wifi и установить {update.TagName} сейчас?",
+                        "Установить и перезапустить",
+                        GetInteractiveStatusSnapshot(),
+                        history).ConfigureAwait(false);
+                    if (!confirmed)
+                    {
+                        history.AddInfo("Установка обновления отменена");
+                    }
+                    return confirmed;
+                }).ConfigureAwait(false);
 
-            if (scheduled)
-            {
-                history.AddSuccess($"Обновление {update.TagName} подготовлено к установке");
-                history.AddInfo("После подтверждения управление перейдёт модулю обновления; терминал останется открыт");
-            }
-
-            await ui.ShowActionHistoryAsync(
-                "ОБНОВЛЕНИЕ",
-                history,
-                GetInteractiveStatusSnapshot(),
-                dismissHint: scheduled
-                    ? "↑ ↓ история   Enter / Esc — перезапустить и установить"
-                    : null).ConfigureAwait(false);
             return scheduled;
         }
         catch (Exception ex)

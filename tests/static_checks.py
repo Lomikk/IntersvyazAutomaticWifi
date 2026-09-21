@@ -179,6 +179,8 @@ assert 'UpdateTransferProgress' in csharp_update and 'BytesReceived' in csharp_u
 assert 'ConsoleSession.EnsureInteractiveConsole();' in csharp_program and 'command == "update-apply"' in csharp_program, 'update helper must keep the terminal console attached'
 assert 'File.Copy(prepared.ExecutablePath, helperPath, overwrite: true);' in csharp_program, 'verified new binary must drive the apply phase'
 assert 'ReplaceInstalledExecutableWithRetry' in csharp_program and 'attempts: 24' in csharp_program, 'update apply must retry transient executable locks'
+assert 'Func<Task<bool>>? confirmApply = null' in csharp_program and 'ОБНОВЛЕНИЕ ГОТОВО' in csharp_program, 'interactive update must confirm handoff before launching the apply helper'
+assert 'if (!WaitForProcessExit(parentPid))' in csharp_program, 'update apply helper must wait for deliberate user confirmation without a fixed timeout'
 assert 'IS74W_UPDATE_RESULT' in csharp_program and 'РЕЗУЛЬТАТ ОБНОВЛЕНИЯ' in csharp_program, 'post-restart update result handoff missing'
 
 print('static checks: OK')
