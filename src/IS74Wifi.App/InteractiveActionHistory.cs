@@ -41,6 +41,14 @@ internal sealed class InteractiveActionHistory
         }
     }
 
+    public void UpdateActive(string text)
+    {
+        if (!ReplaceLastActive(text, InteractiveActionLineKind.Active))
+        {
+            Start(text);
+        }
+    }
+
     public void WarnActive(string text)
     {
         if (!ReplaceLastActive(text, InteractiveActionLineKind.Warning))

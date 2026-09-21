@@ -172,4 +172,13 @@ assert 'history: history' in csharp_program, 'registration prompts must preserve
 assert 'BuildActionHistoryRows' in csharp_ui and 'WrapText(line.Text' in csharp_ui, 'action history must wrap to the current pane width'
 assert 'Truncate(line.Text' not in csharp_ui, 'action history must wrap instead of truncating long entries'
 
+# Self-update UX/reliability: the apply helper keeps the console alive, reports byte progress,
+# retries transient Windows file locks, and runs the apply phase from the verified new binary.
+csharp_update = (root / 'src' / 'IS74Wifi.Core' / 'GitHubUpdateClient.cs').read_text(encoding='utf-8')
+assert 'UpdateTransferProgress' in csharp_update and 'BytesReceived' in csharp_update and 'TotalBytes' in csharp_update, 'update download byte progress missing'
+assert 'ConsoleSession.EnsureInteractiveConsole();' in csharp_program and 'command == "update-apply"' in csharp_program, 'update helper must keep the terminal console attached'
+assert 'File.Copy(prepared.ExecutablePath, helperPath, overwrite: true);' in csharp_program, 'verified new binary must drive the apply phase'
+assert 'ReplaceInstalledExecutableWithRetry' in csharp_program and 'attempts: 24' in csharp_program, 'update apply must retry transient executable locks'
+assert 'IS74W_UPDATE_RESULT' in csharp_program and 'РЕЗУЛЬТАТ ОБНОВЛЕНИЯ' in csharp_program, 'post-restart update result handoff missing'
+
 print('static checks: OK')

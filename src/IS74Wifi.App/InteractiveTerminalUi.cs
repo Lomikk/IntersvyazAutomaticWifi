@@ -453,6 +453,7 @@ internal sealed class InteractiveTerminalUi
         string title,
         InteractiveActionHistory history,
         InteractiveStatusSnapshot currentStatus,
+        string? dismissHint = null,
         CancellationToken cancellationToken = default)
     {
         status = currentStatus;
@@ -471,7 +472,7 @@ internal sealed class InteractiveTerminalUi
                 var physicalRowCount = BuildActionHistoryRows(history.Lines, GetActionContentWidth()).Count;
                 var maxOffset = Math.Max(0, physicalRowCount - visibleRows);
                 offset = pinnedToEnd ? maxOffset : Math.Clamp(offset, 0, maxOffset);
-                RenderActionHistoryFrame(title, history.Lines, offset, waitingForDismiss: true);
+                RenderActionHistoryFrame(title, history.Lines, offset, waitingForDismiss: true, dismissHint);
 
                 var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
                 if (completed != keyTask)
@@ -840,7 +841,8 @@ internal sealed class InteractiveTerminalUi
         string title,
         IReadOnlyList<InteractiveActionLine> lines,
         int? offset,
-        bool waitingForDismiss)
+        bool waitingForDismiss,
+        string? dismissHint = null)
     {
         var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
         var rows = BuildActionHistoryRows(lines, contentWidth);
@@ -869,7 +871,7 @@ internal sealed class InteractiveTerminalUi
             canvas,
             CanvasHeight - 1,
             waitingForDismiss
-                ? "↑ ↓ история   Enter / Esc — вернуться"
+                ? dismissHint ?? "↑ ↓ история   Enter / Esc — вернуться"
                 : "Выполняется...",
             Palette.Dim);
         Render(canvas);

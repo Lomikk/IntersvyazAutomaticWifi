@@ -20,6 +20,11 @@ public sealed record PreparedUpdate(
     string ExecutablePath,
     string ZipSha256);
 
+public sealed record UpdateTransferProgress(
+    UpdateProgressStage Stage,
+    long BytesReceived,
+    long? TotalBytes);
+
 public enum UpdateProgressStage
 {
     RequestingReleases,
@@ -114,6 +119,7 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
     public async Task<PreparedUpdate> DownloadAndVerifyAsync(
         UpdateDescriptor descriptor,
         Action<UpdateProgressStage>? progress = null,
+        Action<UpdateTransferProgress>? transferProgress = null,
         CancellationToken cancellationToken = default)
     {
         var work = Path.Combine(Path.GetTempPath(), "IS74Wifi-update-" + Guid.NewGuid().ToString("N"));
@@ -124,10 +130,20 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
         try
         {
             ReportProgress(progress, UpdateProgressStage.DownloadingPackage);
-            await DownloadFileAsync(descriptor.ZipDownloadUrl, zipPath, cancellationToken).ConfigureAwait(false);
+            await DownloadFileAsync(
+                descriptor.ZipDownloadUrl,
+                zipPath,
+                UpdateProgressStage.DownloadingPackage,
+                transferProgress,
+                cancellationToken).ConfigureAwait(false);
             ReportProgress(progress, UpdateProgressStage.PackageDownloaded);
             ReportProgress(progress, UpdateProgressStage.DownloadingChecksum);
-            await DownloadFileAsync(descriptor.ChecksumDownloadUrl, checksumPath, cancellationToken).ConfigureAwait(false);
+            await DownloadFileAsync(
+                descriptor.ChecksumDownloadUrl,
+                checksumPath,
+                UpdateProgressStage.DownloadingChecksum,
+                transferProgress,
+                cancellationToken).ConfigureAwait(false);
             ReportProgress(progress, UpdateProgressStage.ChecksumDownloaded);
 
             ReportProgress(progress, UpdateProgressStage.VerifyingChecksum);
@@ -164,16 +180,61 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
         }
     }
 
-    private async Task DownloadFileAsync(Uri uri, string destination, CancellationToken cancellationToken)
+    private async Task DownloadFileAsync(
+        Uri uri,
+        string destination,
+        UpdateProgressStage stage,
+        Action<UpdateTransferProgress>? transferProgress,
+        CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.UserAgent.ParseAdd("IS74Wifi/updater");
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
+        var totalBytes = response.Content.Headers.ContentLength;
         await using var input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-        await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+        var buffer = new byte[81920];
+        long receivedBytes = 0;
+        long lastReportedBytes = 0;
+        ReportTransferProgress(transferProgress, stage, receivedBytes, totalBytes);
+
+        while (true)
+        {
+            var read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read == 0) break;
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+            receivedBytes += read;
+
+            if (receivedBytes - lastReportedBytes >= 256 * 1024 ||
+                (totalBytes.HasValue && receivedBytes >= totalBytes.Value))
+            {
+                ReportTransferProgress(transferProgress, stage, receivedBytes, totalBytes);
+                lastReportedBytes = receivedBytes;
+            }
+        }
+
+        if (lastReportedBytes != receivedBytes)
+        {
+            ReportTransferProgress(transferProgress, stage, receivedBytes, totalBytes);
+        }
+    }
+
+    private static void ReportTransferProgress(
+        Action<UpdateTransferProgress>? progress,
+        UpdateProgressStage stage,
+        long bytesReceived,
+        long? totalBytes)
+    {
+        try
+        {
+            progress?.Invoke(new UpdateTransferProgress(stage, bytesReceived, totalBytes));
+        }
+        catch
+        {
+            // Transfer progress is observational and must not affect update integrity.
+        }
     }
 
     public static string ParseChecksum(string content, string expectedFileName)

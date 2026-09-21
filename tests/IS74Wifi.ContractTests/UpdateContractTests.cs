@@ -156,12 +156,18 @@ internal static class UpdateContractTests
         var update = await updater.CheckForUpdateAsync("v0.1.0-alpha.9", includePrerelease: true);
         Assert(update?.TagName == "v0.1.0-alpha.10", "latest usable prerelease was not selected");
 
-        var prepared = await updater.DownloadAndVerifyAsync(update!);
+        var transfer = new List<UpdateTransferProgress>();
+        var prepared = await updater.DownloadAndVerifyAsync(update!, transferProgress: transfer.Add);
         try
         {
             Assert(File.Exists(prepared.ExecutablePath), "verified update executable was not extracted");
             Assert(File.ReadAllText(prepared.ExecutablePath) == "new-native-aot-exe", "unexpected update executable payload");
             Assert(prepared.ZipSha256 == hash, "verified update hash changed");
+            var packageProgress = transfer.Where(item => item.Stage == UpdateProgressStage.DownloadingPackage).ToArray();
+            Assert(packageProgress.Length >= 2, "package transfer progress was not reported");
+            Assert(packageProgress[0].BytesReceived == 0, "package transfer progress did not start at zero");
+            Assert(packageProgress[^1].BytesReceived == zipBytes.Length, "package transfer progress did not reach the full payload");
+            Assert(packageProgress[^1].TotalBytes == zipBytes.Length, "package transfer total length changed");
         }
         finally
         {

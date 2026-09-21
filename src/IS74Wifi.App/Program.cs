@@ -15,6 +15,10 @@ internal static class Program
 
         if (command == "update-apply")
         {
+            // The updater deliberately attaches to the same console before the
+            // parent exits. That keeps the terminal window alive while the
+            // installed EXE is replaced instead of leaving a silent/busy gap.
+            ConsoleSession.EnsureInteractiveConsole();
             return ApplyPreparedUpdate(args.Skip(1).ToArray());
         }
 
@@ -687,6 +691,7 @@ internal static class Program
         bool askConfirmation = true,
         bool quiet = false,
         Action<UpdateProgressStage>? downloadProgress = null,
+        Action<UpdateTransferProgress>? transferProgress = null,
         Action<UpdateApplyProgressStage>? applyProgress = null)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
@@ -723,6 +728,7 @@ internal static class Program
             restartMenu,
             quiet,
             downloadProgress,
+            transferProgress,
             applyProgress).ConfigureAwait(false);
     }
 
@@ -732,10 +738,11 @@ internal static class Program
         bool restartMenu,
         bool quiet,
         Action<UpdateProgressStage>? downloadProgress = null,
+        Action<UpdateTransferProgress>? transferProgress = null,
         Action<UpdateApplyProgressStage>? applyProgress = null)
     {
         if (!quiet) Console.WriteLine("Скачиваю обновление с GitHub Releases и проверяю SHA-256...");
-        var prepared = await updater.DownloadAndVerifyAsync(update, downloadProgress).ConfigureAwait(false);
+        var prepared = await updater.DownloadAndVerifyAsync(update, downloadProgress, transferProgress).ConfigureAwait(false);
 
         try
         {
@@ -767,7 +774,10 @@ internal static class Program
 
             ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.SchedulingReplacement);
             var helperPath = Path.Combine(prepared.WorkingDirectory, "IS74Wifi-updater.exe");
-            File.Copy(currentExecutable, helperPath, overwrite: true);
+            // Run the apply phase with the already verified NEW executable.
+            // This lets updater fixes ship with the update itself instead of
+            // being delayed until the following release.
+            File.Copy(prepared.ExecutablePath, helperPath, overwrite: true);
 
             var startInfo = new ProcessStartInfo(helperPath)
             {
@@ -850,57 +860,341 @@ internal static class Program
         var restartAgent = args[5] == "1";
         var restartMenu = args[6] == "1";
         var installation = new ProgramInstallation();
+        var logger = new DiagnosticLogger(new AppPaths());
 
         if (!ProgramInstallation.PathsEqual(target, installation.ExecutablePath) ||
             !IsPathInside(source, workingDirectory))
         {
+            logger.Write(DiagnosticLevel.Error, "update.apply rejected invalid source/target path");
             return 2;
         }
 
+        logger.Write(DiagnosticLevel.Info,
+            $"update.apply start targetVersion={version} parentPid={parentPid} restartAgent={restartAgent} restartMenu={restartMenu}");
+
         if (!WaitForProcessExit(parentPid, TimeSpan.FromSeconds(30)))
         {
+            logger.Write(DiagnosticLevel.Error, "update.apply failed waiting for parent process exit");
             return 3;
         }
+
+        var ui = new InteractiveTerminalUi(version);
+        var history = new InteractiveActionHistory();
+        history.AddSuccess("Основная программа закрыта; терминал передан модулю обновления");
+
+        void RenderProgress()
+        {
+            try
+            {
+                ui.ShowActionProgress("УСТАНОВКА ОБНОВЛЕНИЯ", history, GetInteractiveStatusSnapshot());
+            }
+            catch
+            {
+                // Applying the update must not depend on progress rendering.
+            }
+        }
+
+        var backupPath = Path.Combine(workingDirectory, "IS74Wifi-previous.exe");
+        var previousVersion = installation.ReadInstalledVersion();
+        var updateApplied = false;
+        var previousCopyAvailable = false;
+        Exception? applyFailure = null;
+
         try
         {
+            history.Start("Проверяю, что фоновый агент остановлен...");
+            RenderProgress();
             AgentProcessControl.StopAgentOrThrow(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
-        }
-        catch
-        {
-            return 3;
-        }
+            history.CompleteActive("Фоновый агент остановлен");
+            RenderProgress();
 
-        Directory.CreateDirectory(installation.InstallDirectory);
-        var staged = installation.ExecutablePath + ".new";
-        File.Copy(source, staged, overwrite: true);
-        File.Move(staged, installation.ExecutablePath, overwrite: true);
-        installation.WriteVersionMarker(version);
-        new WindowsInstalledAppRegistration().Register(installation, version);
-
-        if (restartAgent)
-        {
-            var agent = new ProcessStartInfo(installation.ExecutablePath)
+            Directory.CreateDirectory(installation.InstallDirectory);
+            if (File.Exists(installation.ExecutablePath))
             {
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            agent.ArgumentList.Add("agent");
-            _ = Process.Start(agent);
+                history.Start("Сохраняю предыдущую версию для отката...");
+                RenderProgress();
+                CopyFileWithRetry(installation.ExecutablePath, backupPath, overwrite: true, attempts: 12, delayMilliseconds: 250);
+                previousCopyAvailable = true;
+                history.CompleteActive("Предыдущая версия сохранена");
+                RenderProgress();
+            }
+
+            history.Start("Заменяю установленный IS74Wifi.exe...");
+            RenderProgress();
+            ReplaceInstalledExecutableWithRetry(source, installation.ExecutablePath, attempts: 24, delayMilliseconds: 250);
+            history.CompleteActive("IS74Wifi.exe заменён");
+            RenderProgress();
+
+            history.Start("Обновляю сведения об установленной версии...");
+            RenderProgress();
+            installation.WriteVersionMarker(version);
+            history.CompleteActive($"Установлена версия {version}");
+            RenderProgress();
+
+            // The executable and its version marker are the atomic update
+            // boundary. Shell registration and agent restart are recoverable
+            // follow-up tasks and must not roll back a valid new binary.
+            updateApplied = true;
+
+            try
+            {
+                new WindowsInstalledAppRegistration().Register(installation, version);
+                history.AddSuccess("Запись программы в Windows обновлена");
+            }
+            catch (Exception registrationEx)
+            {
+                history.AddWarning($"Не удалось обновить запись программы в Windows: {registrationEx.Message}");
+                logger.Write(DiagnosticLevel.Warn,
+                    $"update.apply registration warning type={registrationEx.GetType().Name} message={registrationEx.Message}");
+            }
+            RenderProgress();
+
+            if (restartAgent)
+            {
+                history.Start("Запускаю фоновый агент...");
+                RenderProgress();
+                try
+                {
+                    StartInstalledAgent(installation.ExecutablePath);
+                    history.CompleteActive("Фоновый агент запущен");
+                }
+                catch (Exception agentEx)
+                {
+                    history.WarnActive($"Обновление установлено, но агент не запущен: {agentEx.Message}");
+                    logger.Write(DiagnosticLevel.Warn,
+                        $"update.apply agent-restart warning type={agentEx.GetType().Name} message={agentEx.Message}");
+                }
+                RenderProgress();
+            }
+
+            logger.Write(DiagnosticLevel.Info, $"update.apply complete targetVersion={version}");
+        }
+        catch (Exception ex)
+        {
+            applyFailure = ex;
+            history.FailActive("Не удалось завершить замену программы");
+            history.AddError(ex.Message);
+            logger.Write(DiagnosticLevel.Error,
+                $"update.apply failed targetVersion={version} type={ex.GetType().Name} message={ex.Message}");
+
+            if (previousCopyAvailable)
+            {
+                try
+                {
+                    history.Start("Восстанавливаю предыдущую версию...");
+                    RenderProgress();
+                    ReplaceInstalledExecutableWithRetry(backupPath, installation.ExecutablePath, attempts: 24, delayMilliseconds: 250);
+                    if (!string.IsNullOrWhiteSpace(previousVersion))
+                    {
+                        installation.WriteVersionMarker(previousVersion);
+                        try
+                        {
+                            new WindowsInstalledAppRegistration().Register(installation, previousVersion);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                    else
+                    {
+                        try
+                        {
+                            if (File.Exists(installation.VersionMarkerPath)) File.Delete(installation.VersionMarkerPath);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                    history.CompleteActive("Предыдущая версия восстановлена");
+                    logger.Write(DiagnosticLevel.Warn, "update.apply rollback complete");
+                }
+                catch (Exception rollbackEx)
+                {
+                    history.FailActive("Не удалось автоматически восстановить предыдущую версию");
+                    history.AddError(rollbackEx.Message);
+                    logger.Write(DiagnosticLevel.Error,
+                        $"update.apply rollback failed type={rollbackEx.GetType().Name} message={rollbackEx.Message}");
+                }
+            }
+
+            if (restartAgent && File.Exists(installation.ExecutablePath))
+            {
+                try
+                {
+                    StartInstalledAgent(installation.ExecutablePath);
+                    history.AddInfo("Фоновый агент предыдущей версии снова запущен");
+                }
+                catch (Exception restartEx)
+                {
+                    history.AddWarning($"Не удалось перезапустить фоновый агент: {restartEx.Message}");
+                }
+            }
+            RenderProgress();
         }
 
-        if (restartMenu)
+        if (restartMenu && File.Exists(installation.ExecutablePath))
         {
-            var menu = new ProcessStartInfo(installation.ExecutablePath)
+            if (!updateApplied)
             {
-                UseShellExecute = false,
-                CreateNoWindow = false
-            };
-            menu.ArgumentList.Add("menu");
-            _ = Process.Start(menu);
+                try
+                {
+                    ui.ShowActionHistoryAsync(
+                            "ОБНОВЛЕНИЕ НЕ УСТАНОВЛЕНО",
+                            history,
+                            GetInteractiveStatusSnapshot(),
+                            dismissHint: "↑ ↓ история   Enter / Esc — вернуться в программу")
+                        .GetAwaiter()
+                        .GetResult();
+                }
+                catch
+                {
+                }
+            }
+            else
+            {
+                history.AddSuccess("Запускаю обновлённую программу...");
+                RenderProgress();
+                Thread.Sleep(450);
+            }
+
+            try
+            {
+                StartInstalledMenu(
+                    installation.ExecutablePath,
+                    updateApplied ? "success" : "failure",
+                    version,
+                    applyFailure?.Message);
+            }
+            catch (Exception restartEx)
+            {
+                logger.Write(DiagnosticLevel.Error,
+                    $"update.apply menu-restart failed type={restartEx.GetType().Name} message={restartEx.Message}");
+                if (updateApplied)
+                {
+                    history.AddWarning("Обновление установлено, но программу не удалось запустить автоматически");
+                    history.AddError(restartEx.Message);
+                    try
+                    {
+                        ui.ShowActionHistoryAsync(
+                                "ОБНОВЛЕНИЕ УСТАНОВЛЕНО",
+                                history,
+                                GetInteractiveStatusSnapshot(),
+                                dismissHint: "Enter / Esc — закрыть модуль обновления")
+                            .GetAwaiter()
+                            .GetResult();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
         }
 
         ScheduleDirectoryCleanup(workingDirectory);
-        return 0;
+        return updateApplied ? 0 : 4;
+    }
+
+    private static void ReplaceInstalledExecutableWithRetry(
+        string source,
+        string target,
+        int attempts,
+        int delayMilliseconds)
+    {
+        var staged = target + ".new";
+        Exception? lastError = null;
+
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                try
+                {
+                    if (File.Exists(staged)) File.Delete(staged);
+                }
+                catch
+                {
+                }
+
+                File.Copy(source, staged, overwrite: true);
+                File.Move(staged, target, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                lastError = ex;
+                if (attempt < attempts)
+                {
+                    Thread.Sleep(delayMilliseconds);
+                }
+            }
+        }
+
+        throw new IOException(
+            $"Не удалось заменить {Path.GetFileName(target)} после {attempts} попыток.",
+            lastError);
+    }
+
+    private static void CopyFileWithRetry(
+        string source,
+        string target,
+        bool overwrite,
+        int attempts,
+        int delayMilliseconds)
+    {
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                File.Copy(source, target, overwrite);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                lastError = ex;
+                if (attempt < attempts)
+                {
+                    Thread.Sleep(delayMilliseconds);
+                }
+            }
+        }
+
+        throw new IOException(
+            $"Не удалось скопировать {Path.GetFileName(source)} после {attempts} попыток.",
+            lastError);
+    }
+
+    private static void StartInstalledAgent(string executablePath)
+    {
+        var agent = new ProcessStartInfo(executablePath)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        agent.ArgumentList.Add("agent");
+        _ = Process.Start(agent) ?? throw new InvalidOperationException("Не удалось запустить фоновый агент после обновления.");
+    }
+
+    private static void StartInstalledMenu(
+        string executablePath,
+        string result,
+        string version,
+        string? message)
+    {
+        var menu = new ProcessStartInfo(executablePath)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = false
+        };
+        menu.ArgumentList.Add("menu");
+        menu.Environment["IS74W_SKIP_REVEAL"] = "1";
+        menu.Environment["IS74W_UPDATE_RESULT"] = result;
+        menu.Environment["IS74W_UPDATE_VERSION"] = version;
+        if (!string.IsNullOrWhiteSpace(message))
+        {
+            menu.Environment["IS74W_UPDATE_MESSAGE"] = message;
+        }
+        _ = Process.Start(menu) ?? throw new InvalidOperationException("Не удалось перезапустить IS74Wifi после обновления.");
     }
 
     private static void ScheduleDeferredUninstall(ProgramInstallation installation)
@@ -1029,6 +1323,39 @@ internal static class Program
             Environment.GetEnvironmentVariable("IS74W_SKIP_REVEAL"),
             "1",
             StringComparison.Ordinal);
+
+        var updateResult = Environment.GetEnvironmentVariable("IS74W_UPDATE_RESULT");
+        var updateVersion = Environment.GetEnvironmentVariable("IS74W_UPDATE_VERSION");
+        var updateMessage = Environment.GetEnvironmentVariable("IS74W_UPDATE_MESSAGE");
+        Environment.SetEnvironmentVariable("IS74W_UPDATE_RESULT", null);
+        Environment.SetEnvironmentVariable("IS74W_UPDATE_VERSION", null);
+        Environment.SetEnvironmentVariable("IS74W_UPDATE_MESSAGE", null);
+
+        if (!string.IsNullOrWhiteSpace(updateResult))
+        {
+            var history = new InteractiveActionHistory();
+            if (string.Equals(updateResult, "success", StringComparison.OrdinalIgnoreCase))
+            {
+                history.AddSuccess($"Обновление {updateVersion ?? ProductVersion} установлено");
+                history.AddInfo("Программа успешно перезапущена из новой установленной копии");
+            }
+            else
+            {
+                history.AddError($"Обновление {updateVersion ?? string.Empty} не было установлено".Trim());
+                if (!string.IsNullOrWhiteSpace(updateMessage))
+                {
+                    history.AddError(updateMessage);
+                }
+                history.AddInfo("Запущена предыдущая рабочая версия; обновление можно повторить");
+            }
+
+            await ui.ShowActionHistoryAsync(
+                "РЕЗУЛЬТАТ ОБНОВЛЕНИЯ",
+                history,
+                GetInteractiveStatusSnapshot(),
+                dismissHint: "Enter / Esc — продолжить").ConfigureAwait(false);
+            showReveal = false;
+        }
 
         while (true)
         {
@@ -1573,6 +1900,22 @@ internal static class Program
             RenderProgress();
         }
 
+        void ReportTransferProgress(UpdateTransferProgress transfer)
+        {
+            switch (transfer.Stage)
+            {
+                case UpdateProgressStage.DownloadingPackage:
+                    history.UpdateActive(FormatTransferProgress("Скачиваю пакет обновления", transfer));
+                    break;
+                case UpdateProgressStage.DownloadingChecksum:
+                    history.UpdateActive(FormatTransferProgress("Скачиваю файл SHA-256", transfer));
+                    break;
+                default:
+                    return;
+            }
+            RenderProgress();
+        }
+
         void ReportApplyProgress(UpdateApplyProgressStage stage)
         {
             switch (stage)
@@ -1650,18 +1993,22 @@ internal static class Program
                 restartMenu: true,
                 quiet: true,
                 downloadProgress: ReportDownloadProgress,
+                transferProgress: ReportTransferProgress,
                 applyProgress: ReportApplyProgress).ConfigureAwait(false);
 
             if (scheduled)
             {
                 history.AddSuccess($"Обновление {update.TagName} подготовлено к установке");
-                history.AddInfo("После возврата программа закроется и заменит EXE");
+                history.AddInfo("После подтверждения управление перейдёт модулю обновления; терминал останется открыт");
             }
 
             await ui.ShowActionHistoryAsync(
                 "ОБНОВЛЕНИЕ",
                 history,
-                GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                GetInteractiveStatusSnapshot(),
+                dismissHint: scheduled
+                    ? "↑ ↓ история   Enter / Esc — перезапустить и установить"
+                    : null).ConfigureAwait(false);
             return scheduled;
         }
         catch (Exception ex)
@@ -1674,6 +2021,25 @@ internal static class Program
                 GetInteractiveStatusSnapshot()).ConfigureAwait(false);
             return false;
         }
+    }
+
+    private static string FormatTransferProgress(string label, UpdateTransferProgress progress)
+    {
+        var received = FormatByteCount(progress.BytesReceived);
+        if (progress.TotalBytes is > 0)
+        {
+            var total = progress.TotalBytes.Value;
+            var percent = (int)Math.Clamp(progress.BytesReceived * 100L / total, 0L, 100L);
+            return $"{label}... {percent}% ({received} / {FormatByteCount(total)})";
+        }
+        return $"{label}... {received}";
+    }
+
+    private static string FormatByteCount(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} Б";
+        if (bytes < 1024L * 1024L) return $"{bytes / 1024d:0.0} КБ";
+        return $"{bytes / (1024d * 1024d):0.0} МБ";
     }
 
     private static InteractiveStatusSnapshot GetInteractiveStatusSnapshot(bool? internetOverride = null)
