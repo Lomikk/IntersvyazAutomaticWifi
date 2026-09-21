@@ -4,6 +4,9 @@ namespace IS74Wifi.App;
 
 internal sealed class ApplicationRuntime : IDisposable
 {
+    private const string DefaultTelemetryEndpoint =
+        "https://script.google.com/macros/s/AKfycbw9JLeOD1hhtQPf3zm91XdnntODEUBMYbJzmO-SMwzhPRbRy3kDcTXZP0bg97sKQl-0bA/exec";
+
     private readonly HttpClient apiHttp;
     private readonly HttpClient portalHttp;
     private readonly HttpClient internetHttp;
@@ -183,7 +186,7 @@ internal sealed class ApplicationRuntime : IDisposable
             telemetryHttp);
     }
 
-    private static Uri? ResolveTelemetryEndpoint(AppSettings settings)
+    private static Uri ResolveTelemetryEndpoint(AppSettings settings)
     {
         var configured = Environment.GetEnvironmentVariable("IS74W_TELEMETRY_URL");
         if (string.IsNullOrWhiteSpace(configured))
@@ -191,10 +194,15 @@ internal sealed class ApplicationRuntime : IDisposable
             configured = settings.TelemetryEndpoint;
         }
 
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            configured = DefaultTelemetryEndpoint;
+        }
+
         return Uri.TryCreate(configured, UriKind.Absolute, out var endpoint) &&
                endpoint.Scheme == Uri.UriSchemeHttps
             ? endpoint
-            : null;
+            : new Uri(DefaultTelemetryEndpoint, UriKind.Absolute);
     }
 
     public void Dispose()

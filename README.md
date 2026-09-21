@@ -6,7 +6,7 @@
 
 C#-клиент поддерживает local-first телеметрию для измерения реальной гонки `stepOne → concurrent push polls → stepTwo → Internet`. Во время критического окна никакие telemetry HTTP-запросы не выполняются: миллисекундные события сначала накапливаются в памяти, после завершения сетевой попытки сохраняются в `%LOCALAPPDATA%\IS74Wifi\telemetry\pending`, а фоновый агент отправляет их редкими пакетами только вдали от ближайшего окна авторизации. Сохраняются planned/actual/completed timings, количество одновременно выполнявшихся mailbox GET, факт раннего `stepTwo` и независимое подтверждение Интернета; телефон, Bearer, коды и сырой mailbox JSON в telemetry contract отсутствуют. Подробный контракт: [`docs/telemetry.md`](docs/telemetry.md).
 
-Без настроенного HTTPS endpoint сбор остаётся только локальным. Endpoint задаётся через `IS74W_TELEMETRY_URL` или `TelemetryEndpoint`; отказ telemetry никогда не блокирует Wi-Fi авторизацию.
+Production HTTPS endpoint Google Apps Script встроен в клиент, поэтому обычному пользователю ничего настраивать не требуется. Для разработки его можно переопределить через `IS74W_TELEMETRY_URL` или `TelemetryEndpoint`; отказ telemetry никогда не блокирует Wi-Fi авторизацию.
 
 ## Миграция на C#
 

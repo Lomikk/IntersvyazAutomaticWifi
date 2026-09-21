@@ -40,4 +40,4 @@ Leaderboard publication is separate and opt-in. The user must press `[4]`; the a
 
 The public leaderboard is read through `GET ?route=leaderboard&limit=...`. The public response contains only presentation fields such as rank, nickname and measurement metrics. Private `install_id`, `test_id` and `event_id` values are never returned.
 
-The production endpoint is intentionally not committed to this public repository. It is supplied through `IS74W_TELEMETRY_URL` or the `TelemetryEndpoint` setting.
+The production Google Apps Script endpoint is built into the client. `IS74W_TELEMETRY_URL` or the `TelemetryEndpoint` setting can override it for development/testing.

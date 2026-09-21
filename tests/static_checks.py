@@ -223,6 +223,7 @@ for forbidden in ['BearerToken', 'Phone', 'ConfirmCode', 'AuthId', 'UserId', 'Pr
 assert 'install-id.txt' in (root / 'src' / 'IS74Wifi.Core' / 'AppPaths.cs').read_text(encoding='utf-8'), 'stable telemetry install ID storage missing'
 assert 'Guid.NewGuid().ToString("N")' in telemetry_store, 'telemetry install ID must be random and app-generated'
 assert 'IS74W_TELEMETRY_URL' in csharp_runtime, 'telemetry endpoint override missing'
+assert 'AKfycbw9JLeOD1hhtQPf3zm91XdnntODEUBMYbJzmO-SMwzhPRbRy3kDcTXZP0bg97sKQl-0bA/exec' in csharp_runtime, 'production telemetry endpoint missing'
 assert 'delay >= TimeSpan.FromMinutes(1)' in csharp_program and 'TryFlushIfDueAsync' in csharp_program, 'agent must upload telemetry only away from the near-expiry critical window'
 
 # Campus speed test: reproduce the provider's observed standalone LibreSpeed

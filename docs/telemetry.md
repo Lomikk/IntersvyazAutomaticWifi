@@ -87,7 +87,7 @@ Authorization traces are intentionally not uploaded in real time. The background
 
 By default a flush sends one bounded batch. This keeps normal operation close to the intended “accumulate locally, upload rarely” model. The setting can raise that cap for recovery/backlog draining; if data remains after a successful flush, the next attempt is delayed by six hours. HTTP timeout is 3 seconds by default. Failures leave files in the local queue and use backoff; authorization never depends on upload success.
 
-If no HTTPS telemetry endpoint is configured, local collection continues and nothing is uploaded. The endpoint can currently be supplied through `IS74W_TELEMETRY_URL` or the `TelemetryEndpoint` setting.
+The production HTTPS telemetry endpoint is built into the client. `IS74W_TELEMETRY_URL` or the `TelemetryEndpoint` setting can override it for development/testing. Transport failures keep data in the local queue and never block authorization.
 
 ## Ingestion API contract
 
