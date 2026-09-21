@@ -26,5 +26,6 @@ internal enum InteractiveMenuAction
     Uninstall,
     OpenLogs,
     Update,
+    SpeedTools,
     Exit
 }
