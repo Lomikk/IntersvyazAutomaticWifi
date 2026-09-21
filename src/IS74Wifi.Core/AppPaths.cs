@@ -15,6 +15,7 @@ public sealed class AppPaths
     public string SessionMetaFile => Path.Combine(Root, "session-meta.json");
     public string RuntimeStateFile => Path.Combine(Root, "runtime-state.json");
     public string SettingsFile => Path.Combine(Root, "settings.json");
+    public string UpdateStateFile => Path.Combine(Root, "update-state.json");
     public string DeviceMetadataFile => Path.Combine(Root, "device-metadata.json");
     public string DnsCacheFile => Path.Combine(Root, "dns-cache.json");
     public string LogDirectory => Path.Combine(Root, "logs");

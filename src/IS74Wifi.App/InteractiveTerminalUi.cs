@@ -55,6 +55,8 @@ internal sealed partial class InteractiveTerminalUi
         ansi = ConsoleSession.SupportsVirtualTerminal;
     }
 
+    public void OpenUpdatesPage() => NavigateTo(MenuPage.Updates);
+
     private bool CanUseInteractiveSession
     {
         get
@@ -168,11 +170,18 @@ internal sealed partial class InteractiveTerminalUi
                     continue;
                 }
 
+                if (key.Key == ConsoleKey.U && !string.IsNullOrWhiteSpace(status?.AvailableUpdateVersion))
+                {
+                    NavigateTo(MenuPage.Updates);
+                    keyTask = ReadKeyAsync();
+                    continue;
+                }
+
                 if (key.Key == ConsoleKey.Escape)
                 {
                     if (menuPage != MenuPage.Main)
                     {
-                        NavigateTo(MenuPage.Main);
+                        NavigateTo(menuPage == MenuPage.Updates ? MenuPage.Settings : MenuPage.Main);
                         keyTask = ReadKeyAsync();
                         continue;
                     }
@@ -264,8 +273,11 @@ internal sealed partial class InteractiveTerminalUi
             case InteractiveMenuAction.OpenMaintenance:
                 NavigateTo(MenuPage.Maintenance);
                 return true;
+            case InteractiveMenuAction.OpenUpdates:
+                NavigateTo(MenuPage.Updates);
+                return true;
             case InteractiveMenuAction.Back:
-                NavigateTo(MenuPage.Main);
+                NavigateTo(menuPage == MenuPage.Updates ? MenuPage.Settings : MenuPage.Main);
                 return true;
             default:
                 return false;
@@ -755,7 +767,6 @@ internal sealed partial class InteractiveTerminalUi
     private InteractiveMenuAction RunCompactMenu(InteractiveStatusSnapshot snapshot)
     {
         status = snapshot;
-        NavigateTo(MenuPage.Main);
 
         while (true)
         {
@@ -767,6 +778,10 @@ internal sealed partial class InteractiveTerminalUi
             Console.WriteLine($"Авторизация   : {FormatAuthorizationStatus(snapshot).Text}");
             Console.WriteLine($"Автовход      : {(snapshot.AutomaticAuthorizationEnabled ? "включён ●" : "выключен ○")}");
             Console.WriteLine($"Фоновый режим : {(snapshot.AgentRunning ? "работает ●" : "остановлен ○")}");
+            if (!string.IsNullOrWhiteSpace(snapshot.AvailableUpdateVersion))
+            {
+                Console.WriteLine($"Обновление    : доступно {snapshot.AvailableUpdateVersion} ●");
+            }
             Console.WriteLine();
             Console.WriteLine($"=== {GetMenuTitle()} ===");
 
@@ -805,6 +820,11 @@ internal sealed partial class InteractiveTerminalUi
             }
             else
             {
+                if (key.Key == ConsoleKey.U && menuPage == MenuPage.Main && !string.IsNullOrWhiteSpace(status?.AvailableUpdateVersion))
+                {
+                    return InteractiveMenuAction.OpenUpdates;
+                }
+
                 var hotkeyItem = items.FirstOrDefault(item => item.Hotkey == key.KeyChar);
                 if (hotkeyItem.Action != InteractiveMenuAction.None)
                 {
@@ -1196,7 +1216,9 @@ internal sealed partial class InteractiveTerminalUi
         DrawStatusPane(canvas);
         Center(canvas, 29,
             menuPage == MenuPage.Main
-                ? "↑ ↓ выбрать   Enter открыть   цифра — сразу   Esc выход   R reveal"
+                ? (!string.IsNullOrWhiteSpace(status?.AvailableUpdateVersion)
+                    ? "↑ ↓ выбрать   Enter открыть   U обновления   Esc выход   R reveal"
+                    : "↑ ↓ выбрать   Enter открыть   цифра — сразу   Esc выход   R reveal")
                 : "↑ ↓ выбрать   Enter открыть   цифра — сразу   Esc назад   R reveal",
             Palette.Dim);
         Render(canvas);
@@ -1221,7 +1243,9 @@ internal sealed partial class InteractiveTerminalUi
         DrawCurrentItems(canvas, boxY + 2);
         Center(canvas, CanvasHeight - 1,
             menuPage == MenuPage.Main
-                ? "↑ ↓   Enter   цифра — сразу   Esc выход   R reveal"
+                ? (!string.IsNullOrWhiteSpace(status?.AvailableUpdateVersion)
+                    ? "↑ ↓   Enter   U обновления   Esc выход   R reveal"
+                    : "↑ ↓   Enter   цифра — сразу   Esc выход   R reveal")
                 : "↑ ↓   Enter   цифра — сразу   Esc назад   R reveal",
             Palette.Dim);
         Render(canvas);
@@ -1292,6 +1316,7 @@ internal sealed partial class InteractiveTerminalUi
         {
             MenuPage.Settings => GetSettingsItems(status),
             MenuPage.Maintenance => GetMaintenanceItems(status),
+            MenuPage.Updates => GetUpdateItems(status),
             _ => GetPrimaryItems(status)
         };
     }
@@ -1300,6 +1325,7 @@ internal sealed partial class InteractiveTerminalUi
     {
         MenuPage.Settings => "НАСТРОЙКИ",
         MenuPage.Maintenance => "ОБСЛУЖИВАНИЕ",
+        MenuPage.Updates => "ОБНОВЛЕНИЯ",
         _ => "МЕНЮ"
     };
 
@@ -1333,8 +1359,39 @@ internal sealed partial class InteractiveTerminalUi
             '3',
             $"Анонимная статистика: {FormatStatisticsConsent(snapshot?.AnonymousStatisticsConsent ?? AnonymousStatisticsConsent.Unknown)}",
             InteractiveMenuAction.ToggleAnonymousStatistics),
+        new MenuItem('4', "Обновления", InteractiveMenuAction.OpenUpdates),
         new MenuItem('0', "Назад", InteractiveMenuAction.Back)
     ];
+
+    private static IReadOnlyList<MenuItem> GetUpdateItems(InteractiveStatusSnapshot? snapshot)
+    {
+        var items = new List<MenuItem>
+        {
+            new(
+                '1',
+                $"Режим: {(snapshot?.AutomaticUpdates == true ? "автоматически" : "уведомлять")}",
+                InteractiveMenuAction.ToggleAutomaticUpdates),
+            new(
+                '2',
+                snapshot?.IncludePrereleaseUpdates == true
+                    ? "Pre-release (не рекомендуется): включены"
+                    : "Pre-release (не рекомендуется): выключены",
+                InteractiveMenuAction.TogglePrereleaseUpdates)
+        };
+
+        if (!string.IsNullOrWhiteSpace(snapshot?.AvailableUpdateVersion))
+        {
+            items.Add(new MenuItem('3', $"Установить {snapshot.AvailableUpdateVersion}", InteractiveMenuAction.Update));
+            items.Add(new MenuItem('4', "Что изменилось", InteractiveMenuAction.OpenUpdateReleasePage));
+        }
+        else
+        {
+            items.Add(new MenuItem('3', "Проверить сейчас", InteractiveMenuAction.CheckUpdates));
+        }
+
+        items.Add(new MenuItem('0', "Назад", InteractiveMenuAction.Back));
+        return items;
+    }
 
     private static string FormatStatisticsConsent(AnonymousStatisticsConsent consent) => consent switch
     {
@@ -1352,9 +1409,8 @@ internal sealed partial class InteractiveTerminalUi
                 '1',
                 registered ? "Сбросить регистрацию" : "Зарегистрировать устройство",
                 registered ? InteractiveMenuAction.ResetRegistration : InteractiveMenuAction.Register),
-            new MenuItem('2', "Проверить обновления", InteractiveMenuAction.Update),
-            new MenuItem('3', "Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
-            new MenuItem('4', "Удалить программу и данные", InteractiveMenuAction.Uninstall),
+            new MenuItem('2', "Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
+            new MenuItem('3', "Удалить программу и данные", InteractiveMenuAction.Uninstall),
             new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
     }
@@ -1391,6 +1447,12 @@ internal sealed partial class InteractiveTerminalUi
         PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 10, s.LastResult, Palette.Text);
         Put(canvas, rightPaneX + 3, PaneY + 11, "Версия", Palette.Dim);
         PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 11, s.Version, Palette.Text);
+        if (!string.IsNullOrWhiteSpace(s.AvailableUpdateVersion))
+        {
+            Put(canvas, rightPaneX + 3, PaneY + 12, "Обновление", Palette.Dim);
+            PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 12,
+                $"{s.AvailableUpdateVersion} ●", Palette.Highlight);
+        }
     }
 
     private static (string Text, Palette Color) FormatNetworkStatus(InteractiveStatusSnapshot s)
@@ -1912,7 +1974,8 @@ internal sealed partial class InteractiveTerminalUi
     {
         Main,
         Settings,
-        Maintenance
+        Maintenance,
+        Updates
     }
 
     private readonly record struct ActionHistoryRow(

@@ -10,6 +10,7 @@ internal static class Program
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации, а также позволяет участвовать в анонимном рейтинге скорости интернета.";
     private const string AnonymousStatisticsPublishMessage =
         "Для публикации результата требуется отправка анонимной статистики. Разрешить её?";
+    private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
     private static bool forwardMenuWithoutReveal;
 
     [STAThread]
@@ -38,6 +39,11 @@ internal static class Program
                 return forwardedAgentExit;
             }
             return await RunAgentAsync().ConfigureAwait(false);
+        }
+
+        if (command == "update-auto")
+        {
+            return await RunAutomaticUpdateAsync().ConfigureAwait(false);
         }
 
         CleanupStaleUpdateDirectories();
@@ -73,7 +79,7 @@ internal static class Program
                 "update-check" => await CheckForUpdatesAsync().ConfigureAwait(false),
                 "update" => await UpdateCommandAsync().ConfigureAwait(false),
                 "backend-diagnose" => await RunBackendDiagnosticsAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
-                "menu" => await RunMenuAsync().ConfigureAwait(false),
+                "menu" => await RunMenuAsync(args.Skip(1).Any(arg => string.Equals(arg, "updates", StringComparison.OrdinalIgnoreCase))).ConfigureAwait(false),
                 _ => UnknownCommand(command)
             };
         }
@@ -411,9 +417,23 @@ internal static class Program
         Console.WriteLine($"Автоматическая авторизация : {(automaticAuthorizationEnabled ? "включена" : "выключена")}");
         Console.WriteLine($"Фоновый режим              : {(agentRunning ? "работает" : "остановлен")}");
         Console.WriteLine($"Уведомления                : {FormatNotificationMode(app.Settings.NotificationMode)}");
+        var updateMaintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
+        var updateState = updateMaintenance.LoadState();
+        Console.WriteLine($"Режим обновлений           : {(app.Settings.AutomaticUpdates ? "автоматически" : "уведомлять")}");
+        Console.WriteLine($"Канал обновлений            : {(updateMaintenance.IncludePrereleases(app.Settings) ? "обычные + Pre-release" : "обычные версии")}");
+        if (!string.IsNullOrWhiteSpace(updateState.AvailableVersion))
+        {
+            Console.WriteLine($"Доступное обновление        : {updateState.AvailableVersion}");
+        }
+        if (updateState.LastCheckedUtc is { } lastUpdateCheck)
+        {
+            Console.WriteLine($"Последняя проверка обновлений: {lastUpdateCheck.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+        }
         Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
         Console.WriteLine($"Интернет                     : {(internet.Online ? "доступен" : "не подтверждён")}");
         var displayedSsid = GetDisplayedWifiSsid();
+        var updateMaintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
+        var updateState = updateMaintenance.LoadState();
         Console.WriteLine($"Сеть                         : {(app.Settings.IgnoreNetworkCheck ? "проверка отключена ○" : FormatWifiNetwork(displayedSsid))}");
         Console.WriteLine($"Авторизация                  : {FormatWifiAuthorization(state)}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
@@ -785,11 +805,12 @@ internal static class Program
 
     private static async Task<int> CheckForUpdatesAsync()
     {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        var maintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         var updater = new GitHubUpdateClient(http);
-        var update = await updater.CheckForUpdateAsync(
-            ProductVersion,
-            includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
+        var result = await maintenance.CheckAsync(updater, force: true).ConfigureAwait(false);
+        var update = result.Descriptor;
 
         if (update is null)
         {
@@ -817,12 +838,14 @@ internal static class Program
         Action<UpdateTransferProgress>? transferProgress = null,
         Action<UpdateApplyProgressStage>? applyProgress = null)
     {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        var maintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         var updater = new GitHubUpdateClient(http);
-        var update = await updater.CheckForUpdateAsync(
-            ProductVersion,
-            includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase),
-            progress: downloadProgress).ConfigureAwait(false);
+        var update = (await maintenance.CheckAsync(
+            updater,
+            force: true,
+            progress: downloadProgress).ConfigureAwait(false)).Descriptor;
 
         if (update is null)
         {
@@ -863,16 +886,25 @@ internal static class Program
         Action<UpdateProgressStage>? downloadProgress = null,
         Action<UpdateTransferProgress>? transferProgress = null,
         Action<UpdateApplyProgressStage>? applyProgress = null,
-        Func<Task<bool>>? confirmApply = null)
+        Func<Task<bool>>? confirmApply = null,
+        Func<bool>? canApply = null)
     {
         if (!quiet) Console.WriteLine("Скачиваю обновление с GitHub Releases и проверяю SHA-256...");
         var prepared = await updater.DownloadAndVerifyAsync(update, downloadProgress, transferProgress).ConfigureAwait(false);
+        var shouldRestartAgentOnFailure = false;
+        string? installedExecutableForRestart = null;
 
         try
         {
             ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.ValidatingExecutable);
             ValidatePreparedExecutable(prepared.ExecutablePath);
             ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.ExecutableValidated);
+
+            if (canApply is not null && !canApply())
+            {
+                GitHubUpdateClient.TryDeleteDirectory(prepared.WorkingDirectory);
+                return false;
+            }
 
             using var app = ApplicationRuntime.Create(ProductVersion);
             var currentExecutable = Environment.ProcessPath;
@@ -885,6 +917,8 @@ internal static class Program
 
             ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.StoppingAgent);
             AgentProcessControl.StopAgentOrThrow();
+            shouldRestartAgentOnFailure = autostartWasEnabled;
+            installedExecutableForRestart = installation.ExecutablePath;
             ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.AgentStopped);
 
             ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.PreparingInstalledCopy);
@@ -911,6 +945,7 @@ internal static class Program
                     try
                     {
                         StartInstalledAgent(installedExecutable);
+                        shouldRestartAgentOnFailure = false;
                     }
                     catch (Exception restartEx)
                     {
@@ -950,6 +985,7 @@ internal static class Program
             }
             app.Logger.Write(DiagnosticLevel.Info,
                 $"update.scheduled from={ProductVersion} to={update.TagName} autostart={autostartWasEnabled}");
+            shouldRestartAgentOnFailure = false;
 
             if (!quiet)
             {
@@ -961,6 +997,20 @@ internal static class Program
         }
         catch
         {
+            if (shouldRestartAgentOnFailure &&
+                !string.IsNullOrWhiteSpace(installedExecutableForRestart) &&
+                File.Exists(installedExecutableForRestart))
+            {
+                try
+                {
+                    StartInstalledAgent(installedExecutableForRestart);
+                }
+                catch
+                {
+                    // Preserve the original update failure. The next normal
+                    // application launch can still restore the background mode.
+                }
+            }
             GitHubUpdateClient.TryDeleteDirectory(prepared.WorkingDirectory);
             throw;
         }
@@ -1083,6 +1133,8 @@ internal static class Program
             history.Start("Обновляю сведения об установленной версии...");
             RenderProgress();
             installation.WriteVersionMarker(version);
+            new UpdateMaintenanceService(version, new AppPaths(), new JsonFileStore(), logger)
+                .MarkInstalled(version, notify: !restartMenu);
             history.CompleteActive($"Установлена версия {version}");
             RenderProgress();
 
@@ -1486,10 +1538,14 @@ internal static class Program
         }
     }
 
-    private static async Task<int> RunMenuAsync()
+    private static async Task<int> RunMenuAsync(bool startInUpdates = false)
     {
         using var interactiveSession = WindowsNotificationService.TryMarkInteractiveSession();
         var ui = new InteractiveTerminalUi(ProductVersion);
+        if (startInUpdates)
+        {
+            ui.OpenUpdatesPage();
+        }
         var showReveal = !string.Equals(
             Environment.GetEnvironmentVariable("IS74W_SKIP_REVEAL"),
             "1",
@@ -1684,6 +1740,27 @@ internal static class Program
                         break;
                     }
 
+                    case InteractiveMenuAction.ToggleAutomaticUpdates:
+                    {
+                        var enabled = !initialStatus.AutomaticUpdates;
+                        SetAutomaticUpdates(enabled);
+                        break;
+                    }
+
+                    case InteractiveMenuAction.TogglePrereleaseUpdates:
+                    {
+                        var enabled = !initialStatus.IncludePrereleaseUpdates;
+                        SetPrereleaseUpdates(enabled);
+                        break;
+                    }
+
+                    case InteractiveMenuAction.CheckUpdates:
+                        _ = await CheckForUpdatesFromMenuAsync(
+                            ui,
+                            initialStatus,
+                            offerInstall: false).ConfigureAwait(false);
+                        break;
+
                     case InteractiveMenuAction.CycleNotifications:
                         CycleNotificationMode();
                         break;
@@ -1751,6 +1828,10 @@ internal static class Program
                         }
                         break;
 
+                    case InteractiveMenuAction.OpenUpdateReleasePage:
+                        OpenAvailableUpdateReleasePage();
+                        break;
+
                     case InteractiveMenuAction.SpeedTools:
                     {
                         using var speedRuntime = ApplicationRuntime.Create(ProductVersion);
@@ -1763,6 +1844,7 @@ internal static class Program
 
                     case InteractiveMenuAction.Exit:
                         Console.Clear();
+                        _ = TryLaunchPendingAutomaticUpdate();
                         return 0;
 
                     default:
@@ -2078,6 +2160,17 @@ internal static class Program
             $"API-сессия: {FormatSessionEnd(session?.AccessEnd)}"
         };
 
+        lines.Add(string.Empty);
+        lines.Add("=== Обновления ===");
+        lines.Add($"Режим: {(app.Settings.AutomaticUpdates ? "автоматически" : "уведомлять")}");
+        lines.Add($"Канал: {(updateMaintenance.IncludePrereleases(app.Settings) ? "обычные + Pre-release" : "обычные версии")}");
+        lines.Add($"Доступно: {updateState.AvailableVersion ?? "нет"}");
+        lines.Add($"Последняя проверка: {(updateState.LastCheckedUtc is { } checkedAt ? checkedAt.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") : "ещё не выполнялась")}");
+        if (!string.IsNullOrWhiteSpace(updateState.LastError))
+        {
+            lines.Add($"Последняя ошибка проверки: {updateState.LastError}");
+        }
+
         var telemetryStatus = app.TelemetryQueue.GetStatus();
         lines.Add(string.Empty);
         lines.Add("=== Телеметрия ===");
@@ -2104,13 +2197,20 @@ internal static class Program
 
     private static async Task<bool> CheckForUpdatesFromMenuAsync(
         InteractiveTerminalUi ui,
-        InteractiveStatusSnapshot currentStatus)
+        InteractiveStatusSnapshot currentStatus,
+        bool offerInstall = true)
     {
         var history = new InteractiveActionHistory();
         history.Start("Запрашиваю список GitHub Releases...");
         ui.ShowActionProgress("ОБНОВЛЕНИЯ", history, currentStatus);
         var progressTitle = "ОБНОВЛЕНИЯ";
 
+        using var updateRuntime = ApplicationRuntime.Create(ProductVersion);
+        var maintenance = new UpdateMaintenanceService(
+            ProductVersion,
+            updateRuntime.Paths,
+            updateRuntime.Json,
+            updateRuntime.Logger);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         var updater = new GitHubUpdateClient(http);
 
@@ -2207,10 +2307,10 @@ internal static class Program
 
         try
         {
-            var update = await updater.CheckForUpdateAsync(
-                ProductVersion,
-                includePrerelease: ProductVersion.Contains("-alpha.", StringComparison.OrdinalIgnoreCase),
-                progress: ReportDownloadProgress).ConfigureAwait(false);
+            var update = (await maintenance.CheckAsync(
+                updater,
+                force: true,
+                progress: ReportDownloadProgress).ConfigureAwait(false)).Descriptor;
 
             if (update is null)
             {
@@ -2225,6 +2325,16 @@ internal static class Program
 
             history.CompleteActive($"Найдена версия {update.TagName}");
             history.AddInfo($"Текущая версия: {ProductVersion}");
+
+            if (!offerInstall)
+            {
+                history.AddSuccess($"Обновление {update.TagName} доступно для установки");
+                await ui.ShowActionHistoryAsync(
+                    "ОБНОВЛЕНИЯ",
+                    history,
+                    GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                return false;
+            }
 
             var install = await ui.ConfirmAsync(
                 "ОБНОВЛЕНИЕ",
@@ -2310,6 +2420,7 @@ internal static class Program
     private static async Task<InteractiveStatusSnapshot> RefreshInteractiveStatusAsync()
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
+        var updateTask = TryCheckForUpdatesIfDueAsync(app);
         bool? online;
         try
         {
@@ -2319,6 +2430,15 @@ internal static class Program
         catch
         {
             online = null;
+        }
+
+        try
+        {
+            await updateTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Update discovery is best-effort and must never block the main UI.
         }
         return BuildInteractiveStatusSnapshot(app, online);
     }
@@ -2340,6 +2460,8 @@ internal static class Program
                 ? WifiNetworkState.Other
                 : WifiNetworkState.Unknown;
         var internet = internetOverride ?? runtime.InternetConfirmed;
+        var updateMaintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
+        var updateState = updateMaintenance.LoadState();
         return new InteractiveStatusSnapshot(
             Installed: installation.IsInstalled,
             Registered: secrets is not null,
@@ -2350,6 +2472,10 @@ internal static class Program
             AuthorizationAlreadyActive: string.Equals(runtime.LastResult, "already-authorized", StringComparison.Ordinal),
             NetworkCheckIgnored: app.Settings.IgnoreNetworkCheck,
             AnonymousStatisticsConsent: app.Settings.AnonymousStatisticsConsent,
+            AutomaticUpdates: app.Settings.AutomaticUpdates,
+            IncludePrereleaseUpdates: updateMaintenance.IncludePrereleases(app.Settings),
+            AvailableUpdateVersion: updateState.AvailableVersion,
+            LastUpdateCheckUtc: updateState.LastCheckedUtc,
             AutomaticAuthorizationEnabled: automatic,
             AgentRunning: agentRunning,
             NotificationMode: FormatNotificationMode(app.Settings.NotificationMode),
@@ -2608,6 +2734,234 @@ internal static class Program
         return "до " + value.Trim();
     }
 
+    private static void OpenAvailableUpdateReleasePage()
+    {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        var state = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger).LoadState();
+        if (!Uri.TryCreate(state.AvailableReleasePageUrl, UriKind.Absolute, out var releaseUri) ||
+            (!string.Equals(releaseUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+             !string.Equals(releaseUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException("Страница доступного обновления пока неизвестна. Сначала проверьте обновления.");
+        }
+
+        _ = Process.Start(new ProcessStartInfo(releaseUri.AbsoluteUri) { UseShellExecute = true });
+    }
+
+    private static void SetAutomaticUpdates(bool enabled)
+    {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        new SettingsStore(app.Paths, app.Json).Save(app.Settings with { AutomaticUpdates = enabled });
+        app.Logger.Write(DiagnosticLevel.Info, $"update.auto value={enabled.ToString().ToLowerInvariant()}");
+    }
+
+    private static void SetPrereleaseUpdates(bool enabled)
+    {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        new SettingsStore(app.Paths, app.Json).Save(app.Settings with { IncludePrereleaseUpdates = enabled });
+        new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger).ForceNextCheck();
+        app.Logger.Write(DiagnosticLevel.Info, $"update.prerelease value={enabled.ToString().ToLowerInvariant()}");
+    }
+
+    private static async Task TryCheckForUpdatesIfDueAsync(ApplicationRuntime app)
+    {
+        var maintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        var updater = new GitHubUpdateClient(http);
+        try
+        {
+            _ = await maintenance.CheckAsync(updater, force: false).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            app.Logger.Write(DiagnosticLevel.Info,
+                $"update.background-check deferred error={ex.GetType().Name}");
+        }
+    }
+
+    private static async Task TryRunBackgroundUpdateMaintenanceAsync(
+        ApplicationRuntime app,
+        CancellationToken cancellationToken)
+    {
+        var maintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
+        var settingsStore = new SettingsStore(app.Paths, app.Json);
+        var notifications = new WindowsNotificationService(settingsStore, app.Logger);
+        var state = maintenance.LoadState();
+
+        if (!string.IsNullOrWhiteSpace(state.PendingInstalledNotificationVersion) &&
+            !WindowsNotificationService.IsInteractiveSessionRunning())
+        {
+            notifications.Publish(new AgentNotification(
+                "IS74Wifi обновлён",
+                $"Установлена версия {state.PendingInstalledNotificationVersion}.",
+                AgentNotificationImportance.Important,
+                AgentNotificationSeverity.Success));
+            maintenance.ClearPendingInstalledNotification();
+            state = maintenance.LoadState();
+        }
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        var updater = new GitHubUpdateClient(http);
+        try
+        {
+            var result = await maintenance.CheckAsync(
+                updater,
+                force: false,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            state = result.State;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return;
+        }
+
+        var settings = maintenance.LoadSettings();
+        if (string.IsNullOrWhiteSpace(state.AvailableVersion))
+        {
+            return;
+        }
+
+        if (settings.AutomaticUpdates)
+        {
+            // A failed automatic download/check leaves the known target cached,
+            // but CheckAsync also records a retry time. Do not immediately spawn
+            // another worker on every agent tick while that backoff is active.
+            if (string.IsNullOrWhiteSpace(state.LastError) &&
+                !WindowsNotificationService.IsInteractiveSessionRunning() &&
+                TryLaunchAutomaticUpdateWorker())
+            {
+                app.Logger.Write(DiagnosticLevel.Info,
+                    $"update.auto-worker launched target={state.AvailableVersion}");
+            }
+            return;
+        }
+
+        if (!WindowsNotificationService.IsInteractiveSessionRunning() &&
+            !string.Equals(state.LastNotifiedVersion, state.AvailableVersion, StringComparison.Ordinal))
+        {
+            notifications.Publish(new AgentNotification(
+                "Доступно обновление IS74Wifi",
+                $"Доступна версия {state.AvailableVersion}. Нажмите, чтобы посмотреть и установить.",
+                AgentNotificationImportance.Important,
+                AgentNotificationSeverity.Info,
+                AgentNotificationAction.OpenUpdates));
+            maintenance.MarkNotified(state.AvailableVersion);
+        }
+    }
+
+    private static bool TryLaunchPendingAutomaticUpdate()
+    {
+        try
+        {
+            using var app = ApplicationRuntime.Create(ProductVersion);
+            var maintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
+            var settings = maintenance.LoadSettings();
+            var state = maintenance.LoadState();
+            return settings.AutomaticUpdates &&
+                   !string.IsNullOrWhiteSpace(state.AvailableVersion) &&
+                   TryLaunchAutomaticUpdateWorker();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryLaunchAutomaticUpdateWorker()
+    {
+        var installation = new ProgramInstallation();
+        if (!installation.IsInstalled)
+        {
+            return false;
+        }
+
+        // Avoid spawning a short-lived process on every agent tick while a
+        // previous automatic updater is still downloading or validating.
+        var workerProbe = NamedSemaphoreLease.TryAcquire(AutomaticUpdateGateName);
+        if (workerProbe is null)
+        {
+            return false;
+        }
+        workerProbe.Dispose();
+
+        try
+        {
+            var startInfo = new ProcessStartInfo(installation.ExecutablePath)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("update-auto");
+            _ = Process.Start(startInfo);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task<int> RunAutomaticUpdateAsync()
+    {
+        using var lease = NamedSemaphoreLease.TryAcquire(AutomaticUpdateGateName);
+        if (lease is null)
+        {
+            return 0;
+        }
+
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        var maintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
+        if (!maintenance.LoadSettings().AutomaticUpdates)
+        {
+            return 0;
+        }
+
+        // When this worker was launched while the interactive menu was closing,
+        // give the menu a short grace period to release its session gate.
+        var waitUntil = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (WindowsNotificationService.IsInteractiveSessionRunning() && DateTimeOffset.UtcNow < waitUntil)
+        {
+            await Task.Delay(200).ConfigureAwait(false);
+        }
+        if (WindowsNotificationService.IsInteractiveSessionRunning())
+        {
+            app.Logger.Write(DiagnosticLevel.Info, "update.auto deferred reason=interactive-session");
+            return 0;
+        }
+
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+            var updater = new GitHubUpdateClient(http);
+            var update = (await maintenance.CheckAsync(updater, force: true).ConfigureAwait(false)).Descriptor;
+            if (update is null)
+            {
+                return 0;
+            }
+
+            app.Logger.Write(DiagnosticLevel.Info, $"update.auto preparing target={update.TagName}");
+            var scheduled = await PrepareAndScheduleUpdateAsync(
+                updater,
+                update,
+                restartMenu: false,
+                quiet: true,
+                canApply: () =>
+                    maintenance.LoadSettings().AutomaticUpdates &&
+                    !WindowsNotificationService.IsInteractiveSessionRunning()).ConfigureAwait(false);
+            return scheduled ? 0 : 1;
+        }
+        catch (Exception ex)
+        {
+            app.Logger.Write(DiagnosticLevel.Warn,
+                $"update.auto failed error={ex.GetType().Name}:{ex.Message}");
+            return 1;
+        }
+    }
+
     private static async Task<int> RunAgentAsync()
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
@@ -2653,6 +3007,25 @@ internal static class Program
                 if (stopCts.IsCancellationRequested)
                 {
                     break;
+                }
+
+                try
+                {
+                    // The update worker downloads and validates in parallel with
+                    // the agent. Only once it is ready to replace the installed
+                    // EXE does the existing apply pipeline stop this agent. This
+                    // keeps autoauthorization alive if an update check/download
+                    // fails because the network disappeared.
+                    await TryRunBackgroundUpdateMaintenanceAsync(app, stopCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stopCts.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    app.Logger.Write(DiagnosticLevel.Warn,
+                        $"update.maintenance error={ex.GetType().Name}");
                 }
 
                 var delay = app.Agent.GetSleepDelay();

@@ -21,11 +21,18 @@ public enum AgentNotificationSeverity
     Error
 }
 
+public enum AgentNotificationAction
+{
+    None,
+    OpenUpdates
+}
+
 public sealed record AgentNotification(
     string Title,
     string Message,
     AgentNotificationImportance Importance,
-    AgentNotificationSeverity Severity = AgentNotificationSeverity.Info);
+    AgentNotificationSeverity Severity = AgentNotificationSeverity.Info,
+    AgentNotificationAction Action = AgentNotificationAction.None);
 
 public interface IAgentNotificationSink
 {

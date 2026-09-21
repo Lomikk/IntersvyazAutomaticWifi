@@ -7,6 +7,7 @@ namespace IS74Wifi.Core;
     PropertyNameCaseInsensitive = true,
     WriteIndented = true)]
 [JsonSerializable(typeof(AppSettings))]
+[JsonSerializable(typeof(UpdateState))]
 [JsonSerializable(typeof(RuntimeState))]
 [JsonSerializable(typeof(SessionMetadata))]
 [JsonSerializable(typeof(HostAddressCacheDocument))]

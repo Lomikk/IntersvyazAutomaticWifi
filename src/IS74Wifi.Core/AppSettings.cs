@@ -15,6 +15,10 @@ public sealed record AppSettings
     // (USB tethering, VPN/proxy software, multiple adapters, etc.).
     public bool IgnoreNetworkCheck { get; init; }
     public AnonymousStatisticsConsent AnonymousStatisticsConsent { get; init; } = global::IS74Wifi.Core.AnonymousStatisticsConsent.Unknown;
+    public bool AutomaticUpdates { get; init; }
+    // null means follow the channel implied by the current build: alpha builds
+    // continue receiving prereleases, stable builds stay on stable releases.
+    public bool? IncludePrereleaseUpdates { get; init; }
     public double AuthWindowHours { get; init; } = 24;
     public int AgentPollSeconds { get; init; } = 15;
     public int GuardWindowSeconds { get; init; } = 10;

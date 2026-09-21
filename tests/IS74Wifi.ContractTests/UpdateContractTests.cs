@@ -11,7 +11,10 @@ internal static class UpdateContractTests
         TestSemanticVersions();
         TestProgramInstallation();
         TestInstalledAppRegistration();
+        TestUpdatePolicy();
+        TestUpdateStateStore();
         TestChecksumParser();
+        await TestReleaseChannelSelectionAsync();
         await TestDirectExecutableSelectionAndVerifiedDownloadAsync();
         await TestLegacyZipFallbackAsync();
     }
@@ -93,6 +96,52 @@ internal static class UpdateContractTests
         }
     }
 
+    private static void TestUpdatePolicy()
+    {
+        var defaultSettings = new AppSettings();
+        Assert(UpdatePolicy.IncludePrereleases(defaultSettings, "v0.1.0-alpha.18"),
+            "alpha build stopped following prereleases before the user chose a channel");
+        Assert(!UpdatePolicy.IncludePrereleases(defaultSettings, "v0.1.0"),
+            "stable build followed prereleases before the user chose a channel");
+        Assert(!UpdatePolicy.IncludePrereleases(
+                defaultSettings with { IncludePrereleaseUpdates = false },
+                "v0.1.0-alpha.18"),
+            "explicit stable-only channel was ignored on an alpha build");
+        Assert(UpdatePolicy.IncludePrereleases(
+                defaultSettings with { IncludePrereleaseUpdates = true },
+                "v0.1.0"),
+            "explicit prerelease channel was ignored on a stable build");
+
+        Assert(UpdatePolicy.CheckInterval == TimeSpan.FromHours(6),
+            "background update check interval changed");
+        Assert(UpdatePolicy.FailureBackoff(1) == TimeSpan.FromMinutes(15),
+            "first update failure backoff changed");
+        Assert(UpdatePolicy.FailureBackoff(4) == TimeSpan.FromHours(2),
+            "update failure backoff cap changed");
+    }
+
+    private static void TestUpdateStateStore()
+    {
+        using var temp = TempDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var store = new UpdateStateStore(paths, new JsonFileStore());
+        var expected = new UpdateState
+        {
+            LastCheckedUtc = new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero),
+            NextCheckUtc = new DateTimeOffset(2026, 9, 21, 18, 0, 0, TimeSpan.Zero),
+            AvailableVersion = "v0.1.0-alpha.19",
+            AvailableReleasePageUrl = "https://github.test/releases/alpha19",
+            LastNotifiedVersion = "v0.1.0-alpha.19",
+            PendingInstalledNotificationVersion = "v0.1.0-alpha.18",
+            ConsecutiveFailures = 2,
+            LastError = "HttpRequestException"
+        };
+
+        store.Save(expected);
+        var actual = store.Load();
+        Assert(actual == expected, "update state did not round-trip");
+    }
+
     private static void TestChecksumParser()
     {
         var hash = new string('a', 64);
@@ -107,6 +156,58 @@ internal static class UpdateContractTests
         catch (InvalidDataException)
         {
         }
+    }
+
+    private static async Task TestReleaseChannelSelectionAsync()
+    {
+        var releasesJson = """
+        [
+          {
+            "tag_name":"v0.1.1-alpha.1",
+            "draft":false,
+            "prerelease":true,
+            "html_url":"https://github.test/releases/alpha1",
+            "assets":[
+              {"name":"IS74Wifi-v0.1.1-alpha.1-win-x64.exe","browser_download_url":"https://download.test/alpha1.exe"},
+              {"name":"IS74Wifi-v0.1.1-alpha.1-win-x64.exe.sha256","browser_download_url":"https://download.test/alpha1.exe.sha256"}
+            ]
+          },
+          {
+            "tag_name":"v0.1.0",
+            "draft":false,
+            "prerelease":false,
+            "html_url":"https://github.test/releases/stable",
+            "assets":[
+              {"name":"IS74Wifi-v0.1.0-win-x64.exe","browser_download_url":"https://download.test/stable.exe"},
+              {"name":"IS74Wifi-v0.1.0-win-x64.exe.sha256","browser_download_url":"https://download.test/stable.exe.sha256"}
+            ]
+          }
+        ]
+        """;
+
+        using var client = new HttpClient(new UpdateHandler(request =>
+            request.RequestUri!.Host == "api.github.com"
+                ? TextResponse(releasesJson, "application/json")
+                : new HttpResponseMessage(HttpStatusCode.NotFound)));
+        var updater = new GitHubUpdateClient(client);
+
+        var stableFromAlpha = await updater.CheckForUpdateAsync(
+            "v0.1.0-alpha.18",
+            includePrerelease: false);
+        Assert(stableFromAlpha?.TagName == "v0.1.0",
+            "stable-only channel did not offer the stable release to an alpha build");
+
+        var noPrereleaseFromStable = await updater.CheckForUpdateAsync(
+            "v0.1.0",
+            includePrerelease: false);
+        Assert(noPrereleaseFromStable is null,
+            "stable-only channel offered a prerelease");
+
+        var prereleaseFromStable = await updater.CheckForUpdateAsync(
+            "v0.1.0",
+            includePrerelease: true);
+        Assert(prereleaseFromStable?.TagName == "v0.1.1-alpha.1",
+            "prerelease channel did not offer a newer prerelease to a stable build");
     }
 
     private static async Task TestDirectExecutableSelectionAndVerifiedDownloadAsync()
