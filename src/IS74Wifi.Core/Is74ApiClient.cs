@@ -194,7 +194,8 @@ public sealed class Is74ApiClient : IIs74PushClient
             return Is74ApiResult<PushMessagePage>.Fail(failure);
         }
 
-        var parseStatus = PushMessageParser.ParsePage(call.Response!.Body, out var page);
+        var response = call.Response!;
+        var parseStatus = PushMessageParser.ParsePage(response.Body, out var page);
         if (parseStatus == PushPageParseStatus.InvalidJson)
         {
             return InvalidJson<PushMessagePage>(operation);
@@ -204,6 +205,12 @@ public sealed class Is74ApiClient : IIs74PushClient
             return InvalidPayload<PushMessagePage>(operation);
         }
 
+        page = page with
+        {
+            HttpStatus = (int)response.StatusCode,
+            Elapsed = response.Elapsed,
+            CacheStatus = response.CacheStatus
+        };
         return Is74ApiResult<PushMessagePage>.Success(page);
     }
 

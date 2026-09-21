@@ -26,12 +26,24 @@ public sealed class HttpTransport(HttpClient client)
                 : string.Empty;
             var location = response.Headers.Location;
             var serverDate = response.Headers.Date;
+            var server = response.Headers.Server.Count == 0 ? null : response.Headers.Server.ToString();
+            var contentType = response.Content.Headers.ContentType?.ToString();
+            var contentLength = response.Content.Headers.ContentLength;
+            var retryAfter = GetRetryAfter(response.Headers.RetryAfter, serverDate);
+            var cacheStatus = response.Headers.TryGetValues("X-Cache-Status", out var cacheValues)
+                ? cacheValues.FirstOrDefault()
+                : null;
             return HttpCallResult.Success(new HttpResponseData(
                 response.StatusCode,
                 body,
                 location,
                 serverDate,
-                clock.Elapsed));
+                clock.Elapsed,
+                server,
+                contentType,
+                contentLength,
+                retryAfter,
+                cacheStatus));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -59,6 +71,24 @@ public sealed class HttpTransport(HttpClient client)
         {
             return HttpCallResult.Failure(TransportFailureKind.Unexpected, exception.Message, clock.Elapsed);
         }
+    }
+
+
+    private static TimeSpan? GetRetryAfter(
+        System.Net.Http.Headers.RetryConditionHeaderValue? value,
+        DateTimeOffset? serverDate)
+    {
+        if (value?.Delta is { } delta)
+        {
+            return delta < TimeSpan.Zero ? TimeSpan.Zero : delta;
+        }
+        if (value?.Date is { } date)
+        {
+            var origin = serverDate ?? DateTimeOffset.UtcNow;
+            var remaining = date - origin;
+            return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
+        }
+        return null;
     }
 
     private static bool ContainsCachedDnsUnavailable(Exception exception)

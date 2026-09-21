@@ -29,7 +29,10 @@ public sealed record Is74PushMessage(
 
 public sealed record PushMessagePage(
     IReadOnlyList<Is74PushMessage> Messages,
-    bool KnownEmpty);
+    bool KnownEmpty,
+    int HttpStatus = 200,
+    TimeSpan? Elapsed = null,
+    string? CacheStatus = null);
 
 public sealed record PushBaseline(long Id);
 

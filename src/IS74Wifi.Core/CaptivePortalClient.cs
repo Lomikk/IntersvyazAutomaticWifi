@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Net;
 
 namespace IS74Wifi.Core;
@@ -33,10 +35,7 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
         var response = call.Response!;
         if (!IsRedirect(response.StatusCode))
         {
-            return CaptivePortalResult<StepOneResponse>.Fail(new CaptivePortalFailure(
-                CaptivePortalFailureKind.HttpStatus,
-                operation,
-                StatusCode: (int)response.StatusCode));
+            return CaptivePortalResult<StepOneResponse>.Fail(HttpStatusFailure(operation, response));
         }
 
         var location = response.Location;
@@ -52,7 +51,12 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
                 location,
                 null,
                 response.ServerDate,
-                response.Elapsed));
+                response.Elapsed,
+                (int)response.StatusCode,
+                response.Server,
+                response.ContentType,
+                response.ContentLength,
+                response.RetryAfter));
         }
 
         if (PortalRedirectClassifier.TryResolveStepTwo(location, out var stepTwoUri))
@@ -62,7 +66,12 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
                 location,
                 stepTwoUri,
                 response.ServerDate,
-                response.Elapsed));
+                response.Elapsed,
+                (int)response.StatusCode,
+                response.Server,
+                response.ContentType,
+                response.ContentLength,
+                response.RetryAfter));
         }
 
         return UnexpectedRedirect<StepOneResponse>(operation, response);
@@ -105,10 +114,7 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
         var response = call.Response!;
         if (!IsRedirect(response.StatusCode))
         {
-            return CaptivePortalResult<StepTwoResponse>.Fail(new CaptivePortalFailure(
-                CaptivePortalFailureKind.HttpStatus,
-                operation,
-                StatusCode: (int)response.StatusCode));
+            return CaptivePortalResult<StepTwoResponse>.Fail(HttpStatusFailure(operation, response));
         }
 
         if (response.Location is null || !PortalRedirectClassifier.IsStepThree(response.Location))
@@ -119,7 +125,12 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
         return CaptivePortalResult<StepTwoResponse>.Success(new StepTwoResponse(
             response.Location,
             response.ServerDate,
-            response.Elapsed));
+            response.Elapsed,
+            (int)response.StatusCode,
+            response.Server,
+            response.ContentType,
+            response.ContentLength,
+            response.RetryAfter));
     }
 
     public static Uri BuildDirectStepTwoUri(string phone)
@@ -134,14 +145,42 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
         CaptivePortalFailureKind.Transport,
         operation,
         call.FailureKind,
-        SideEffectMayHaveOccurred: call.FailureKind != TransportFailureKind.DnsUnavailable);
+        SideEffectMayHaveOccurred: call.FailureKind != TransportFailureKind.DnsUnavailable,
+        Elapsed: call.Elapsed);
+
+    private static CaptivePortalFailure HttpStatusFailure(string operation, HttpResponseData response) => new(
+        CaptivePortalFailureKind.HttpStatus,
+        operation,
+        StatusCode: (int)response.StatusCode,
+        Location: response.Location,
+        SideEffectMayHaveOccurred: true,
+        Elapsed: response.Elapsed,
+        Server: response.Server,
+        ContentType: response.ContentType,
+        ContentLength: response.ContentLength,
+        RetryAfter: response.RetryAfter,
+        BodyKind: string.IsNullOrEmpty(response.Body) ? "empty" : "other",
+        BodySha256: HashBody(response.Body));
 
     private static CaptivePortalResult<T> UnexpectedRedirect<T>(string operation, HttpResponseData response) =>
         CaptivePortalResult<T>.Fail(new CaptivePortalFailure(
             CaptivePortalFailureKind.UnexpectedRedirect,
             operation,
             StatusCode: (int)response.StatusCode,
-            Location: response.Location));
+            Location: response.Location,
+            SideEffectMayHaveOccurred: true,
+            Elapsed: response.Elapsed,
+            Server: response.Server,
+            ContentType: response.ContentType,
+            ContentLength: response.ContentLength,
+            RetryAfter: response.RetryAfter,
+            BodyKind: string.IsNullOrEmpty(response.Body) ? "empty" : "other",
+            BodySha256: HashBody(response.Body)));
+
+    private static string? HashBody(string body) =>
+        string.IsNullOrEmpty(body)
+            ? null
+            : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(body))).ToLowerInvariant();
 
     private static void ValidatePhone(string phone)
     {

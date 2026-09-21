@@ -8,4 +8,5 @@ public sealed record InternetProbeResult(
     HttpStatusCode? StatusCode,
     string? Body,
     TransportFailureKind FailureKind,
-    TimeSpan Elapsed);
+    TimeSpan Elapsed,
+    Uri? Location = null);

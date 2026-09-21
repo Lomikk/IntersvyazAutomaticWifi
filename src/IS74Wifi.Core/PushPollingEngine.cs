@@ -52,7 +52,8 @@ public sealed class PushPollingEngine
         string deviceId,
         long baselineId,
         Stopwatch clock,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        AuthorizationTelemetryTrace? telemetry = null)
     {
         using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var observations = new List<PushPollObservation>();
@@ -65,7 +66,8 @@ public sealed class PushPollingEngine
                 deviceId,
                 baselineId,
                 clock,
-                pollCts.Token))
+                pollCts.Token,
+                telemetry))
             .ToList();
 
         var fallbackStarted = false;
@@ -107,7 +109,8 @@ public sealed class PushPollingEngine
                     deviceId,
                     baselineId,
                     clock,
-                    pollCts.Token));
+                    pollCts.Token,
+                    telemetry));
             }
         }
 
@@ -122,7 +125,8 @@ public sealed class PushPollingEngine
         string deviceId,
         long baselineId,
         Stopwatch clock,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AuthorizationTelemetryTrace? telemetry)
     {
         try
         {
@@ -133,19 +137,32 @@ public sealed class PushPollingEngine
             return PollCompletion.CancelledPoll();
         }
 
-        var startMilliseconds = (int)Math.Max(0, Math.Round(clock.Elapsed.TotalMilliseconds));
+        var startPreciseMilliseconds = Math.Max(0, clock.Elapsed.TotalMilliseconds);
+        var startMilliseconds = (int)Math.Round(startPreciseMilliseconds);
+        var telemetryPollIndex = telemetry?.MailboxPollStarted(
+            targetMilliseconds,
+            startPreciseMilliseconds,
+            pageSize) ?? 0;
         var result = await api.GetPushMessagesAsync(
             bearerToken,
             deviceId,
             pageSize,
             requestTimeout,
             cancellationToken).ConfigureAwait(false);
-        var observedMilliseconds = (int)Math.Max(0, Math.Round(clock.Elapsed.TotalMilliseconds));
+        var observedPreciseMilliseconds = Math.Max(0, clock.Elapsed.TotalMilliseconds);
+        var observedMilliseconds = (int)Math.Round(observedPreciseMilliseconds);
 
         if (!result.IsSuccess)
         {
             var failure = result.Failure!;
             var terminal = failure.Kind == Is74ApiFailureKind.Unauthorized ? failure : null;
+            telemetry?.MailboxPollCompleted(
+                telemetryPollIndex,
+                observedPreciseMilliseconds,
+                result,
+                baselineId,
+                wifiCodeFound: false,
+                wifiMessageId: null);
             return new PollCompletion(
                 Candidate: null,
                 FreshNonCode: false,
@@ -164,6 +181,13 @@ public sealed class PushPollingEngine
         if (kind == PushPollKind.Fallback)
         {
             var candidate = PushMessageParser.FindWifiCodeAfterBaseline(page, baselineId);
+            telemetry?.MailboxPollCompleted(
+                telemetryPollIndex,
+                observedPreciseMilliseconds,
+                result,
+                baselineId,
+                wifiCodeFound: candidate is not null,
+                wifiMessageId: candidate?.MessageId);
             return new PollCompletion(
                 candidate,
                 FreshNonCode: false,
@@ -181,6 +205,13 @@ public sealed class PushPollingEngine
         var top = page.Messages.FirstOrDefault();
         if (top is null || top.Id <= baselineId)
         {
+            telemetry?.MailboxPollCompleted(
+                telemetryPollIndex,
+                observedPreciseMilliseconds,
+                result,
+                baselineId,
+                wifiCodeFound: false,
+                wifiMessageId: null);
             return new PollCompletion(
                 Candidate: null,
                 FreshNonCode: false,
@@ -198,6 +229,13 @@ public sealed class PushPollingEngine
         var code = PushMessageParser.GetWifiCode(top);
         if (code is not null)
         {
+            telemetry?.MailboxPollCompleted(
+                telemetryPollIndex,
+                observedPreciseMilliseconds,
+                result,
+                baselineId,
+                wifiCodeFound: true,
+                wifiMessageId: top.Id);
             return new PollCompletion(
                 new WifiCodeCandidate(code, top.Id),
                 FreshNonCode: false,
@@ -212,6 +250,13 @@ public sealed class PushPollingEngine
                 Cancelled: false);
         }
 
+        telemetry?.MailboxPollCompleted(
+            telemetryPollIndex,
+            observedPreciseMilliseconds,
+            result,
+            baselineId,
+            wifiCodeFound: false,
+            wifiMessageId: null);
         return new PollCompletion(
             Candidate: null,
             FreshNonCode: true,

@@ -7,7 +7,12 @@ public sealed record HttpResponseData(
     string Body,
     Uri? Location,
     DateTimeOffset? ServerDate,
-    TimeSpan Elapsed)
+    TimeSpan Elapsed,
+    string? Server = null,
+    string? ContentType = null,
+    long? ContentLength = null,
+    TimeSpan? RetryAfter = null,
+    string? CacheStatus = null)
 {
     public bool IsSuccessStatusCode => (int)StatusCode is >= 200 and <= 299;
 }

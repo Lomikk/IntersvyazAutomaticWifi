@@ -10,7 +10,8 @@ public sealed class AuthorizationFlow(
     PushPollingEngine polling,
     AuthorizationStateManager state,
     DiagnosticLogger logger,
-    AuthorizationFlowOptions? options = null) : IAuthorizationRunner
+    AuthorizationFlowOptions? options = null,
+    AuthorizationTelemetryRecorder? telemetry = null) : IAuthorizationRunner
 {
     private readonly AuthorizationFlowOptions options = options ?? new AuthorizationFlowOptions();
 
@@ -19,6 +20,31 @@ public sealed class AuthorizationFlow(
         CancellationToken cancellationToken = default)
     {
         ValidateRequest(request);
+        var trace = telemetry?.Begin(request.Reason);
+        try
+        {
+            var outcome = await RunCoreAsync(request, trace, cancellationToken).ConfigureAwait(false);
+            trace?.Complete(outcome);
+            return outcome;
+        }
+        catch (Exception exception)
+        {
+            trace?.UnexpectedException(exception);
+            trace?.Complete(new AuthorizationOutcome(
+                AuthorizationOutcomeKind.UserActionRequired,
+                InternetConfirmed: false,
+                AuthorizedAtUtc: null,
+                RetryAfter: null,
+                Timing: null));
+            throw;
+        }
+    }
+
+    private async Task<AuthorizationOutcome> RunCoreAsync(
+        AuthorizationRequest request,
+        AuthorizationTelemetryTrace? trace,
+        CancellationToken cancellationToken)
+    {
 
         if (!wifi.IsTargetWifiConnected())
         {
@@ -63,6 +89,7 @@ public sealed class AuthorizationFlow(
             request.DeviceId,
             options.BaselineTimeout,
             cancellationToken).ConfigureAwait(false);
+        trace?.SetBaseline(connectClock.Elapsed.TotalMilliseconds);
 
         if (cancellationToken.IsCancellationRequested)
         {
@@ -71,11 +98,13 @@ public sealed class AuthorizationFlow(
 
         if (!baseline.IsSuccess)
         {
+            trace?.BaselineFailed(baseline.Failure!, connectClock.Elapsed.TotalMilliseconds);
             return HandleBaselineFailure(baseline.Failure!, request.Reason);
         }
         ReportProgress(request, AuthorizationProgressStage.BaselineLoaded);
 
         var budget = state.RegisterStepOneSend(request.Reason);
+        trace?.SetStepOneAttempt(budget.Attempt);
         if (!budget.Allowed)
         {
             return Outcome(AuthorizationOutcomeKind.UserActionRequired);
@@ -87,16 +116,21 @@ public sealed class AuthorizationFlow(
         using var stepOneCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        var stepOneTask = portal.SendStepOneAsync(
-            request.Phone,
-            options.StepOneTimeout,
-            stepOneCts.Token);
+        trace?.PortalStarted("step_one", criticalClock.Elapsed.TotalMilliseconds);
+        var stepOneTask = ObserveStepOneAsync(
+            portal.SendStepOneAsync(
+                request.Phone,
+                options.StepOneTimeout,
+                stepOneCts.Token),
+            trace,
+            criticalClock);
         var pollTask = polling.WaitForFreshCodeAsync(
             request.BearerToken,
             request.DeviceId,
             baselineId,
             criticalClock,
-            pollCts.Token);
+            pollCts.Token,
+            trace);
         ReportProgress(request, AuthorizationProgressStage.CaptiveRequestStarted);
 
         CaptivePortalResult<StepOneResponse>? stepOne = null;
@@ -224,8 +258,10 @@ public sealed class AuthorizationFlow(
             .FirstOrDefault();
 
         pollCts.Cancel();
-        var stepTwoStartMilliseconds = ElapsedMilliseconds(criticalClock);
+        var stepTwoStartPreciseMilliseconds = criticalClock.Elapsed.TotalMilliseconds;
+        var stepTwoStartMilliseconds = (int)Math.Max(0, Math.Round(stepTwoStartPreciseMilliseconds));
         var stepTwoStartedAt = DateTimeOffset.UtcNow;
+        trace?.PortalStarted("step_two", stepTwoStartPreciseMilliseconds);
         Uri? observedStepTwoLocation = null;
         if (stepOne?.IsSuccess == true && stepOne.Value!.Disposition == StepOneDisposition.StepTwo)
         {
@@ -239,7 +275,9 @@ public sealed class AuthorizationFlow(
             observedStepTwoLocation,
             options.StepTwoTimeout,
             cancellationToken).ConfigureAwait(false);
-        var stepTwoDoneMilliseconds = ElapsedMilliseconds(criticalClock);
+        var stepTwoDonePreciseMilliseconds = criticalClock.Elapsed.TotalMilliseconds;
+        var stepTwoDoneMilliseconds = (int)Math.Max(0, Math.Round(stepTwoDonePreciseMilliseconds));
+        trace?.PortalCompleted("step_two", stepTwoDonePreciseMilliseconds, stepTwo);
         stepOneCts.Cancel();
 
         var timing = new AuthorizationTiming(
@@ -255,8 +293,6 @@ public sealed class AuthorizationFlow(
             stepTwoStartMilliseconds,
             stepTwoDoneMilliseconds,
             pollResult.Observations);
-        LogTiming(timing);
-
         // Once stepTwo has been sent, cancellation must not erase the fact that
         // the captive side effect may already have happened. A lost/cancelled
         // response is handled as an ambiguous stepTwo and is never blindly resent.
@@ -268,11 +304,15 @@ public sealed class AuthorizationFlow(
                 var recovered = await ConfirmInternetOnScheduleAsync(
                     options.LostStepTwoProbeOffsetsMilliseconds,
                     options.RecoveryInternetProbeTimeout,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    trace,
+                    criticalClock,
+                    "recovery").ConfigureAwait(false);
                 if (recovered)
                 {
                     var authorizedAt = state.MarkSuccess(serverDate: stepTwoStartedAt, internetConfirmed: true);
                     ReportProgress(request, AuthorizationProgressStage.InternetConfirmed);
+                    LogTiming(timing);
                     return new AuthorizationOutcome(
                         AuthorizationOutcomeKind.Success,
                         InternetConfirmed: true,
@@ -282,6 +322,7 @@ public sealed class AuthorizationFlow(
                 }
 
                 state.MarkUserActionRequired("step-two-ambiguous", request.Reason);
+                LogTiming(timing);
                 return new AuthorizationOutcome(
                     AuthorizationOutcomeKind.StepTwoAmbiguous,
                     InternetConfirmed: false,
@@ -291,6 +332,7 @@ public sealed class AuthorizationFlow(
             }
 
             state.MarkUserActionRequired("step-two-rejected", request.Reason);
+            LogTiming(timing);
             return new AuthorizationOutcome(
                 AuthorizationOutcomeKind.UserActionRequired,
                 InternetConfirmed: false,
@@ -305,13 +347,17 @@ public sealed class AuthorizationFlow(
         var internetConfirmed = await ConfirmInternetOnScheduleAsync(
             options.PostSuccessProbeOffsetsMilliseconds,
             options.PostSuccessInternetProbeTimeout,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            trace,
+            criticalClock,
+            "post_step_two").ConfigureAwait(false);
         if (internetConfirmed)
         {
             state.MarkInternetConfirmed();
             ReportProgress(request, AuthorizationProgressStage.InternetConfirmed);
         }
 
+        LogTiming(timing);
         return new AuthorizationOutcome(
             AuthorizationOutcomeKind.Success,
             internetConfirmed,
@@ -414,13 +460,17 @@ public sealed class AuthorizationFlow(
     private async Task<bool> ConfirmInternetOnScheduleAsync(
         IReadOnlyList<int> offsetsMilliseconds,
         TimeSpan probeTimeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AuthorizationTelemetryTrace? trace,
+        Stopwatch criticalClock,
+        string phase)
     {
         if (offsetsMilliseconds.Count == 0)
         {
             return false;
         }
 
+        var phaseStartMilliseconds = criticalClock.Elapsed.TotalMilliseconds;
         var clock = Stopwatch.StartNew();
         for (var index = 0; index < offsetsMilliseconds.Count; index++)
         {
@@ -455,7 +505,18 @@ public sealed class AuthorizationFlow(
                 }
             }
 
+            var plannedAbsoluteMilliseconds = phaseStartMilliseconds + targetMilliseconds;
+            var actualStartMilliseconds = criticalClock.Elapsed.TotalMilliseconds;
+            var telemetryProbe = trace?.InternetProbeStarted(
+                phase,
+                index + 1,
+                plannedAbsoluteMilliseconds,
+                actualStartMilliseconds) ?? 0;
             var probe = await internet.ProbeAsync(effectiveTimeout, cancellationToken).ConfigureAwait(false);
+            trace?.InternetProbeCompleted(
+                telemetryProbe,
+                criticalClock.Elapsed.TotalMilliseconds,
+                probe);
             if (probe.Online)
             {
                 return true;
@@ -467,6 +528,16 @@ public sealed class AuthorizationFlow(
         }
 
         return false;
+    }
+
+    private static async Task<CaptivePortalResult<StepOneResponse>> ObserveStepOneAsync(
+        Task<CaptivePortalResult<StepOneResponse>> task,
+        AuthorizationTelemetryTrace? trace,
+        Stopwatch criticalClock)
+    {
+        var result = await task.ConfigureAwait(false);
+        trace?.PortalCompleted("step_one", criticalClock.Elapsed.TotalMilliseconds, result);
+        return result;
     }
 
     private static bool IsGuaranteedNoStepOneSideEffect(CaptivePortalResult<StepOneResponse> stepOne) =>

@@ -7,6 +7,7 @@ internal sealed class ApplicationRuntime : IDisposable
     private readonly HttpClient apiHttp;
     private readonly HttpClient portalHttp;
     private readonly HttpClient internetHttp;
+    private readonly HttpClient? telemetryHttp;
 
     private ApplicationRuntime(
         AppPaths paths,
@@ -24,9 +25,12 @@ internal sealed class ApplicationRuntime : IDisposable
         AgentService agent,
         WindowsAutostartService autostart,
         LocalStateMaintenance maintenance,
+        TelemetryQueue telemetryQueue,
+        TelemetryUploader telemetryUploader,
         HttpClient apiHttp,
         HttpClient portalHttp,
-        HttpClient internetHttp)
+        HttpClient internetHttp,
+        HttpClient? telemetryHttp)
     {
         Paths = paths;
         Json = json;
@@ -43,9 +47,12 @@ internal sealed class ApplicationRuntime : IDisposable
         Agent = agent;
         Autostart = autostart;
         Maintenance = maintenance;
+        TelemetryQueue = telemetryQueue;
+        TelemetryUploader = telemetryUploader;
         this.apiHttp = apiHttp;
         this.portalHttp = portalHttp;
         this.internetHttp = internetHttp;
+        this.telemetryHttp = telemetryHttp;
     }
 
     public AppPaths Paths { get; }
@@ -63,8 +70,10 @@ internal sealed class ApplicationRuntime : IDisposable
     public AgentService Agent { get; }
     public WindowsAutostartService Autostart { get; }
     public LocalStateMaintenance Maintenance { get; }
+    public TelemetryQueue TelemetryQueue { get; }
+    public TelemetryUploader TelemetryUploader { get; }
 
-    public static ApplicationRuntime Create()
+    public static ApplicationRuntime Create(string appVersion = "dev")
     {
         var paths = new AppPaths();
         var json = new JsonFileStore();
@@ -76,6 +85,7 @@ internal sealed class ApplicationRuntime : IDisposable
         var session = new SessionMetadataStore(paths, json);
         var runtimeState = new RuntimeStateStore(paths, json);
         var authorizationState = new AuthorizationStateManager(runtimeState, settings);
+
         // Production uses the ordinary system resolver directly. Cached/direct-IP
         // connection experiments must not add hidden latency before DNS.
         var apiHttp = HttpClientProfiles.CreateApiClient();
@@ -86,6 +96,32 @@ internal sealed class ApplicationRuntime : IDisposable
         var internet = new InternetConnectivityProbe(new HttpTransport(internetHttp));
         var wifi = new WindowsWifiEnvironment();
         var polling = new PushPollingEngine(api);
+
+        // Authorization telemetry is local-first. The critical path only mutates
+        // in-memory trace state; durable queue writes happen after RunAsync returns.
+        var telemetryIdentity = new TelemetryIdentityStore(paths);
+        var telemetryInstallId = telemetryIdentity.GetOrCreate();
+        var telemetryQueue = new TelemetryQueue(paths);
+        var telemetryRecorder = new AuthorizationTelemetryRecorder(
+            telemetryInstallId,
+            telemetryQueue,
+            appVersion);
+
+        var telemetryEndpoint = ResolveTelemetryEndpoint(settings);
+        HttpClient? telemetryHttp = null;
+        TelemetryClient? telemetryClient = null;
+        if (telemetryEndpoint is not null)
+        {
+            telemetryHttp = HttpClientProfiles.CreateTelemetryClient();
+            telemetryClient = new TelemetryClient(telemetryHttp, telemetryEndpoint);
+        }
+        var telemetryUploader = new TelemetryUploader(
+            telemetryQueue,
+            new TelemetryUploadStateStore(paths, json),
+            telemetryClient,
+            settings,
+            logger);
+
         var authorization = new AuthorizationFlow(
             api,
             portal,
@@ -93,7 +129,8 @@ internal sealed class ApplicationRuntime : IDisposable
             wifi,
             polling,
             authorizationState,
-            logger);
+            logger,
+            telemetry: telemetryRecorder);
         var notifications = new WindowsNotificationService(settingsStore, logger);
         var agent = new AgentService(
             secrets,
@@ -122,9 +159,26 @@ internal sealed class ApplicationRuntime : IDisposable
             agent,
             new WindowsAutostartService(),
             new LocalStateMaintenance(paths),
+            telemetryQueue,
+            telemetryUploader,
             apiHttp,
             portalHttp,
-            internetHttp);
+            internetHttp,
+            telemetryHttp);
+    }
+
+    private static Uri? ResolveTelemetryEndpoint(AppSettings settings)
+    {
+        var configured = Environment.GetEnvironmentVariable("IS74W_TELEMETRY_URL");
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            configured = settings.TelemetryEndpoint;
+        }
+
+        return Uri.TryCreate(configured, UriKind.Absolute, out var endpoint) &&
+               endpoint.Scheme == Uri.UriSchemeHttps
+            ? endpoint
+            : null;
     }
 
     public void Dispose()
@@ -132,5 +186,6 @@ internal sealed class ApplicationRuntime : IDisposable
         apiHttp.Dispose();
         portalHttp.Dispose();
         internetHttp.Dispose();
+        telemetryHttp?.Dispose();
     }
 }

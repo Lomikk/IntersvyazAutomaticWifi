@@ -19,10 +19,17 @@ public sealed class AppPaths
     public string DnsCacheFile => Path.Combine(Root, "dns-cache.json");
     public string LogDirectory => Path.Combine(Root, "logs");
     public string DiagnosticLogFile => Path.Combine(LogDirectory, "diagnostic.log");
+    public string TelemetryDirectory => Path.Combine(Root, "telemetry");
+    public string TelemetryPendingDirectory => Path.Combine(TelemetryDirectory, "pending");
+    public string TelemetryRejectedDirectory => Path.Combine(TelemetryDirectory, "rejected");
+    public string TelemetryInstallIdFile => Path.Combine(TelemetryDirectory, "install-id.txt");
+    public string TelemetryUploadStateFile => Path.Combine(TelemetryDirectory, "upload-state.json");
 
     public void EnsureDirectories()
     {
         Directory.CreateDirectory(Root);
         Directory.CreateDirectory(LogDirectory);
+        Directory.CreateDirectory(TelemetryDirectory);
+        Directory.CreateDirectory(TelemetryPendingDirectory);
     }
 }

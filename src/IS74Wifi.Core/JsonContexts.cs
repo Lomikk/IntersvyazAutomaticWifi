@@ -11,6 +11,7 @@ namespace IS74Wifi.Core;
 [JsonSerializable(typeof(SessionMetadata))]
 [JsonSerializable(typeof(HostAddressCacheDocument))]
 [JsonSerializable(typeof(StoredSecrets))]
+[JsonSerializable(typeof(TelemetryUploadState))]
 internal sealed partial class PersistenceJsonContext : JsonSerializerContext;
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

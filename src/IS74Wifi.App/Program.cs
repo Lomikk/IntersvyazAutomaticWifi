@@ -110,7 +110,7 @@ internal static class Program
 
     private static async Task<int> RegisterAsync()
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         app.Logger.Write(DiagnosticLevel.Info, "cli.start command=register runtime=csharp");
         if (app.Secrets.Load() is not null)
         {
@@ -206,7 +206,7 @@ internal static class Program
     private static async Task<AuthorizationOutcome> RunManualAuthorizationAsync(
         Action<AuthorizationProgressStage>? progress = null)
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         app.Logger.Write(DiagnosticLevel.Info, "cli.start command=connect runtime=csharp");
         var secrets = app.Secrets.Load() ?? throw new InvalidOperationException("Устройство не зарегистрировано. Сначала выполните register.");
         var deviceId = app.DeviceIdentity.GetOrCreate();
@@ -267,7 +267,7 @@ internal static class Program
 
     private static async Task<int> PrintStatusAsync()
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         app.Logger.Write(DiagnosticLevel.Info, "cli.start command=status runtime=csharp");
         var secrets = app.Secrets.Load();
         var session = app.Session.Load();
@@ -372,7 +372,7 @@ internal static class Program
 
     private static int EnableAutomaticAuthorization(bool quiet = false, Action<string>? progress = null)
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         if (app.Secrets.Load() is null)
         {
             throw new InvalidOperationException("Сначала зарегистрируйте устройство.");
@@ -415,7 +415,7 @@ internal static class Program
 
     private static int DisableAutostart(bool quiet = false, Action<string>? progress = null)
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         app.Autostart.Disable();
         ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый агент остановлен");
         app.Logger.Write(DiagnosticLevel.Info, "autostart.disabled mode=hkcu-run");
@@ -431,7 +431,7 @@ internal static class Program
 
     private static int ResetRegistration(bool quiet = false, Action<string>? progress = null)
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         app.Autostart.Disable();
         ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый агент остановлен");
         app.Maintenance.ResetRegistration();
@@ -446,7 +446,7 @@ internal static class Program
 
     private static int Purge()
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         app.Autostart.Disable();
         app.Maintenance.PurgeAllData();
         Console.WriteLine("Автозапуск отключён, все локальные данные приложения удалены.");
@@ -455,7 +455,7 @@ internal static class Program
 
     private static int Uninstall(bool quiet = false, Action<string>? progress = null)
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         app.Autostart.Disable();
         ReportMenuBatchProgress(progress, "Автозапуск отключён, фоновый агент остановлен");
         app.Maintenance.PurgeAllData();
@@ -491,7 +491,7 @@ internal static class Program
 
     private static int OpenLogs(bool quiet = false)
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         app.Paths.EnsureDirectories();
         if (!quiet)
         {
@@ -751,7 +751,7 @@ internal static class Program
             ValidatePreparedExecutable(prepared.ExecutablePath);
             ReportUpdateApplyProgress(applyProgress, UpdateApplyProgressStage.ExecutableValidated);
 
-            using var app = ApplicationRuntime.Create();
+            using var app = ApplicationRuntime.Create(ProductVersion);
             var currentExecutable = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(currentExecutable) || !File.Exists(currentExecutable))
                 throw new InvalidOperationException("Не удалось определить текущий IS74Wifi.exe.");
@@ -1585,7 +1585,7 @@ internal static class Program
         InteractiveTerminalUi ui,
         InteractiveStatusSnapshot currentStatus)
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         app.Logger.Write(DiagnosticLevel.Info, "cli.start command=register runtime=csharp-ui");
         if (app.Secrets.Load() is not null)
         {
@@ -1834,7 +1834,7 @@ internal static class Program
 
     private static async Task<IReadOnlyList<string>> BuildDetailedStatusLinesAsync()
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         var installation = new ProgramInstallation();
         var secrets = app.Secrets.Load();
         var session = app.Session.Load();
@@ -2083,13 +2083,13 @@ internal static class Program
 
     private static InteractiveStatusSnapshot GetInteractiveStatusSnapshot(bool? internetOverride = null)
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         return BuildInteractiveStatusSnapshot(app, internetOverride);
     }
 
     private static async Task<InteractiveStatusSnapshot> RefreshInteractiveStatusAsync()
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         bool? online;
         try
         {
@@ -2134,7 +2134,7 @@ internal static class Program
 
     private static void CycleNotificationMode()
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         var next = app.Settings.NotificationMode switch
         {
             NotificationMode.Important => NotificationMode.All,
@@ -2174,7 +2174,7 @@ internal static class Program
 
     private static async Task<int> RunAgentAsync()
     {
-        using var app = ApplicationRuntime.Create();
+        using var app = ApplicationRuntime.Create(ProductVersion);
         if (app.Secrets.Load() is null)
         {
             return 0;
@@ -2220,6 +2220,24 @@ internal static class Program
                 }
 
                 var delay = app.Agent.GetSleepDelay();
+                if (delay >= TimeSpan.FromMinutes(1))
+                {
+                    try
+                    {
+                        await app.TelemetryUploader.TryFlushIfDueAsync(stopCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (stopCts.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        app.Logger.Write(DiagnosticLevel.Warn,
+                            $"telemetry.upload error={ex.GetType().Name}");
+                    }
+                    delay = app.Agent.GetSleepDelay();
+                }
+
                 if (stopEvent.WaitOne(delay))
                 {
                     break;

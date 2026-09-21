@@ -34,6 +34,20 @@ public static class HttpClientProfiles
         };
     }
 
+    public static HttpClient CreateTelemetryClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = true,
+            UseProxy = false,
+            MaxConnectionsPerServer = 2
+        };
+        return new HttpClient(handler, disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+    }
+
     public static HttpClient CreateInternetProbeClient()
     {
         var handler = new SocketsHttpHandler

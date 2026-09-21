@@ -33,7 +33,8 @@ public sealed class InternetConnectivityProbe(HttpTransport transport) : IIntern
                 StatusCode: null,
                 Body: null,
                 FailureKind: result.FailureKind,
-                Elapsed: result.Elapsed);
+                Elapsed: result.Elapsed,
+                Location: null);
         }
 
         var response = result.Response;
@@ -43,7 +44,8 @@ public sealed class InternetConnectivityProbe(HttpTransport transport) : IIntern
             StatusCode: response.StatusCode,
             Body: null,
             FailureKind: TransportFailureKind.None,
-            Elapsed: response.Elapsed);
+            Elapsed: response.Elapsed,
+            Location: response.Location);
     }
 
     public static bool IsExpectedResponse(HttpStatusCode statusCode, Uri? location)

@@ -231,3 +231,7 @@ The migration is complete when a clean Windows 10 or Windows 11 machine can:
 9. produce redacted diagnostics sufficient to debug field failures.
 
 Until these gates pass, the PowerShell implementation remains the fallback/reference runtime and must not be deleted.
+
+### Local-first field telemetry
+
+Production instrumentation now records a structured authorization trace locally and defers upload until the agent is outside the timing-critical authorization window. The trace explicitly records overlapping mailbox GETs (`planned/actual/completed`, `in_flight_at_start`), early code arrival, early `stepTwo`, and post-stepTwo Internet confirmation. A stable random telemetry `install_id`, per-attempt `attempt_id`, and per-row `event_id` support later SQL/Python aggregation and deduplication without carrying phone/account identifiers. See `docs/telemetry.md` for the storage/privacy/upload contract.

@@ -195,4 +195,27 @@ assert 'Func<Task<bool>>? confirmApply = null' in csharp_program and 'ОБНОВ
 assert 'if (!WaitForProcessExit(parentPid))' in csharp_program, 'update apply helper must wait for deliberate user confirmation without a fixed timeout'
 assert 'IS74W_UPDATE_RESULT' in csharp_program and 'РЕЗУЛЬТАТ ОБНОВЛЕНИЯ' in csharp_program, 'post-restart update result handoff missing'
 
+
+# Local-first telemetry must never add network or disk work to the millisecond authorization race.
+telemetry_models = (root / 'src' / 'IS74Wifi.Core' / 'TelemetryModels.cs').read_text(encoding='utf-8')
+telemetry_trace = (root / 'src' / 'IS74Wifi.Core' / 'AuthorizationTelemetry.cs').read_text(encoding='utf-8')
+telemetry_store = (root / 'src' / 'IS74Wifi.Core' / 'TelemetryStore.cs').read_text(encoding='utf-8')
+telemetry_uploader = (root / 'src' / 'IS74Wifi.Core' / 'TelemetryUploader.cs').read_text(encoding='utf-8')
+auth_flow = (root / 'src' / 'IS74Wifi.Core' / 'AuthorizationFlow.cs').read_text(encoding='utf-8')
+push_polling = (root / 'src' / 'IS74Wifi.Core' / 'PushPollingEngine.cs').read_text(encoding='utf-8')
+assert 'MailboxPollStarted' in push_polling and 'MailboxPollCompleted' in push_polling, 'mailbox race telemetry missing'
+assert 'InFlightAtStart' in telemetry_models and 'MaxMailboxInFlight' in telemetry_models and 'OverlappingMailboxObserved' in telemetry_models, 'overlap telemetry fields missing'
+assert 'StepTwoBeforeStepOneResponse' in telemetry_models and 'FastPathSuccess' in telemetry_models, 'fast-path outcome telemetry missing'
+assert 'queue.Enqueue(serialized);' in telemetry_trace, 'completed traces must be persisted locally'
+assert 'SendTelemetryBatchAsync' not in auth_flow and 'TryFlushIfDueAsync' not in auth_flow, 'authorization flow must never upload telemetry'
+assert 'File.' not in push_polling, 'push polling critical path must not write telemetry to disk'
+assert 'TelemetryUploadIntervalHours' in (root / 'src' / 'IS74Wifi.Core' / 'AppSettings.cs').read_text(encoding='utf-8')
+assert 'TimeSpan.FromHours(6)' in telemetry_uploader, 'backlogged telemetry should respect the server upload window'
+for forbidden in ['BearerToken', 'Phone', 'ConfirmCode', 'AuthId', 'UserId', 'ProfileId', 'PushMessage', 'FullMessage']:
+    assert forbidden not in telemetry_models, f'sensitive field leaked into telemetry DTO contract: {forbidden}'
+assert 'install-id.txt' in (root / 'src' / 'IS74Wifi.Core' / 'AppPaths.cs').read_text(encoding='utf-8'), 'stable telemetry install ID storage missing'
+assert 'Guid.NewGuid().ToString("N")' in telemetry_store, 'telemetry install ID must be random and app-generated'
+assert 'IS74W_TELEMETRY_URL' in csharp_runtime, 'telemetry endpoint override missing'
+assert 'delay >= TimeSpan.FromMinutes(1)' in csharp_program and 'TryFlushIfDueAsync' in csharp_program, 'agent must upload telemetry only away from the near-expiry critical window'
+
 print('static checks: OK')

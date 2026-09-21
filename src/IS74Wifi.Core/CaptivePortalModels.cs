@@ -13,7 +13,14 @@ public sealed record CaptivePortalFailure(
     TransportFailureKind? TransportFailure = null,
     int? StatusCode = null,
     Uri? Location = null,
-    bool SideEffectMayHaveOccurred = false);
+    bool SideEffectMayHaveOccurred = false,
+    TimeSpan? Elapsed = null,
+    string? Server = null,
+    string? ContentType = null,
+    long? ContentLength = null,
+    TimeSpan? RetryAfter = null,
+    string? BodyKind = null,
+    string? BodySha256 = null);
 
 public sealed record CaptivePortalResult<T>(T? Value, CaptivePortalFailure? Failure)
 {
@@ -35,9 +42,19 @@ public sealed record StepOneResponse(
     Uri Location,
     Uri? StepTwoUri,
     DateTimeOffset? ServerDate,
-    TimeSpan Elapsed);
+    TimeSpan Elapsed,
+    int StatusCode = 302,
+    string? Server = null,
+    string? ContentType = null,
+    long? ContentLength = null,
+    TimeSpan? RetryAfter = null);
 
 public sealed record StepTwoResponse(
     Uri Location,
     DateTimeOffset? ServerDate,
-    TimeSpan Elapsed);
+    TimeSpan Elapsed,
+    int StatusCode = 302,
+    string? Server = null,
+    string? ContentType = null,
+    long? ContentLength = null,
+    TimeSpan? RetryAfter = null);
