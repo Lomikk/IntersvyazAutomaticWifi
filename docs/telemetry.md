@@ -91,17 +91,20 @@ If no HTTPS telemetry endpoint is configured, local collection continues and not
 
 ## Ingestion API contract
 
-The Apps Script source is intentionally kept outside this public repository. The currently supplied schema-v3 receiver exposes one generic JSON POST endpoint rather than route-specific POST handlers:
+The Apps Script source is intentionally kept outside this public repository. The updated schema-v3 receiver keeps the original generic POST contract for backward compatibility and adds explicit routes for user-triggered speed features:
 
 ```text
-POST <web-app endpoint>
+POST <web-app endpoint>                         # legacy/mixed queued batch
+POST <web-app endpoint>?route=speedtest         # one completed speed_test
+POST <web-app endpoint>?route=leaderboard       # one explicit leaderboard_entry
+GET  <web-app endpoint>?route=leaderboard&limit=100
 ```
 
-The payload `event_type` selects the row schema (`attempt`, `mailbox_poll`, `internet_probe`, `portal_response`, `error`, `speed_test`, or `leaderboard_entry`). Authorization traces may use a `{batch_id, events[]}` envelope; a speed-test or leaderboard event may be posted as one flat JSON object. The receiver currently guards each request at 64 events / 64 KiB, which is why the local queue emits at most 64 events and targets roughly 60 KiB per transport batch.
+The payload `event_type` still selects the row schema (`attempt`, `mailbox_poll`, `internet_probe`, `portal_response`, `error`, `speed_test`, or `leaderboard_entry`). Authorization traces use a `{batch_id, events[]}` envelope. The receiver guards each request at 64 events / 64 KiB, which is why the local queue emits at most 64 events and targets roughly 60 KiB per transport batch.
 
-The currently supplied `doGet()` is health/schema metadata only. It does **not** expose a public leaderboard view yet. `TelemetryClient.GetLeaderboardJsonAsync` therefore remains a future-facing client stub and must not be wired into the UI until the external backend adds a response that omits private `install_id` / `test_id`.
+The public leaderboard is sorted by download speed, then upload speed, then lower latency, with newest rows as the final tie-breaker. Its response exposes only rank, nickname, download/upload, latency, jitter and optional packet loss. Private `install_id`, `test_id`, `event_id`, radio metadata and time bucket remain server-side.
 
-No route-specific rate limits, accepted-tests-per-day limit, or ingestion kill switch are present in the supplied receiver. Those remain possible backend hardening work, not assumptions the current client may rely on. Because the client is open source, any future anti-abuse controls should be treated as operational guards rather than an identity/security boundary.
+No route-specific rate limits, accepted-tests-per-day limit, or ingestion kill switch are enforced yet. Those remain possible backend hardening work. Because the client is open source, future anti-abuse controls should be treated as operational guards rather than an identity/security boundary.
 
 ## Storage model
 
@@ -117,7 +120,7 @@ Google Sheets is an append-only ingestion buffer, not the analytics engine. The 
 
 The intended analysis path is export/import into SQL, Python, or Parquet. `event_id` is the durable row-level deduplication key; `attempt_id` joins authorization events; `install_id` groups behavior by installation without revealing an InterSvyaz account.
 
-For the future network-quality study, `SpeedTests` is the canonical research source. `Leaderboard` is only a recreational presentation dataset and may contain many nicknames/entries for one installation. Its private `install_id`/`test_id` are retained for attribution and joins but must never be exposed by `GET leaderboard`.
+For the network-quality study, `SpeedTests` is the canonical research source. `Leaderboard` is only a recreational presentation dataset and may contain many nicknames/entries for one installation. Its private `install_id`/`test_id` are retained for attribution and joins but must never be exposed by `GET leaderboard`.
 
 The public leaderboard response contains rank, nickname, and measurement values only.
 

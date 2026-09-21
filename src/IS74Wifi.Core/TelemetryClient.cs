@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -8,6 +9,20 @@ public sealed record TelemetryWriteResult(
     bool Duplicate,
     string? Error);
 
+public sealed record LeaderboardPublicEntry(
+    int Rank,
+    string Nickname,
+    double? DownloadMbps,
+    double? UploadMbps,
+    double? LatencyMs,
+    double? JitterMs,
+    double? PacketLossPct);
+
+public sealed record LeaderboardReadResult(
+    bool Success,
+    string? Error,
+    IReadOnlyList<LeaderboardPublicEntry> Entries);
+
 public sealed class TelemetryClient(HttpClient http, Uri endpoint)
 {
     public async Task<TelemetryWriteResult> SendTelemetryBatchAsync(
@@ -16,7 +31,10 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
         CancellationToken cancellationToken = default)
     {
         var body = BuildBatchEnvelope(batch.BatchId, batch.EventJson);
-        return await PostAsync(body, timeout, cancellationToken).ConfigureAwait(false);
+        // Keep queued uploads on the backward-compatible generic endpoint. The
+        // queue can contain a user-triggered speed/leaderboard retry alongside
+        // authorization telemetry.
+        return await PostAsync(endpoint, body, timeout, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<TelemetryWriteResult> SubmitSpeedTestAsync(
@@ -24,6 +42,7 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
         TimeSpan timeout,
         CancellationToken cancellationToken = default) =>
         PostAsync(
+            BuildRouteUri("speedtest"),
             TelemetrySerialization.Serialize(value),
             timeout,
             cancellationToken);
@@ -33,9 +52,89 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
         TimeSpan timeout,
         CancellationToken cancellationToken = default) =>
         PostAsync(
+            BuildRouteUri("leaderboard"),
             TelemetrySerialization.Serialize(value),
             timeout,
             cancellationToken);
+
+    public async Task<LeaderboardReadResult> GetLeaderboardAsync(
+        int limit,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+
+        try
+        {
+            using var response = await http.GetAsync(
+                BuildRouteUri("leaderboard", ("limit", Math.Clamp(limit, 1, 250).ToString(CultureInfo.InvariantCulture))),
+                timeoutCts.Token).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return new LeaderboardReadResult(false, "http_" + (int)response.StatusCode, []);
+            }
+
+            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("ok", out var okElement) ||
+                okElement.ValueKind != JsonValueKind.True)
+            {
+                return new LeaderboardReadResult(false, ReadError(root), []);
+            }
+
+            if (!root.TryGetProperty("entries", out var entriesElement) ||
+                entriesElement.ValueKind != JsonValueKind.Array)
+            {
+                return new LeaderboardReadResult(false, "invalid_response", []);
+            }
+
+            var entries = new List<LeaderboardPublicEntry>();
+            foreach (var item in entriesElement.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var nickname = ReadString(item, "nickname");
+                if (string.IsNullOrWhiteSpace(nickname))
+                {
+                    continue;
+                }
+
+                entries.Add(new LeaderboardPublicEntry(
+                    ReadInt(item, "rank") ?? entries.Count + 1,
+                    nickname,
+                    ReadDouble(item, "download_mbps"),
+                    ReadDouble(item, "upload_mbps"),
+                    ReadDouble(item, "latency_ms"),
+                    ReadDouble(item, "jitter_ms"),
+                    ReadDouble(item, "packet_loss_pct")));
+            }
+
+            return new LeaderboardReadResult(true, null, entries);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new LeaderboardReadResult(false, "cancelled", []);
+        }
+        catch (OperationCanceledException)
+        {
+            return new LeaderboardReadResult(false, "timeout", []);
+        }
+        catch (HttpRequestException)
+        {
+            return new LeaderboardReadResult(false, "transport", []);
+        }
+        catch (JsonException)
+        {
+            return new LeaderboardReadResult(false, "invalid_response", []);
+        }
+    }
 
     public async Task<string?> GetLeaderboardJsonAsync(
         int limit,
@@ -44,26 +143,37 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
-        using var response = await http.GetAsync(
-            BuildRouteUri("leaderboard", ("limit", Math.Clamp(limit, 1, 250).ToString())),
-            timeoutCts.Token).ConfigureAwait(false);
+        try
+        {
+            using var response = await http.GetAsync(
+                BuildRouteUri("leaderboard", ("limit", Math.Clamp(limit, 1, 250).ToString(CultureInfo.InvariantCulture))),
+                timeoutCts.Token).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
 
-        if (!response.IsSuccessStatusCode)
+            return await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
         {
             return null;
         }
-
-        return await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+        catch (HttpRequestException)
+        {
+            return null;
+        }
     }
 
     private async Task<TelemetryWriteResult> PostAsync(
+        Uri target,
         string json,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
-        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+        using var request = new HttpRequestMessage(HttpMethod.Post, target);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         try
@@ -87,17 +197,16 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
                          okElement.ValueKind is JsonValueKind.True;
                 if (!ok)
                 {
-                    var error = root.ValueKind == JsonValueKind.Object &&
-                                root.TryGetProperty("error", out var errorElement) &&
-                                errorElement.ValueKind == JsonValueKind.String
-                        ? errorElement.GetString()
-                        : "rejected";
-                    return new TelemetryWriteResult(false, false, error);
+                    return new TelemetryWriteResult(false, false, ReadError(root));
                 }
 
-                var duplicate = root.TryGetProperty("duplicate_batch", out var duplicateElement) &&
-                                duplicateElement.ValueKind == JsonValueKind.True;
-                return new TelemetryWriteResult(true, duplicate, null);
+                var duplicateBatch = root.TryGetProperty("duplicate_batch", out var duplicateElement) &&
+                                     duplicateElement.ValueKind == JsonValueKind.True;
+                var duplicateEvents = root.TryGetProperty("duplicate_events", out var duplicateEventsElement) &&
+                                      duplicateEventsElement.ValueKind == JsonValueKind.Number &&
+                                      duplicateEventsElement.TryGetInt32(out var duplicateEventCount) &&
+                                      duplicateEventCount > 0;
+                return new TelemetryWriteResult(true, duplicateBatch || duplicateEvents, null);
             }
             catch (JsonException)
             {
@@ -132,6 +241,33 @@ public sealed class TelemetryClient(HttpClient http, Uri endpoint)
         builder.Query = string.Join("&", values);
         return builder.Uri;
     }
+
+    private static string ReadError(JsonElement root) =>
+        root.ValueKind == JsonValueKind.Object &&
+        root.TryGetProperty("error", out var errorElement) &&
+        errorElement.ValueKind == JsonValueKind.String
+            ? errorElement.GetString() ?? "rejected"
+            : "rejected";
+
+    private static string? ReadString(JsonElement value, string name) =>
+        value.TryGetProperty(name, out var element) && element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : null;
+
+    private static int? ReadInt(JsonElement value, string name) =>
+        value.TryGetProperty(name, out var element) &&
+        element.ValueKind == JsonValueKind.Number &&
+        element.TryGetInt32(out var result)
+            ? result
+            : null;
+
+    private static double? ReadDouble(JsonElement value, string name) =>
+        value.TryGetProperty(name, out var element) &&
+        element.ValueKind == JsonValueKind.Number &&
+        element.TryGetDouble(out var result) &&
+        double.IsFinite(result)
+            ? result
+            : null;
 
     private static string BuildBatchEnvelope(string batchId, IReadOnlyList<string> events)
     {

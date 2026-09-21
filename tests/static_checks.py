@@ -166,10 +166,10 @@ assert 'private bool menuSelectionInitialized;' in csharp_ui and 'selected = hot
 assert 'CanUseInteractiveSession' in csharp_ui and 'compactLayout' in csharp_ui, 'terminal UI must recover after temporary narrow resize'
 assert 'PrepareForAction(' not in csharp_program, 'menu actions must stay inside the terminal panes instead of reopening the legacy action screen'
 speed_tools_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.SpeedTools.cs').read_text(encoding='utf-8')
-assert 'RunSpeedToolsAsync' in speed_tools_ui and 'ЛИДЕРЫ КАМПУСА' in speed_tools_ui, 'speed tools UI shell missing'
+assert 'RunSpeedToolsAsync' in speed_tools_ui and 'ЛИДЕРЫ КАМПУСА' in speed_tools_ui, 'speed tools UI missing'
 assert 'Jitter' in speed_tools_ui and 'Packet loss' in speed_tools_ui, 'speed measurement diagnostics missing'
-assert 'PromptSpeedNicknameAsync' in speed_tools_ui and '[4] Опубликовать' in speed_tools_ui, 'speed publication UI shell missing'
-assert 'UI shell only' in speed_tools_ui and 'backend' in speed_tools_ui, 'speed tools branch must remain UI-only until backend integration'
+assert 'PromptSpeedNicknameAsync' in speed_tools_ui and '[4] Опубликовать' in speed_tools_ui, 'speed publication UI missing'
+assert 'CampusSpeedToolsService' in speed_tools_ui and 'speedTools.MeasureAsync' in speed_tools_ui, 'speed tools UI must be connected to the measurement service'
 launch_settings = (root / 'src' / 'IS74Wifi.App' / 'Properties' / 'launchSettings.json').read_text(encoding='utf-8')
 assert 'IS74Wifi.App (Local Debug)' in launch_settings and 'IS74W_RUN_LOCAL' in launch_settings, 'Visual Studio local-debug profile missing'
 
@@ -231,6 +231,7 @@ assert 'delay >= TimeSpan.FromMinutes(1)' in csharp_program and 'TryFlushIfDueAs
 speedtest = (root / 'src' / 'IS74Wifi.Core' / 'Is74SpeedTestProvider.cs').read_text(encoding='utf-8')
 speedtest_models = (root / 'src' / 'IS74Wifi.Core' / 'SpeedTestModels.cs').read_text(encoding='utf-8')
 telemetry_client = (root / 'src' / 'IS74Wifi.Core' / 'TelemetryClient.cs').read_text(encoding='utf-8')
+speed_tools_service = (root / 'src' / 'IS74Wifi.Core' / 'CampusSpeedToolsService.cs').read_text(encoding='utf-8')
 assert 'PingCount { get; init; } = 10' in speedtest, 'IS74 LibreSpeed ping count changed'
 assert 'DownloadStreams { get; init; } = 5' in speedtest and 'UploadStreams { get; init; } = 3' in speedtest, 'IS74 LibreSpeed stream profile changed'
 assert 'DownloadGraceTime { get; init; } = TimeSpan.FromSeconds(1.5)' in speedtest and 'UploadGraceTime { get; init; } = TimeSpan.FromSeconds(3)' in speedtest, 'IS74 LibreSpeed grace windows changed'
@@ -239,6 +240,12 @@ assert 'backend/garbage.php' in speedtest and 'backend/empty.php' in speedtest, 
 assert 'BuildUri("backend/getIP.php"' not in speedtest and 'BuildUri("results/telemetry.php"' not in speedtest, 'native speed test must not fetch public IP or submit provider telemetry'
 assert 'PacketLossPct: null' in speedtest, 'unsupported packet loss must remain unmeasured'
 assert 'IProgress<SpeedTestProgress>' in speedtest_models and 'CancellationToken' in speedtest_models, 'speed-test UI progress/cancellation contract missing'
-assert 'new HttpRequestMessage(HttpMethod.Post, endpoint)' in telemetry_client, 'generic Apps Script POST must not depend on undeployed route query parameters'
+assert 'BuildRouteUri("speedtest")' in telemetry_client and 'BuildRouteUri("leaderboard")' in telemetry_client, 'speed-test and leaderboard routes must be explicit'
+assert 'PostAsync(endpoint, body' in telemetry_client, 'queued telemetry batches must preserve legacy generic POST compatibility'
+assert 'QueueSpeedTest(telemetry)' in speed_tools_service, 'completed speed tests must remain local-first when backend upload is unavailable'
+assert '"=+-@".Contains(trimmed[0])' in speed_tools_service, 'leaderboard nickname validation must mirror the Sheets formula-injection guard'
+speed_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.SpeedTools.cs').read_text(encoding='utf-8')
+assert 'CampusSpeedToolsService' in speed_ui and 'RunSpeedMeasurementAsync' in speed_ui, 'speed-tools UI is not connected to measurement core'
+assert 'PublishLastSpeedResultAsync' in speed_ui and 'GetLeaderboardAsync' in speed_ui, 'speed-tools UI is not connected to leaderboard backend'
 
 print('static checks: OK')

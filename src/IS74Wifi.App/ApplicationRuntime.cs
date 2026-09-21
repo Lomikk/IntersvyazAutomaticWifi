@@ -7,6 +7,7 @@ internal sealed class ApplicationRuntime : IDisposable
     private readonly HttpClient apiHttp;
     private readonly HttpClient portalHttp;
     private readonly HttpClient internetHttp;
+    private readonly HttpClient speedTestHttp;
     private readonly HttpClient? telemetryHttp;
 
     private ApplicationRuntime(
@@ -27,9 +28,11 @@ internal sealed class ApplicationRuntime : IDisposable
         LocalStateMaintenance maintenance,
         TelemetryQueue telemetryQueue,
         TelemetryUploader telemetryUploader,
+        CampusSpeedToolsService campusSpeedTools,
         HttpClient apiHttp,
         HttpClient portalHttp,
         HttpClient internetHttp,
+        HttpClient speedTestHttp,
         HttpClient? telemetryHttp)
     {
         Paths = paths;
@@ -49,9 +52,11 @@ internal sealed class ApplicationRuntime : IDisposable
         Maintenance = maintenance;
         TelemetryQueue = telemetryQueue;
         TelemetryUploader = telemetryUploader;
+        CampusSpeedTools = campusSpeedTools;
         this.apiHttp = apiHttp;
         this.portalHttp = portalHttp;
         this.internetHttp = internetHttp;
+        this.speedTestHttp = speedTestHttp;
         this.telemetryHttp = telemetryHttp;
     }
 
@@ -72,6 +77,7 @@ internal sealed class ApplicationRuntime : IDisposable
     public LocalStateMaintenance Maintenance { get; }
     public TelemetryQueue TelemetryQueue { get; }
     public TelemetryUploader TelemetryUploader { get; }
+    public CampusSpeedToolsService CampusSpeedTools { get; }
 
     public static ApplicationRuntime Create(string appVersion = "dev")
     {
@@ -91,6 +97,7 @@ internal sealed class ApplicationRuntime : IDisposable
         var apiHttp = HttpClientProfiles.CreateApiClient();
         var portalHttp = HttpClientProfiles.CreatePortalClient();
         var internetHttp = HttpClientProfiles.CreateInternetProbeClient();
+        var speedTestHttp = HttpClientProfiles.CreateSpeedTestClient();
         var api = new Is74ApiClient(new HttpTransport(apiHttp));
         var portal = new CaptivePortalClient(new HttpTransport(portalHttp));
         var internet = new InternetConnectivityProbe(new HttpTransport(internetHttp));
@@ -121,6 +128,13 @@ internal sealed class ApplicationRuntime : IDisposable
             telemetryClient,
             settings,
             logger);
+        var campusSpeedTools = new CampusSpeedToolsService(
+            new Is74SpeedTestProvider(speedTestHttp),
+            telemetryClient,
+            telemetryQueue,
+            telemetryInstallId,
+            appVersion,
+            settings.TelemetryHttpTimeoutMilliseconds);
 
         var authorization = new AuthorizationFlow(
             api,
@@ -161,9 +175,11 @@ internal sealed class ApplicationRuntime : IDisposable
             new LocalStateMaintenance(paths),
             telemetryQueue,
             telemetryUploader,
+            campusSpeedTools,
             apiHttp,
             portalHttp,
             internetHttp,
+            speedTestHttp,
             telemetryHttp);
     }
 
@@ -186,6 +202,7 @@ internal sealed class ApplicationRuntime : IDisposable
         apiHttp.Dispose();
         portalHttp.Dispose();
         internetHttp.Dispose();
+        speedTestHttp.Dispose();
         telemetryHttp?.Dispose();
     }
 }

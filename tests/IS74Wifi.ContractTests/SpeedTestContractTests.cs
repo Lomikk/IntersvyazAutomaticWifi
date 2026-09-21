@@ -125,12 +125,24 @@ internal static class SpeedTestContractTests
 
     private static async Task TestGenericTelemetryPostContractAsync(TelemetrySpeedTestEvent telemetry)
     {
-        Uri? seenUri = null;
-        string? seenBody = null;
+        var seen = new List<(string Method, Uri Uri, string? Body)>();
         using var client = new HttpClient(new DelegateHandler(async (request, cancellationToken) =>
         {
-            seenUri = request.RequestUri;
-            seenBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+            var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+            seen.Add((request.Method.Method, request.RequestUri!, body));
+
+            if (request.Method == HttpMethod.Get)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        "{\"ok\":true,\"sort\":\"download_mbps_desc\",\"total\":1,\"entries\":[{" +
+                        "\"rank\":1,\"nickname\":\"campus-cat\",\"download_mbps\":84.3," +
+                        "\"upload_mbps\":52.1,\"latency_ms\":11.2,\"jitter_ms\":4.1," +
+                        "\"packet_loss_pct\":null}]}")
+                };
+            }
+
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("{\"ok\":true,\"accepted\":1,\"duplicate_batch\":false}")
@@ -140,10 +152,13 @@ internal static class SpeedTestContractTests
         var telemetryClient = new TelemetryClient(client, new Uri("https://script.example.test/exec?deployment=test"));
         var write = await telemetryClient.SubmitSpeedTestAsync(telemetry, TimeSpan.FromSeconds(1));
 
-        Assert(write.Success, "generic Apps Script speed-test POST was rejected by client parser");
-        Assert(seenUri is not null && seenUri.Query == "?deployment=test", "generic Apps Script POST must not invent route query parameters");
-        Assert(seenBody is not null && seenBody.Contains("\"event_type\":\"speed_test\"", StringComparison.Ordinal),
-            "speed-test payload was not posted directly to the generic receiver");
+        Assert(write.Success, "routed Apps Script speed-test POST was rejected by client parser");
+        var speedRequest = seen.Single(item => item.Method == "POST");
+        Assert(speedRequest.Uri.Query.Contains("deployment=test", StringComparison.Ordinal) &&
+               speedRequest.Uri.Query.Contains("route=speedtest", StringComparison.Ordinal),
+            "speed-test POST must preserve deployment query and add route=speedtest");
+        Assert(speedRequest.Body is not null && speedRequest.Body.Contains("\"event_type\":\"speed_test\"", StringComparison.Ordinal),
+            "speed-test payload was not posted to the routed receiver");
 
         var leaderboard = new TelemetryLeaderboardEntry
         {
@@ -169,6 +184,30 @@ internal static class SpeedTestContractTests
             "leaderboard payload is missing backend-required Wi-Fi band");
         Assert(leaderboardJson.RootElement.GetProperty("time_bucket").GetString() == "evening",
             "leaderboard payload is missing backend-required time bucket");
+
+        var publish = await telemetryClient.PublishLeaderboardAsync(leaderboard, TimeSpan.FromSeconds(1));
+        Assert(publish.Success, "leaderboard POST was rejected by client parser");
+        Assert(seen.Any(item => item.Method == "POST" && item.Uri.Query.Contains("route=leaderboard", StringComparison.Ordinal)),
+            "leaderboard publication must use route=leaderboard");
+
+        var board = await telemetryClient.GetLeaderboardAsync(50, TimeSpan.FromSeconds(1));
+        Assert(board.Success && board.Entries.Count == 1, "public leaderboard response was not parsed");
+        Assert(board.Entries[0].Nickname == "campus-cat" && Math.Abs(board.Entries[0].DownloadMbps!.Value - 84.3) < 0.01,
+            "public leaderboard fields changed");
+        Assert(seen.Any(item => item.Method == "GET" &&
+                                item.Uri.Query.Contains("route=leaderboard", StringComparison.Ordinal) &&
+                                item.Uri.Query.Contains("limit=50", StringComparison.Ordinal)),
+            "leaderboard read must use the public route with a bounded limit");
+
+        var batch = new TelemetryQueueBatch(
+            "batch-0123456789abcdef",
+            [TelemetrySerialization.Serialize(telemetry)],
+            []);
+        var batchWrite = await telemetryClient.SendTelemetryBatchAsync(batch, TimeSpan.FromSeconds(1));
+        Assert(batchWrite.Success, "generic queued batch POST was rejected by client parser");
+        var queuedRequest = seen.Last(item => item.Method == "POST");
+        Assert(queuedRequest.Uri.Query == "?deployment=test",
+            "queued telemetry must stay on the backward-compatible generic POST route");
     }
 
     private static void Assert(bool condition, string message)

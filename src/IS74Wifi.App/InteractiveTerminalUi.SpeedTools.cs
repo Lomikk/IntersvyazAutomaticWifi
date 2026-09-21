@@ -1,13 +1,14 @@
+using System.Globalization;
 using System.Text;
+using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
 
-// UI shell only. Networking, speed measurement, campus leaderboard storage and
-// publication are intentionally left for the backend/business-logic integration.
+// Native IS74 LibreSpeed measurement and the opt-in campus leaderboard are
+// wired here while authorization remains isolated from high-bandwidth traffic.
 internal sealed partial class InteractiveTerminalUi
 {
     private const int SpeedNicknameMaximumLength = 18;
-    private const int SpeedLeaderboardPlaceholderCount = 50;
 
     private static readonly IReadOnlyDictionary<char, string[]> SpeedMetricGlyphs =
         new Dictionary<char, string[]>
@@ -122,11 +123,20 @@ internal sealed partial class InteractiveTerminalUi
             ]
         };
 
+    private const int SpeedLeaderboardDefaultLimit = 100;
+
     private string speedNicknameDraft = "Гость";
-    private readonly IReadOnlyList<SpeedLeaderboardRow> speedLeaderboardRows =
-        Enumerable.Range(1, SpeedLeaderboardPlaceholderCount)
-            .Select(rank => new SpeedLeaderboardRow(rank, "—", "—", "—", "—", "—"))
-            .ToArray();
+    private readonly List<SpeedLeaderboardRow> speedLeaderboardRows = [];
+    private CampusSpeedTestRun? lastSpeedTestRun;
+    private SpeedTestProgress? liveSpeedProgress;
+    private double? liveDownloadMbps;
+    private double? liveUploadMbps;
+    private double? liveLatencyMs;
+    private double? liveJitterMs;
+    private bool speedMeasurementInProgress;
+    private string speedStatusText = "Готово к замеру";
+    private string speedLeaderboardStatusText = "Рейтинг не загружен";
+    private bool speedLastPublished;
 
     private sealed record SpeedLeaderboardRow(
         int Rank,
@@ -138,6 +148,7 @@ internal sealed partial class InteractiveTerminalUi
 
     public async Task RunSpeedToolsAsync(
         InteractiveStatusSnapshot currentStatus,
+        CampusSpeedToolsService speedTools,
         CancellationToken cancellationToken = default)
     {
         status = currentStatus;
@@ -145,9 +156,21 @@ internal sealed partial class InteractiveTerminalUi
 
         if (!CanUseInteractiveSession)
         {
-            RunSpeedToolsCompact();
+            await RunSpeedToolsCompactAsync(speedTools, cancellationToken).ConfigureAwait(false);
             selected = mainMenuSelection;
             return;
+        }
+
+        using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task<LeaderboardReadResult>? initialLeaderboard = null;
+        if (speedTools.BackendEnabled)
+        {
+            speedLeaderboardStatusText = "Обновляю рейтинг…";
+            initialLeaderboard = speedTools.GetLeaderboardAsync(SpeedLeaderboardDefaultLimit, sessionCts.Token);
+        }
+        else
+        {
+            speedLeaderboardStatusText = "Backend не настроен";
         }
 
         PrepareInteractiveConsole(clear: false);
@@ -157,6 +180,13 @@ internal sealed partial class InteractiveTerminalUi
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                if (initialLeaderboard is { IsCompleted: true })
+                {
+                    ApplyLeaderboardResult(await initialLeaderboard.ConfigureAwait(false));
+                    initialLeaderboard = null;
+                }
+
                 UpdateLayout();
                 RenderSpeedDashboardFrame();
 
@@ -174,21 +204,18 @@ internal sealed partial class InteractiveTerminalUi
 
                 if (key.Key == ConsoleKey.Enter || key.KeyChar == '1')
                 {
-                    await ShowSpeedToolsNoticeAsync(
-                        "ИЗМЕРЕНИЕ СКОРОСТИ",
-                        "Интерфейс измерителя готов. Download, upload, ping, jitter и packet loss подключит отдельный backend-модуль.",
-                        cancellationToken).ConfigureAwait(false);
+                    var pendingKey = await RunSpeedMeasurementAsync(speedTools, cancellationToken).ConfigureAwait(false);
+                    keyTask = pendingKey ?? ReadKeyAsync();
+                    continue;
                 }
-                else if (key.KeyChar == '2')
+
+                if (key.KeyChar == '2')
                 {
-                    await ShowExpandedLeaderboardAsync(cancellationToken).ConfigureAwait(false);
+                    await ShowExpandedLeaderboardAsync(speedTools, cancellationToken).ConfigureAwait(false);
                 }
                 else if (key.Key == ConsoleKey.R)
                 {
-                    await ShowSpeedToolsNoticeAsync(
-                        "ТАБЛИЦА ЛИДЕРОВ",
-                        "Интерфейс таблицы готов. Получение и сортировку результатов кампуса подключит отдельный backend-модуль.",
-                        cancellationToken).ConfigureAwait(false);
+                    await RefreshSpeedLeaderboardAsync(speedTools, cancellationToken).ConfigureAwait(false);
                 }
                 else if (key.KeyChar == '3')
                 {
@@ -200,10 +227,7 @@ internal sealed partial class InteractiveTerminalUi
                 }
                 else if (key.KeyChar == '4')
                 {
-                    await ShowSpeedToolsNoticeAsync(
-                        "ПУБЛИКАЦИЯ РЕЗУЛЬТАТА",
-                        "Экран публикации готов. Сохранение результата и отправку в рейтинг подключит отдельный backend-модуль.",
-                        cancellationToken).ConfigureAwait(false);
+                    await PublishLastSpeedResultAsync(speedTools, cancellationToken).ConfigureAwait(false);
                 }
 
                 keyTask = ReadKeyAsync();
@@ -211,9 +235,190 @@ internal sealed partial class InteractiveTerminalUi
         }
         finally
         {
+            sessionCts.Cancel();
+            if (initialLeaderboard is not null)
+            {
+                try
+                {
+                    _ = await initialLeaderboard.ConfigureAwait(false);
+                }
+                catch
+                {
+                }
+            }
             selected = mainMenuSelection;
             RestoreConsole();
         }
+    }
+
+    private async Task<Task<ConsoleKeyInfo>?> RunSpeedMeasurementAsync(
+        CampusSpeedToolsService speedTools,
+        CancellationToken cancellationToken)
+    {
+        liveSpeedProgress = null;
+        liveDownloadMbps = null;
+        liveUploadMbps = null;
+        liveLatencyMs = null;
+        liveJitterMs = null;
+        speedMeasurementInProgress = true;
+        speedStatusText = "Подготовка LibreSpeed…  Esc — отмена";
+
+        using var measurementCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var progress = new InlineProgress<SpeedTestProgress>(ApplyLiveSpeedProgress);
+        var measurementTask = speedTools.MeasureAsync(progress, measurementCts.Token);
+        var keyTask = ReadKeyAsync();
+
+        while (!measurementTask.IsCompleted)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            UpdateLayout();
+            RenderSpeedDashboardFrame();
+
+            var completed = await Task.WhenAny(
+                measurementTask,
+                keyTask,
+                Task.Delay(33, cancellationToken)).ConfigureAwait(false);
+
+            if (completed != keyTask)
+            {
+                continue;
+            }
+
+            var key = await keyTask.ConfigureAwait(false);
+            if (key.Key == ConsoleKey.Escape || key.KeyChar == '0')
+            {
+                measurementCts.Cancel();
+                try
+                {
+                    await measurementTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                speedStatusText = "Замер отменён";
+                speedMeasurementInProgress = false;
+                liveSpeedProgress = null;
+                return null;
+            }
+
+            keyTask = ReadKeyAsync();
+        }
+
+        try
+        {
+            lastSpeedTestRun = await measurementTask.ConfigureAwait(false);
+            speedLastPublished = false;
+            speedMeasurementInProgress = false;
+            liveSpeedProgress = new SpeedTestProgress(
+                SpeedTestStage.Completed,
+                1,
+                lastSpeedTestRun.Measurement.DownloadMbps,
+                lastSpeedTestRun.Measurement.LatencyMs,
+                lastSpeedTestRun.Measurement.JitterMs);
+
+            speedStatusText = lastSpeedTestRun.StatisticsWrite.Success
+                ? "Замер завершён · статистика отправлена"
+                : lastSpeedTestRun.StatisticsQueued
+                    ? "Замер завершён · статистика сохранена в очереди"
+                    : "Замер завершён · статистика не отправлена";
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            speedStatusText = "Замер отменён";
+            speedMeasurementInProgress = false;
+            liveSpeedProgress = null;
+        }
+        catch (Exception ex)
+        {
+            speedStatusText = "Ошибка замера: " + FriendlySpeedError(ex.Message);
+            speedMeasurementInProgress = false;
+            liveSpeedProgress = null;
+        }
+
+        return keyTask;
+    }
+
+    private async Task RefreshSpeedLeaderboardAsync(
+        CampusSpeedToolsService speedTools,
+        CancellationToken cancellationToken)
+    {
+        if (!speedTools.BackendEnabled)
+        {
+            speedLeaderboardStatusText = "Backend не настроен";
+            return;
+        }
+
+        speedLeaderboardStatusText = "Обновляю рейтинг…";
+        UpdateLayout();
+        RenderSpeedDashboardFrame();
+        var result = await speedTools.GetLeaderboardAsync(
+            SpeedLeaderboardDefaultLimit,
+            cancellationToken).ConfigureAwait(false);
+        ApplyLeaderboardResult(result);
+    }
+
+    private void ApplyLeaderboardResult(LeaderboardReadResult result)
+    {
+        if (!result.Success)
+        {
+            speedLeaderboardStatusText = "Рейтинг недоступен: " + FriendlyTelemetryError(result.Error);
+            return;
+        }
+
+        speedLeaderboardRows.Clear();
+        speedLeaderboardRows.AddRange(result.Entries.Select(entry => new SpeedLeaderboardRow(
+            entry.Rank,
+            entry.Nickname,
+            FormatMetric(entry.DownloadMbps),
+            FormatMetric(entry.UploadMbps),
+            FormatMetric(entry.LatencyMs),
+            FormatMetric(entry.JitterMs))));
+        speedLeaderboardStatusText = speedLeaderboardRows.Count == 0
+            ? "Пока нет опубликованных результатов"
+            : $"Загружено: {speedLeaderboardRows.Count}";
+    }
+
+    private async Task PublishLastSpeedResultAsync(
+        CampusSpeedToolsService speedTools,
+        CancellationToken cancellationToken)
+    {
+        if (lastSpeedTestRun is null)
+        {
+            await ShowSpeedToolsNoticeAsync(
+                "ПУБЛИКАЦИЯ РЕЗУЛЬТАТА",
+                "Сначала выполните замер скорости.",
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!speedTools.BackendEnabled)
+        {
+            await ShowSpeedToolsNoticeAsync(
+                "ПУБЛИКАЦИЯ РЕЗУЛЬТАТА",
+                "Backend статистики не настроен. Сам замер работает локально, но опубликовать результат в общем рейтинге пока нельзя.",
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        speedStatusText = "Публикую результат…";
+        UpdateLayout();
+        RenderSpeedDashboardFrame();
+        var result = await speedTools.PublishAsync(
+            lastSpeedTestRun,
+            speedNicknameDraft,
+            cancellationToken).ConfigureAwait(false);
+
+        if (result.Write.Success)
+        {
+            speedLastPublished = true;
+            speedStatusText = $"Опубликовано как {speedNicknameDraft}";
+            await RefreshSpeedLeaderboardAsync(speedTools, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        speedStatusText = result.Queued
+            ? "Публикация отложена до следующей выгрузки"
+            : "Публикация не выполнена: " + FriendlyTelemetryError(result.Write.Error);
     }
 
     private async Task<string?> PromptSpeedNicknameAsync(string currentValue, CancellationToken cancellationToken)
@@ -294,7 +499,9 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
-    private async Task ShowExpandedLeaderboardAsync(CancellationToken cancellationToken)
+    private async Task ShowExpandedLeaderboardAsync(
+        CampusSpeedToolsService speedTools,
+        CancellationToken cancellationToken)
     {
         var scrollOffset = 0;
         var keyTask = ReadKeyAsync();
@@ -353,10 +560,7 @@ internal sealed partial class InteractiveTerminalUi
             }
             else if (key.Key == ConsoleKey.R)
             {
-                await ShowSpeedToolsNoticeAsync(
-                    "ТАБЛИЦА ЛИДЕРОВ",
-                    "Интерфейс обновления рейтинга готов. Получение реальных результатов кампуса подключит отдельный backend-модуль.",
-                    cancellationToken).ConfigureAwait(false);
+                await RefreshSpeedLeaderboardAsync(speedTools, cancellationToken).ConfigureAwait(false);
             }
 
             keyTask = ReadKeyAsync();
@@ -393,15 +597,22 @@ internal sealed partial class InteractiveTerminalUi
 
         DrawLeaderboardHeader(canvas, x, y, width);
 
-        for (var rowIndex = 0; rowIndex < visibleRows; rowIndex++)
+        if (speedLeaderboardRows.Count == 0)
         {
-            var sourceIndex = scrollOffset + rowIndex;
-            if (sourceIndex >= speedLeaderboardRows.Count)
+            Put(canvas, x, y + 2, Truncate(speedLeaderboardStatusText, width), Palette.Dim);
+        }
+        else
+        {
+            for (var rowIndex = 0; rowIndex < visibleRows; rowIndex++)
             {
-                break;
-            }
+                var sourceIndex = scrollOffset + rowIndex;
+                if (sourceIndex >= speedLeaderboardRows.Count)
+                {
+                    break;
+                }
 
-            DrawLeaderboardRow(canvas, x, y + 2 + rowIndex, width, speedLeaderboardRows[sourceIndex]);
+                DrawLeaderboardRow(canvas, x, y + 2 + rowIndex, width, speedLeaderboardRows[sourceIndex]);
+            }
         }
 
         var first = speedLeaderboardRows.Count == 0 ? 0 : scrollOffset + 1;
@@ -461,7 +672,7 @@ internal sealed partial class InteractiveTerminalUi
             contentX,
             contentY + 6,
             contentWidth,
-            "UI-ветка не выполняет сетевых запросов и не публикует данные.",
+            "Замер выполняется против s.is74.ru. Публикация в рейтинг происходит только по команде пользователя.",
             Palette.Dim);
 
         DrawSpeedLeaderboardPane(canvas);
@@ -501,15 +712,23 @@ internal sealed partial class InteractiveTerminalUi
         return canvas;
     }
 
-    private static void DrawSpeedMeasurementPane(Cell[,] canvas, int x, int y, int width)
+    private void DrawSpeedMeasurementPane(Cell[,] canvas, int x, int y, int width)
     {
-        DrawLargeSpeedMetric(canvas, x, y, width, "---", Palette.BrandBright);
-        CenterWithin(canvas, x, width, y + 6, "DOWNLOAD · Mbit/s", Palette.Dim);
+        var measurement = speedMeasurementInProgress ? null : lastSpeedTestRun?.Measurement;
+        var progress = liveSpeedProgress;
 
-        Put(canvas, x, y + 7, Truncate("↑ Upload     — Mbit/s", width), Palette.Text);
-        Put(canvas, x, y + 8, Truncate("Ping         — ms", width), Palette.Text);
-        Put(canvas, x, y + 9, Truncate("Jitter       — ms", width), Palette.Text);
-        Put(canvas, x, y + 10, Truncate("Packet loss  — %", width), Palette.Text);
+        var download = speedMeasurementInProgress ? liveDownloadMbps : measurement?.DownloadMbps;
+        var upload = speedMeasurementInProgress ? liveUploadMbps : measurement?.UploadMbps;
+        var latency = speedMeasurementInProgress ? liveLatencyMs : measurement?.LatencyMs;
+        var jitter = speedMeasurementInProgress ? liveJitterMs : measurement?.JitterMs;
+
+        DrawLargeSpeedMetric(canvas, x, y, width, FormatLargeMetric(download), Palette.BrandBright);
+        CenterWithin(canvas, x, width, y + 6, SpeedStageCaption(progress), Palette.Dim);
+
+        Put(canvas, x, y + 7, Truncate($"↑ Upload     {FormatMetric(upload)} Mbit/s", width), Palette.Text);
+        Put(canvas, x, y + 8, Truncate($"Ping         {FormatMetric(latency)} ms", width), Palette.Text);
+        Put(canvas, x, y + 9, Truncate($"Jitter       {FormatMetric(jitter)} ms", width), Palette.Text);
+        Put(canvas, x, y + 10, Truncate($"Packet loss  {FormatMetric(measurement?.PacketLossPct)} %", width), Palette.Text);
     }
 
     private void DrawSpeedLeaderboardPane(Cell[,] canvas)
@@ -524,13 +743,26 @@ internal sealed partial class InteractiveTerminalUi
         var width = Math.Max(1, paneWidth - 6);
 
         DrawLeaderboardHeader(canvas, x, y, width);
-        for (var row = 0; row < 5 && row < speedLeaderboardRows.Count; row++)
+        if (speedLeaderboardRows.Count == 0)
         {
-            DrawLeaderboardRow(canvas, x, y + 2 + row, width, speedLeaderboardRows[row]);
+            Put(canvas, x, y + 2, Truncate(speedLeaderboardStatusText, width), Palette.Dim);
+        }
+        else
+        {
+            for (var row = 0; row < 5 && row < speedLeaderboardRows.Count; row++)
+            {
+                DrawLeaderboardRow(canvas, x, y + 2 + row, width, speedLeaderboardRows[row]);
+            }
         }
 
         Put(canvas, x, y + 8, Truncate($"Ник: {speedNicknameDraft}", width), Palette.Bright);
-        Put(canvas, x, y + 9, Truncate("Ваш результат: ещё не опубликован", width), Palette.Dim);
+        var publication = lastSpeedTestRun is null
+            ? "Ваш результат: замер ещё не выполнен"
+            : speedLastPublished
+                ? "Ваш результат: опубликован"
+                : "Ваш результат: не опубликован";
+        Put(canvas, x, y + 9, Truncate(publication, width), Palette.Dim);
+        Put(canvas, x, y + 10, Truncate(speedStatusText, width), Palette.Dim);
     }
 
     private static void DrawLeaderboardHeader(Cell[,] canvas, int x, int y, int width)
@@ -561,7 +793,7 @@ internal sealed partial class InteractiveTerminalUi
                 x,
                 y,
                 Truncate(
-                    $"{row.Rank,-2} {row.Nickname,-14} {row.DownloadMbps,6} {row.UploadMbps,6} {row.PingMs,6} {row.JitterMs,4}",
+                    $"{row.Rank,-2} {Truncate(row.Nickname, 14),-14} {row.DownloadMbps,6} {row.UploadMbps,6} {row.PingMs,6} {row.JitterMs,4}",
                     width),
                 Palette.Text);
         }
@@ -572,7 +804,7 @@ internal sealed partial class InteractiveTerminalUi
                 x,
                 y,
                 Truncate(
-                    $"{row.Rank,-2} {row.Nickname,-12} {row.DownloadMbps,3} {row.PingMs,5} {row.JitterMs,4}",
+                    $"{row.Rank,-2} {Truncate(row.Nickname, 12),-12} {row.DownloadMbps,3} {row.PingMs,5} {row.JitterMs,4}",
                     width),
                 Palette.Text);
         }
@@ -629,7 +861,9 @@ internal sealed partial class InteractiveTerminalUi
         Put(canvas, x + Math.Max(0, (width - clipped.Length) / 2), row, clipped, color);
     }
 
-    private void RunSpeedToolsCompact()
+    private async Task RunSpeedToolsCompactAsync(
+        CampusSpeedToolsService speedTools,
+        CancellationToken cancellationToken)
     {
         while (true)
         {
@@ -637,17 +871,23 @@ internal sealed partial class InteractiveTerminalUi
             Console.WriteLine("IS74W — Скорость и рейтинг кампуса");
             Console.WriteLine();
             Console.WriteLine("ЗАМЕР");
-            Console.WriteLine("  Download   — Mbit/s");
-            Console.WriteLine("  Upload     — Mbit/s");
-            Console.WriteLine("  Ping       — ms");
-            Console.WriteLine("  Jitter     — ms");
-            Console.WriteLine("  Loss       — %");
+            Console.WriteLine($"  Download   {FormatMetric(lastSpeedTestRun?.Measurement.DownloadMbps)} Mbit/s");
+            Console.WriteLine($"  Upload     {FormatMetric(lastSpeedTestRun?.Measurement.UploadMbps)} Mbit/s");
+            Console.WriteLine($"  Ping       {FormatMetric(lastSpeedTestRun?.Measurement.LatencyMs)} ms");
+            Console.WriteLine($"  Jitter     {FormatMetric(lastSpeedTestRun?.Measurement.JitterMs)} ms");
+            Console.WriteLine($"  Loss       {FormatMetric(lastSpeedTestRun?.Measurement.PacketLossPct)} %");
+            Console.WriteLine($"  {speedStatusText}");
             Console.WriteLine();
             Console.WriteLine("ЛИДЕРЫ КАМПУСА");
-            Console.WriteLine("  #  Ник          ↓   Ping  Jit");
-            Console.WriteLine("  1  —            —     —    —");
-            Console.WriteLine("  2  —            —     —    —");
-            Console.WriteLine("  3  —            —     —    —");
+            Console.WriteLine("  #  Ник              ↓      ↑   Ping  Jit");
+            foreach (var row in speedLeaderboardRows.Take(3))
+            {
+                Console.WriteLine($"  {row.Rank,-2} {Truncate(row.Nickname, 14),-14} {row.DownloadMbps,6} {row.UploadMbps,6} {row.PingMs,6} {row.JitterMs,4}");
+            }
+            if (speedLeaderboardRows.Count == 0)
+            {
+                Console.WriteLine("  " + speedLeaderboardStatusText);
+            }
             Console.WriteLine();
             Console.WriteLine($"Ник: {speedNicknameDraft}");
             Console.WriteLine();
@@ -655,8 +895,6 @@ internal sealed partial class InteractiveTerminalUi
             Console.WriteLine("[R] Обновить рейтинг");
             Console.WriteLine("[3] Никнейм        [4] Опубликовать");
             Console.WriteLine("[0] Назад");
-            Console.WriteLine();
-            Console.WriteLine("UI готов; измерение и публикация будут подключены отдельным backend-модулем.");
 
             var key = Console.ReadKey(intercept: true);
             if (key.Key == ConsoleKey.Escape || key.KeyChar == '0')
@@ -664,33 +902,66 @@ internal sealed partial class InteractiveTerminalUi
                 return;
             }
 
-            if (key.KeyChar is '1' or '4' || key.Key == ConsoleKey.Enter || key.Key == ConsoleKey.R)
+            if (key.KeyChar == '1' || key.Key == ConsoleKey.Enter)
             {
                 Console.Clear();
-                Console.WriteLine("Интерфейс готов. Бизнес-логика пока не подключена.");
-                Console.WriteLine();
-                Console.WriteLine("Enter / Esc — назад");
-                while (true)
+                Console.WriteLine("Измеряю скорость через s.is74.ru…");
+                Console.WriteLine("В компактном режиме отмена доступна через Ctrl+C.");
+                try
                 {
-                    var dismiss = Console.ReadKey(intercept: true);
-                    if (dismiss.Key is ConsoleKey.Enter or ConsoleKey.Escape)
-                    {
-                        break;
-                    }
+                    lastSpeedTestRun = await speedTools.MeasureAsync(null, cancellationToken).ConfigureAwait(false);
+                    speedLastPublished = false;
+                    speedStatusText = lastSpeedTestRun.StatisticsWrite.Success
+                        ? "Замер завершён · статистика отправлена"
+                        : lastSpeedTestRun.StatisticsQueued
+                            ? "Замер завершён · статистика сохранена в очереди"
+                            : "Замер завершён · статистика не отправлена";
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    speedStatusText = "Ошибка замера: " + FriendlySpeedError(ex.Message);
                 }
             }
             else if (key.KeyChar == '2')
             {
                 RunSpeedLeaderboardCompact();
             }
+            else if (key.Key == ConsoleKey.R)
+            {
+                var result = await speedTools.GetLeaderboardAsync(SpeedLeaderboardDefaultLimit, cancellationToken).ConfigureAwait(false);
+                ApplyLeaderboardResult(result);
+            }
             else if (key.KeyChar == '3')
             {
                 Console.Clear();
-                Console.Write("Никнейм: " );
+                Console.Write("Никнейм: ");
                 var nickname = Console.ReadLine()?.Trim();
                 if (!string.IsNullOrWhiteSpace(nickname))
                 {
                     speedNicknameDraft = nickname[..Math.Min(nickname.Length, SpeedNicknameMaximumLength)];
+                }
+            }
+            else if (key.KeyChar == '4')
+            {
+                if (lastSpeedTestRun is null)
+                {
+                    speedStatusText = "Сначала выполните замер";
+                }
+                else
+                {
+                    var result = await speedTools.PublishAsync(lastSpeedTestRun, speedNicknameDraft, cancellationToken).ConfigureAwait(false);
+                    speedLastPublished = result.Write.Success;
+                    speedStatusText = result.Write.Success
+                        ? $"Опубликовано как {speedNicknameDraft}"
+                        : result.Queued
+                            ? "Публикация отложена"
+                            : "Публикация не выполнена: " + FriendlyTelemetryError(result.Write.Error);
+                    if (result.Write.Success)
+                    {
+                        ApplyLeaderboardResult(await speedTools.GetLeaderboardAsync(
+                            SpeedLeaderboardDefaultLimit,
+                            cancellationToken).ConfigureAwait(false));
+                    }
                 }
             }
         }
@@ -711,7 +982,11 @@ internal sealed partial class InteractiveTerminalUi
             Console.WriteLine(new string('-', 43));
             foreach (var row in speedLeaderboardRows.Skip(offset).Take(visible))
             {
-                Console.WriteLine($"{row.Rank,-2} {row.Nickname,-14} {row.DownloadMbps,6} {row.UploadMbps,6} {row.PingMs,6} {row.JitterMs,4}");
+                Console.WriteLine($"{row.Rank,-2} {Truncate(row.Nickname, 14),-14} {row.DownloadMbps,6} {row.UploadMbps,6} {row.PingMs,6} {row.JitterMs,4}");
+            }
+            if (speedLeaderboardRows.Count == 0)
+            {
+                Console.WriteLine(speedLeaderboardStatusText);
             }
 
             Console.WriteLine();
@@ -750,4 +1025,97 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
+    private void ApplyLiveSpeedProgress(SpeedTestProgress value)
+    {
+        liveSpeedProgress = value;
+        if (value.LatencyMs is { } latency)
+        {
+            liveLatencyMs = latency;
+        }
+        if (value.JitterMs is { } jitter)
+        {
+            liveJitterMs = jitter;
+        }
+        if (value.Stage == SpeedTestStage.Download && value.Mbps is { } download)
+        {
+            liveDownloadMbps = download;
+        }
+        if (value.Stage == SpeedTestStage.Upload && value.Mbps is { } upload)
+        {
+            liveUploadMbps = upload;
+        }
+    }
+
+    private static string SpeedStageCaption(SpeedTestProgress? progress)
+    {
+        if (progress is null)
+        {
+            return "DOWNLOAD · Mbit/s";
+        }
+
+        var percent = Math.Clamp((int)Math.Round(progress.Progress * 100), 0, 100);
+        return progress.Stage switch
+        {
+            SpeedTestStage.Latency => $"PING · {percent}%",
+            SpeedTestStage.Download => $"DOWNLOAD · Mbit/s · {percent}%",
+            SpeedTestStage.Upload => $"UPLOAD · {percent}%",
+            _ => "DOWNLOAD · Mbit/s"
+        };
+    }
+
+    private static string FormatLargeMetric(double? value)
+    {
+        if (value is null || !double.IsFinite(value.Value))
+        {
+            return "---";
+        }
+
+        return value.Value switch
+        {
+            < 100 => value.Value.ToString("0.0", CultureInfo.InvariantCulture),
+            < 1000 => value.Value.ToString("0", CultureInfo.InvariantCulture),
+            _ => value.Value.ToString("0", CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static string FormatMetric(double? value)
+    {
+        if (value is null || !double.IsFinite(value.Value))
+        {
+            return "—";
+        }
+
+        return value.Value switch
+        {
+            < 10 => value.Value.ToString("0.0", CultureInfo.InvariantCulture),
+            < 100 => value.Value.ToString("0.0", CultureInfo.InvariantCulture),
+            _ => value.Value.ToString("0", CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static string FriendlyTelemetryError(string? error) => error switch
+    {
+        "backend_not_configured" => "backend не настроен",
+        "timeout" => "таймаут",
+        "transport" => "нет соединения",
+        "invalid_response" => "неожиданный ответ сервера",
+        "invalid_nickname" => "некорректный никнейм",
+        null or "" => "неизвестная ошибка",
+        _ => error
+    };
+
+    private static string FriendlySpeedError(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            return "неизвестная ошибка";
+        }
+
+        return error.Length <= 72 ? error : error[..72];
+    }
+
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
+    }
 }

@@ -58,4 +58,6 @@ The event includes measured download/upload Mbit/s, latency, jitter, phase durat
 
 ## Backend boundary
 
-The external Apps Script is not part of this public repository. Its current schema-v3 receiver accepts `speed_test` and `leaderboard_entry` as ordinary JSON POST events on the same web-app endpoint used for authorization telemetry. The application repository contains only the client-side DTO/wire contract, not the script, spreadsheet ID, deployment URL, or credentials.
+The external Apps Script is not part of this public repository. The updated schema-v3 receiver keeps backward-compatible generic POST ingestion for queued telemetry and additionally supports explicit `route=speedtest` and `route=leaderboard` POSTs. `GET ?route=leaderboard&limit=...` returns a download-ranked public view containing only presentation metrics; private `install_id`, `test_id` and `event_id` fields never leave the backend.
+
+The production deployment URL is intentionally not committed. The client reads it from `IS74W_TELEMETRY_URL` or `TelemetryEndpoint`. Without an endpoint, speed measurement still works and the `speed_test` research event is kept locally for later upload; leaderboard publication/read remains unavailable until a backend is configured.
