@@ -89,6 +89,7 @@ internal sealed class InteractiveTerminalUi
             nextAmbientSweepUtc = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Random.Shared.Next(12, 19));
             ambientSweepStartedUtc = null;
 
+            var keyTask = ReadKeyAsync();
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -108,18 +109,21 @@ internal sealed class InteractiveTerminalUi
                 UpdateAmbientSweepState();
                 RenderInteractiveFrame();
 
-                if (!Console.KeyAvailable)
+                var completed = await Task.WhenAny(
+                    keyTask,
+                    Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
                 {
-                    await Task.Delay(16, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                var key = Console.ReadKey(intercept: true);
+                var key = await keyTask.ConfigureAwait(false);
                 if (key.Key == ConsoleKey.R)
                 {
                     await PlayInitialRevealAsync(cancellationToken).ConfigureAwait(false);
                     nextAmbientSweepUtc = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Random.Shared.Next(12, 19));
                     ambientSweepStartedUtc = null;
+                    keyTask = ReadKeyAsync();
                     continue;
                 }
 
@@ -131,23 +135,27 @@ internal sealed class InteractiveTerminalUi
                 var items = GetCurrentItems();
                 if (items.Count == 0)
                 {
+                    keyTask = ReadKeyAsync();
                     continue;
                 }
 
                 if (key.Key == ConsoleKey.UpArrow)
                 {
                     selected = (selected - 1 + items.Count) % items.Count;
+                    keyTask = ReadKeyAsync();
                     continue;
                 }
 
                 if (key.Key == ConsoleKey.DownArrow)
                 {
                     selected = (selected + 1) % items.Count;
+                    keyTask = ReadKeyAsync();
                     continue;
                 }
 
                 if (key.Key != ConsoleKey.Enter)
                 {
+                    keyTask = ReadKeyAsync();
                     continue;
                 }
 
@@ -156,6 +164,8 @@ internal sealed class InteractiveTerminalUi
                 {
                     return item.Action;
                 }
+
+                keyTask = ReadKeyAsync();
             }
         }
         finally
@@ -183,6 +193,7 @@ internal sealed class InteractiveTerminalUi
             nextAmbientSweepUtc = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Random.Shared.Next(12, 19));
             ambientSweepStartedUtc = null;
 
+            var keyTask = ReadKeyAsync();
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -194,22 +205,26 @@ internal sealed class InteractiveTerminalUi
                 UpdateAmbientSweepState();
                 RenderInstallFrame(upgrade, installedVersion, installDirectory);
 
-                if (!Console.KeyAvailable)
+                var completed = await Task.WhenAny(
+                    keyTask,
+                    Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
                 {
-                    await Task.Delay(16, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                var key = Console.ReadKey(intercept: true);
+                var key = await keyTask.ConfigureAwait(false);
                 if (key.Key == ConsoleKey.R)
                 {
                     await PlayInitialRevealAsync(cancellationToken).ConfigureAwait(false);
+                    keyTask = ReadKeyAsync();
                     continue;
                 }
 
                 if (key.Key == ConsoleKey.UpArrow || key.Key == ConsoleKey.DownArrow)
                 {
                     selected = selected == 0 ? 1 : 0;
+                    keyTask = ReadKeyAsync();
                     continue;
                 }
 
@@ -222,6 +237,8 @@ internal sealed class InteractiveTerminalUi
                 {
                     return selected == 0;
                 }
+
+                keyTask = ReadKeyAsync();
             }
         }
         finally
@@ -398,6 +415,15 @@ internal sealed class InteractiveTerminalUi
             Render(canvas);
             await Task.Delay(26, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private static Task<ConsoleKeyInfo> ReadKeyAsync()
+    {
+        // Console.KeyAvailable is unreliable in some Windows console hosts while
+        // the UI is continuously redrawing. Keep exactly one blocking ReadKey
+        // on a worker thread instead; the render loop can continue independently
+        // without polling the console input buffer.
+        return Task.Run(() => Console.ReadKey(intercept: true));
     }
 
     private bool TryConsumeSkipKey()
