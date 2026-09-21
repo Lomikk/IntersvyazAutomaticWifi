@@ -462,6 +462,11 @@ internal static class Program
     private static bool BootstrapInteractiveLaunch(out int exitCode)
     {
         exitCode = 0;
+        if (IsLocalRunRequested())
+        {
+            return false;
+        }
+
         var current = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(current) || !File.Exists(current))
         {
@@ -538,6 +543,14 @@ internal static class Program
         }
     }
 
+    private static bool IsLocalRunRequested()
+    {
+        return string.Equals(
+            Environment.GetEnvironmentVariable("IS74W_RUN_LOCAL"),
+            "1",
+            StringComparison.Ordinal);
+    }
+
     private static bool ReadYesAnswer(string? value)
     {
         var answer = (value ?? string.Empty).Trim();
@@ -554,6 +567,11 @@ internal static class Program
         out int exitCode)
     {
         exitCode = 0;
+        if (IsLocalRunRequested())
+        {
+            return false;
+        }
+
         var current = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(current)) return false;
 
