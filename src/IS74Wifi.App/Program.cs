@@ -5,7 +5,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.16";
+    private const string ProductVersion = "v0.1.0-alpha.17";
     private static bool forwardMenuWithoutReveal;
 
     [STAThread]
@@ -2113,10 +2113,10 @@ internal static class Program
                     history.CompleteActive("SHA-256 пакета совпадает");
                     break;
                 case UpdateProgressStage.ExtractingPackage:
-                    history.Start("Распаковываю IS74Wifi.exe...");
+                    history.Start("Подготавливаю IS74Wifi.exe...");
                     break;
                 case UpdateProgressStage.PackageExtracted:
-                    history.CompleteActive("IS74Wifi.exe распакован");
+                    history.CompleteActive("IS74Wifi.exe подготовлен");
                     break;
             }
             RenderProgress();

@@ -149,15 +149,20 @@ jobs:
           $tag = '${{ steps.release.outputs.tag }}'
           $packageBase = "IS74Wifi-$tag-win-x64"
           $dist = Join-Path $PWD 'dist'
-          $staging = Join-Path $dist $packageBase
+          New-Item -ItemType Directory -Force $dist | Out-Null
+
+          # Primary artifact: publish the NativeAOT executable directly.
+          $exePath = Join-Path $dist "$packageBase.exe"
+          Copy-Item './artifacts/nativeaot/IS74Wifi.exe' $exePath -Force
+          $exeHash = (Get-FileHash $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $exeHashPath = "$exePath.sha256"
+          "$exeHash  $([IO.Path]::GetFileName($exePath))" | Set-Content $exeHashPath -Encoding ascii -NoNewline
+
+          # Transitional compatibility artifact for clients released before
+          # direct-EXE updater support. Remove this after the transition release.
+          $staging = Join-Path $dist "$packageBase-legacy"
           New-Item -ItemType Directory -Force $staging | Out-Null
-
-          Copy-Item './artifacts/nativeaot/IS74Wifi.exe' $staging
-
-          $files = @(Get-ChildItem -Path $staging -File -Recurse)
-          if ($files.Count -ne 1 -or $files[0].Name -ne 'IS74Wifi.exe') {
-            throw 'Release archive must contain exactly one runtime file: IS74Wifi.exe'
-          }
+          Copy-Item './artifacts/nativeaot/IS74Wifi.exe' (Join-Path $staging 'IS74Wifi.exe') -Force
 
           $zipPath = Join-Path $dist "$packageBase.zip"
           Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -174,21 +179,25 @@ jobs:
             $zip.Dispose()
           }
 
-          $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          $hashPath = "$zipPath.sha256"
-          "$hash  $([IO.Path]::GetFileName($zipPath))" | Set-Content $hashPath -Encoding ascii -NoNewline
+          $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $zipHashPath = "$zipPath.sha256"
+          "$zipHash  $([IO.Path]::GetFileName($zipPath))" | Set-Content $zipHashPath -Encoding ascii -NoNewline
 
+          "exe_path=$exePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "exe_hash_path=$exeHashPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "exe_sha256=$exeHash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "hash_path=$hashPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "zip_hash_path=$zipHashPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: IS74Wifi-${{ steps.release.outputs.tag }}-win-x64
           path: |
+            ${{ steps.package.outputs.exe_path }}
+            ${{ steps.package.outputs.exe_hash_path }}
             ${{ steps.package.outputs.zip_path }}
-            ${{ steps.package.outputs.hash_path }}
+            ${{ steps.package.outputs.zip_hash_path }}
           if-no-files-found: error
           retention-days: 30
 
@@ -199,17 +208,22 @@ jobs:
         run: |
           $tag = '${{ steps.release.outputs.tag }}'
           $repo = '${{ github.repository }}'
+          $exe = '${{ steps.package.outputs.exe_path }}'
+          $exeHashFile = '${{ steps.package.outputs.exe_hash_path }}'
+          $exeHash = '${{ steps.package.outputs.exe_sha256 }}'
           $zip = '${{ steps.package.outputs.zip_path }}'
-          $hashFile = '${{ steps.package.outputs.hash_path }}'
-          $hash = '${{ steps.package.outputs.sha256 }}'
+          $zipHashFile = '${{ steps.package.outputs.zip_hash_path }}'
           $isPrerelease = '${{ steps.release.outputs.prerelease }}' -eq 'true'
 
           $notes = @"
           Windows x64 C# / .NET 10 NativeAOT release.
 
-          Package:
-          - one self-contained IS74Wifi.exe
-          - SHA-256: $hash
+          Primary download:
+          - self-contained IS74Wifi.exe
+          - SHA-256: $exeHash
+
+          A legacy ZIP is included temporarily so older installed builds can update
+          into a version that understands direct EXE release assets.
 
           The release was built from ProductVersion $tag and passed C# contract tests,
           PowerShell reference regression checks, NativeAOT publish, version/status smoke,
@@ -217,7 +231,7 @@ jobs:
           "@
 
           $args = @(
-            'release', 'create', $tag, $zip, $hashFile,
+            'release', 'create', $tag, $exe, $exeHashFile, $zip, $zipHashFile,
             '--repo', $repo,
             '--target', '${{ github.sha }}',
             '--title', "IS74Wifi $tag",

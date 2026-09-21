@@ -12,7 +12,8 @@ internal static class UpdateContractTests
         TestProgramInstallation();
         TestInstalledAppRegistration();
         TestChecksumParser();
-        await TestReleaseSelectionAndVerifiedDownloadAsync();
+        await TestDirectExecutableSelectionAndVerifiedDownloadAsync();
+        await TestLegacyZipFallbackAsync();
     }
 
     private static void TestSemanticVersions()
@@ -108,10 +109,12 @@ internal static class UpdateContractTests
         }
     }
 
-    private static async Task TestReleaseSelectionAndVerifiedDownloadAsync()
+    private static async Task TestDirectExecutableSelectionAndVerifiedDownloadAsync()
     {
+        var exeBytes = Encoding.UTF8.GetBytes("new-native-aot-exe");
+        var exeHash = Convert.ToHexString(SHA256.HashData(exeBytes)).ToLowerInvariant();
         var zipBytes = CreateReleaseZip();
-        var hash = Convert.ToHexString(SHA256.HashData(zipBytes)).ToLowerInvariant();
+        var zipHash = Convert.ToHexString(SHA256.HashData(zipBytes)).ToLowerInvariant();
         var releasesJson = """
         [
           {
@@ -127,8 +130,10 @@ internal static class UpdateContractTests
             "prerelease":true,
             "html_url":"https://github.test/releases/alpha10",
             "assets":[
+              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.exe","browser_download_url":"https://download.test/alpha10.exe"},
+              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.exe.sha256","browser_download_url":"https://download.test/alpha10.exe.sha256"},
               {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.zip","browser_download_url":"https://download.test/alpha10.zip"},
-              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.zip.sha256","browser_download_url":"https://download.test/alpha10.sha256"}
+              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.zip.sha256","browser_download_url":"https://download.test/alpha10.zip.sha256"}
             ]
           },
           {
@@ -137,6 +142,65 @@ internal static class UpdateContractTests
             "prerelease":true,
             "html_url":"https://github.test/releases/alpha11",
             "assets":[]
+          }
+        ]
+        """;
+
+        using var client = new HttpClient(new UpdateHandler(request =>
+        {
+            if (request.RequestUri!.Host == "api.github.com")
+                return TextResponse(releasesJson, "application/json");
+            if (request.RequestUri.AbsoluteUri == "https://download.test/alpha10.exe")
+                return BytesResponse(exeBytes, "application/octet-stream");
+            if (request.RequestUri.AbsoluteUri == "https://download.test/alpha10.exe.sha256")
+                return TextResponse($"{exeHash}  IS74Wifi-v0.1.0-alpha.10-win-x64.exe", "text/plain");
+            if (request.RequestUri.AbsoluteUri == "https://download.test/alpha10.zip")
+                return BytesResponse(zipBytes, "application/zip");
+            if (request.RequestUri.AbsoluteUri == "https://download.test/alpha10.zip.sha256")
+                return TextResponse($"{zipHash}  IS74Wifi-v0.1.0-alpha.10-win-x64.zip", "text/plain");
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+
+        var updater = new GitHubUpdateClient(client);
+        var update = await updater.CheckForUpdateAsync("v0.1.0-alpha.9", includePrerelease: true);
+        Assert(update?.TagName == "v0.1.0-alpha.10", "latest usable prerelease was not selected");
+        Assert(update?.PackageAssetName == "IS74Wifi-v0.1.0-alpha.10-win-x64.exe", "direct EXE asset was not preferred");
+        Assert(update?.IsArchive == false, "direct EXE asset was incorrectly marked as an archive");
+
+        var transfer = new List<UpdateTransferProgress>();
+        var prepared = await updater.DownloadAndVerifyAsync(update!, transferProgress: transfer.Add);
+        try
+        {
+            Assert(File.Exists(prepared.ExecutablePath), "verified direct update executable was not prepared");
+            Assert(File.ReadAllText(prepared.ExecutablePath) == "new-native-aot-exe", "unexpected direct update executable payload");
+            Assert(prepared.PackageSha256 == exeHash, "verified direct update hash changed");
+            var packageProgress = transfer.Where(item => item.Stage == UpdateProgressStage.DownloadingPackage).ToArray();
+            Assert(packageProgress.Length >= 2, "package transfer progress was not reported");
+            Assert(packageProgress[0].BytesReceived == 0, "package transfer progress did not start at zero");
+            Assert(packageProgress[^1].BytesReceived == exeBytes.Length, "package transfer progress did not reach the full payload");
+            Assert(packageProgress[^1].TotalBytes == exeBytes.Length, "package transfer total length changed");
+        }
+        finally
+        {
+            GitHubUpdateClient.TryDeleteDirectory(prepared.WorkingDirectory);
+        }
+    }
+
+    private static async Task TestLegacyZipFallbackAsync()
+    {
+        var zipBytes = CreateReleaseZip();
+        var hash = Convert.ToHexString(SHA256.HashData(zipBytes)).ToLowerInvariant();
+        var releasesJson = """
+        [
+          {
+            "tag_name":"v0.1.0-alpha.10",
+            "draft":false,
+            "prerelease":true,
+            "html_url":"https://github.test/releases/alpha10",
+            "assets":[
+              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.zip","browser_download_url":"https://download.test/alpha10.zip"},
+              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.zip.sha256","browser_download_url":"https://download.test/alpha10.sha256"}
+            ]
           }
         ]
         """;
@@ -154,20 +218,13 @@ internal static class UpdateContractTests
 
         var updater = new GitHubUpdateClient(client);
         var update = await updater.CheckForUpdateAsync("v0.1.0-alpha.9", includePrerelease: true);
-        Assert(update?.TagName == "v0.1.0-alpha.10", "latest usable prerelease was not selected");
+        Assert(update?.IsArchive == true, "legacy ZIP asset was not recognized as an archive fallback");
 
-        var transfer = new List<UpdateTransferProgress>();
-        var prepared = await updater.DownloadAndVerifyAsync(update!, transferProgress: transfer.Add);
+        var prepared = await updater.DownloadAndVerifyAsync(update!);
         try
         {
-            Assert(File.Exists(prepared.ExecutablePath), "verified update executable was not extracted");
-            Assert(File.ReadAllText(prepared.ExecutablePath) == "new-native-aot-exe", "unexpected update executable payload");
-            Assert(prepared.ZipSha256 == hash, "verified update hash changed");
-            var packageProgress = transfer.Where(item => item.Stage == UpdateProgressStage.DownloadingPackage).ToArray();
-            Assert(packageProgress.Length >= 2, "package transfer progress was not reported");
-            Assert(packageProgress[0].BytesReceived == 0, "package transfer progress did not start at zero");
-            Assert(packageProgress[^1].BytesReceived == zipBytes.Length, "package transfer progress did not reach the full payload");
-            Assert(packageProgress[^1].TotalBytes == zipBytes.Length, "package transfer total length changed");
+            Assert(File.ReadAllText(prepared.ExecutablePath) == "new-native-aot-exe", "legacy ZIP fallback was not extracted");
+            Assert(prepared.PackageSha256 == hash, "legacy ZIP fallback hash changed");
         }
         finally
         {

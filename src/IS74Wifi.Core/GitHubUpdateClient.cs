@@ -9,16 +9,17 @@ namespace IS74Wifi.Core;
 public sealed record UpdateDescriptor(
     string TagName,
     string ReleasePageUrl,
-    string ZipAssetName,
-    Uri ZipDownloadUrl,
+    string PackageAssetName,
+    Uri PackageDownloadUrl,
     string ChecksumAssetName,
-    Uri ChecksumDownloadUrl);
+    Uri ChecksumDownloadUrl,
+    bool IsArchive);
 
 public sealed record PreparedUpdate(
     UpdateDescriptor Descriptor,
     string WorkingDirectory,
     string ExecutablePath,
-    string ZipSha256);
+    string PackageSha256);
 
 public sealed record UpdateTransferProgress(
     UpdateProgressStage Stage,
@@ -91,12 +92,24 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
             if (!SemanticVersion.TryParse(release.TagName, out var version)) continue;
             if (version.CompareTo(current) <= 0) continue;
 
+            var exeName = $"IS74Wifi-{release.TagName}-win-x64.exe";
+            var exeChecksumName = exeName + ".sha256";
             var zipName = $"IS74Wifi-{release.TagName}-win-x64.zip";
-            var checksumName = zipName + ".sha256";
-            var zip = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, zipName, StringComparison.Ordinal));
-            var checksum = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, checksumName, StringComparison.Ordinal));
-            if (zip is null || checksum is null) continue;
-            if (!Uri.TryCreate(zip.BrowserDownloadUrl, UriKind.Absolute, out var zipUri) ||
+            var zipChecksumName = zipName + ".sha256";
+
+            var package = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, exeName, StringComparison.Ordinal));
+            var checksum = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, exeChecksumName, StringComparison.Ordinal));
+            var isArchive = false;
+
+            if (package is null || checksum is null)
+            {
+                package = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, zipName, StringComparison.Ordinal));
+                checksum = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, zipChecksumName, StringComparison.Ordinal));
+                isArchive = true;
+            }
+
+            if (package is null || checksum is null) continue;
+            if (!Uri.TryCreate(package.BrowserDownloadUrl, UriKind.Absolute, out var packageUri) ||
                 !Uri.TryCreate(checksum.BrowserDownloadUrl, UriKind.Absolute, out var checksumUri)) continue;
 
             if (!hasSelected || version.CompareTo(selectedVersion) > 0)
@@ -106,10 +119,11 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
                 selected = new UpdateDescriptor(
                     release.TagName,
                     release.HtmlUrl,
-                    zip.Name,
-                    zipUri,
+                    package.Name,
+                    packageUri,
                     checksum.Name,
-                    checksumUri);
+                    checksumUri,
+                    isArchive);
             }
         }
 
@@ -124,15 +138,15 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
     {
         var work = Path.Combine(Path.GetTempPath(), "IS74Wifi-update-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(work);
-        var zipPath = Path.Combine(work, descriptor.ZipAssetName);
+        var packagePath = Path.Combine(work, descriptor.PackageAssetName);
         var checksumPath = Path.Combine(work, descriptor.ChecksumAssetName);
 
         try
         {
             ReportProgress(progress, UpdateProgressStage.DownloadingPackage);
             await DownloadFileAsync(
-                descriptor.ZipDownloadUrl,
-                zipPath,
+                descriptor.PackageDownloadUrl,
+                packagePath,
                 UpdateProgressStage.DownloadingPackage,
                 transferProgress,
                 cancellationToken).ConfigureAwait(false);
@@ -147,8 +161,8 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
             ReportProgress(progress, UpdateProgressStage.ChecksumDownloaded);
 
             ReportProgress(progress, UpdateProgressStage.VerifyingChecksum);
-            var expected = ParseChecksum(await File.ReadAllTextAsync(checksumPath, cancellationToken).ConfigureAwait(false), descriptor.ZipAssetName);
-            var actual = await ComputeSha256Async(zipPath, cancellationToken).ConfigureAwait(false);
+            var expected = ParseChecksum(await File.ReadAllTextAsync(checksumPath, cancellationToken).ConfigureAwait(false), descriptor.PackageAssetName);
+            var actual = await ComputeSha256Async(packagePath, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException($"SHA-256 обновления не совпал. Ожидалось {expected}, получено {actual}.");
@@ -157,7 +171,14 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
 
             var executablePath = Path.Combine(work, "IS74Wifi-new.exe");
             ReportProgress(progress, UpdateProgressStage.ExtractingPackage);
-            ExtractSingleExecutable(zipPath, executablePath);
+            if (descriptor.IsArchive)
+            {
+                ExtractSingleExecutable(packagePath, executablePath);
+            }
+            else
+            {
+                File.Copy(packagePath, executablePath, overwrite: true);
+            }
             ReportProgress(progress, UpdateProgressStage.PackageExtracted);
             return new PreparedUpdate(descriptor, work, executablePath, actual);
         }
