@@ -805,7 +805,7 @@ internal sealed class InteractiveTerminalUi
         Center(canvas, 13, Subtitle, Palette.Dim);
         DrawLeftPane(canvas);
         DrawStatusPane(canvas);
-        Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   1–7/0 сразу   Esc назад   R reveal", Palette.Dim);
+        Center(canvas, 29, "↑ ↓ выбрать   Enter открыть   1–7/0 сразу   Esc выход   R reveal", Palette.Dim);
         Render(canvas);
     }
 
@@ -826,7 +826,7 @@ internal sealed class InteractiveTerminalUi
         var boxHeight = Math.Min(20, CanvasHeight - boxY - 2);
         DrawBox(canvas, 1, boxY, Math.Max(20, canvasWidth - 2), boxHeight, "МЕНЮ");
         DrawCurrentItems(canvas, boxY + 2);
-        Center(canvas, CanvasHeight - 1, "↑ ↓   Enter   1–7/0   R reveal", Palette.Dim);
+        Center(canvas, CanvasHeight - 1, "↑ ↓   Enter   1–7/0   Esc выход   R reveal", Palette.Dim);
         Render(canvas);
     }
 
@@ -910,7 +910,7 @@ internal sealed class InteractiveTerminalUi
                 '3',
                 registered ? "Сбросить регистрацию" : "Зарегистрировать устройство",
                 registered ? InteractiveMenuAction.ResetRegistration : InteractiveMenuAction.Register),
-            new MenuItem('4', "Подробное состояние", InteractiveMenuAction.ShowDetailedStatus),
+            new MenuItem('4', "Открыть подробный отчёт", InteractiveMenuAction.ShowDetailedStatus),
             new MenuItem('5', "Открыть диагностические логи", InteractiveMenuAction.OpenLogs),
             new MenuItem('6', "Проверить обновления", InteractiveMenuAction.Update),
             new MenuItem('7', "Удалить программу и данные", InteractiveMenuAction.Uninstall),

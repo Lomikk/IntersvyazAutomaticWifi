@@ -128,9 +128,9 @@ internal static class Program
 
         Console.Write("Введите SMS-код: ");
         var smsCode = (Console.ReadLine() ?? string.Empty).Trim();
-        if (smsCode.Length == 0 || smsCode.Any(c => c is < '0' or > '9'))
+        if (smsCode.Length != 4 || smsCode.Any(c => c is < '0' or > '9'))
         {
-            throw new InvalidOperationException("SMS-код должен состоять из цифр.");
+            throw new InvalidOperationException("SMS-код должен состоять ровно из 4 цифр.");
         }
 
         var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
@@ -976,14 +976,11 @@ internal static class Program
                     {
                         ui.ShowBusyMessage("АВТОРИЗАЦИЯ WI-FI", "Проверяю сеть и выполняю разовую авторизацию...", initialStatus);
                         var outcome = await RunManualAuthorizationAsync().ConfigureAwait(false);
-                        if (!IsSuccessfulMenuAuthorization(outcome))
-                        {
-                            await ui.ShowMessageAsync(
-                                "АВТОРИЗАЦИЯ WI-FI",
-                                DescribeAuthorizationOutcomeForUi(outcome),
-                                GetInteractiveStatusSnapshot(),
-                                isError: true).ConfigureAwait(false);
-                        }
+                        await ui.ShowMessageAsync(
+                            "АВТОРИЗАЦИЯ WI-FI",
+                            DescribeAuthorizationOutcomeForUi(outcome),
+                            GetInteractiveStatusSnapshot(),
+                            isError: !IsSuccessfulMenuAuthorization(outcome)).ConfigureAwait(false);
                         break;
                     }
 
@@ -997,11 +994,7 @@ internal static class Program
 
                     case InteractiveMenuAction.ShowDetailedStatus:
                     {
-                        var lines = await BuildDetailedStatusLinesAsync().ConfigureAwait(false);
-                        await ui.ShowDetailsAsync(
-                            "ПОДРОБНОЕ СОСТОЯНИЕ",
-                            lines,
-                            GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                        await OpenDetailedStatusReportAsync().ConfigureAwait(false);
                         break;
                     }
 
@@ -1105,10 +1098,10 @@ internal static class Program
 
         var smsCode = await ui.PromptDigitsAsync(
             "РЕГИСТРАЦИЯ",
-            "Введите SMS-код. Esc отменяет продолжение регистрации.",
+            "Введите 4-значный SMS-код. Esc отменяет продолжение регистрации.",
             string.Empty,
-            minimumDigits: 1,
-            maximumDigits: 8,
+            minimumDigits: 4,
+            maximumDigits: 4,
             currentStatus: currentStatus).ConfigureAwait(false);
         if (smsCode is null)
         {
@@ -1174,6 +1167,11 @@ internal static class Program
 
     private static string DescribeAuthorizationOutcomeForUi(AuthorizationOutcome outcome) => outcome.Kind switch
     {
+        AuthorizationOutcomeKind.Success => outcome.InternetConfirmed == true
+            ? "Wi-Fi авторизация завершена, Интернет подтверждён."
+            : "Wi-Fi авторизация принята; Интернет пока не подтверждён проверкой.",
+        AuthorizationOutcomeKind.AlreadyAuthorized => "Wi-Fi уже авторизован сервером.",
+        AuthorizationOutcomeKind.AlreadyOnline => "Интернет уже доступен; авторизация не требуется.",
         AuthorizationOutcomeKind.WrongWifi =>
             $"Авторизация работает только в сети {ProtocolContract.CampusSsidPrefix}*. Подключитесь к кампусной сети.",
         AuthorizationOutcomeKind.Busy => "Другая Wi-Fi авторизация уже выполняется.",
@@ -1186,6 +1184,21 @@ internal static class Program
         _ => $"Неожиданный результат: {outcome.Kind}"
     };
 
+    private static async Task OpenDetailedStatusReportAsync()
+    {
+        var lines = await BuildDetailedStatusLinesAsync().ConfigureAwait(false);
+        var reportPath = Path.Combine(Path.GetTempPath(), "IS74Wifi-status.txt");
+        await File.WriteAllLinesAsync(reportPath, lines, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true)).ConfigureAwait(false);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "notepad.exe",
+            UseShellExecute = true
+        };
+        startInfo.ArgumentList.Add(reportPath);
+        _ = Process.Start(startInfo) ?? throw new InvalidOperationException("Не удалось открыть подробный отчёт.");
+    }
+
     private static async Task<IReadOnlyList<string>> BuildDetailedStatusLinesAsync()
     {
         using var app = ApplicationRuntime.Create();
@@ -1195,9 +1208,21 @@ internal static class Program
         var state = app.RuntimeState.Load();
         var internet = await app.Internet.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
         var automatic = installation.IsInstalled && app.Autostart.IsEnabledFor(installation.ExecutablePath);
+        var installedVersion = installation.ReadInstalledVersion();
 
         var lines = new List<string>
         {
+            "IS74W — подробный отчёт",
+            $"Создан: {DateTimeOffset.Now:dd.MM.yyyy HH:mm:ss zzz}",
+            string.Empty,
+            "=== Программа ===",
+            $"Запущенная версия: {ProductVersion}",
+            $"Запущенный EXE: {Environment.ProcessPath ?? "неизвестно"}",
+            $"Установка: {(installation.IsInstalled ? "есть" : "нет")}",
+            $"Установленная версия: {installedVersion ?? "неизвестно"}",
+            $"Установленный EXE: {(installation.IsInstalled ? installation.ExecutablePath : "—")}",
+            string.Empty,
+            "=== Состояние ===",
             $"Интернет: {(internet.Online ? "доступен" : "не подтверждён")}",
             $"Регистрация: {(secrets is null ? "нет" : "сохранена")}",
             $"Телефон: {MaskPhone(secrets?.Phone)}",
@@ -1207,19 +1232,19 @@ internal static class Program
         };
 
         if (state.LastAuthUtc is { } lastAuth)
-            lines.Add($"Последняя Wi-Fi: {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+            lines.Add($"Последняя Wi-Fi авторизация: {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
         if (state.ExpectedExpiryUtc is { } expiry)
-            lines.Add($"Окно до: {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+            lines.Add($"Ожидаемое окончание окна: {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
         if (!string.IsNullOrWhiteSpace(state.LastResult))
-            lines.Add($"Результат: {state.LastResult}");
+            lines.Add($"Последний результат: {state.LastResult}");
         if (state.AutomaticStepOneAttempts > 0)
-            lines.Add($"Попытки: {state.AutomaticStepOneAttempts}/{app.Settings.MaxAutomaticStepOneAttempts}");
-        if (state.UserActionRequired)
-            lines.Add("Требуется действие пользователя");
-        if (installation.IsInstalled)
-            lines.Add($"EXE: {installation.ExecutablePath}");
-        lines.Add($"Данные: {app.Paths.Root}");
-        lines.Add($"Лог: {app.Paths.DiagnosticLogFile}");
+            lines.Add($"Автоматические попытки: {state.AutomaticStepOneAttempts}/{app.Settings.MaxAutomaticStepOneAttempts}");
+        lines.Add($"Требуется действие пользователя: {(state.UserActionRequired ? "да" : "нет")}");
+
+        lines.Add(string.Empty);
+        lines.Add("=== Пути ===");
+        lines.Add($"Данные приложения: {app.Paths.Root}");
+        lines.Add($"Диагностический журнал: {app.Paths.DiagnosticLogFile}");
         return lines;
     }
 

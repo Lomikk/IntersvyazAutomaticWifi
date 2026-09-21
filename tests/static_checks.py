@@ -146,7 +146,7 @@ assert '"Wi-Fi доступ"' in csharp_ui, 'status pane must disambiguate Wi-Fi
 assert '"доступен ●"' in csharp_ui, 'status indicators must render after their status text'
 assert '"Отключить автоавторизацию" : "Включить автоавторизацию"' in csharp_ui
 assert 'registered ? "Сбросить регистрацию" : "Зарегистрировать устройство"' in csharp_ui
-assert "new MenuItem('4', \"Подробное состояние\", InteractiveMenuAction.ShowDetailedStatus)" in csharp_ui
+assert "new MenuItem('4', \"Открыть подробный отчёт\", InteractiveMenuAction.ShowDetailedStatus)" in csharp_ui
 assert 'TargetView' not in csharp_ui, 'rich UI must not reintroduce speculative submenu navigation'
 assert 'PromptDigitsAsync' in csharp_ui and 'ConsoleKey.Escape' in csharp_ui, 'interactive registration input must be cancellable in-pane'
 assert 'lastRenderedCanvas' in csharp_ui and 'cell.Equals(lastRenderedCanvas' in csharp_ui, 'terminal renderer must diff frames to avoid full-screen shimmer'
@@ -154,5 +154,13 @@ assert 'CanUseInteractiveSession' in csharp_ui and 'compactLayout' in csharp_ui,
 assert 'PrepareForAction(' not in csharp_program, 'menu actions must stay inside the terminal panes instead of reopening the legacy action screen'
 launch_settings = (root / 'src' / 'IS74Wifi.App' / 'Properties' / 'launchSettings.json').read_text(encoding='utf-8')
 assert 'IS74Wifi.App (Local Debug)' in launch_settings and 'IS74W_RUN_LOCAL' in launch_settings, 'Visual Studio local-debug profile missing'
+
+# Menu UX: Esc is explicitly labeled as exit on the main screen, SMS confirmation is fixed at four digits,
+# successful manual authorization remains visible until the user returns, and technical details open copy-friendly.
+assert 'Esc выход' in csharp_ui, 'main menu must label Esc as exit'
+assert 'minimumDigits: 4' in csharp_program and 'maximumDigits: 4' in csharp_program, 'SMS confirmation must require exactly four digits'
+assert 'isError: !IsSuccessfulMenuAuthorization(outcome)' in csharp_program, 'manual authorization result must stay visible for success and failure'
+assert 'IS74Wifi-status.txt' in csharp_program and 'notepad.exe' in csharp_program, 'detailed status must open as a copy-friendly external report'
+assert 'smsCode.Length != 4' in csharp_program, 'non-interactive registration must enforce the same four-digit SMS contract'
 
 print('static checks: OK')
