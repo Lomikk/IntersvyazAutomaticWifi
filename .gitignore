@@ -19,3 +19,8 @@ is-auth-curl/
 # .NET build output
 **/bin/
 **/obj/
+*.bin
+*.vs
+
+
+*nppBackup
