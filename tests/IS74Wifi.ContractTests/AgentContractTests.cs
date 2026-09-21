@@ -11,6 +11,7 @@ internal static class AgentContractTests
         TestAutostartRegistrationState();
         TestAgentPidRecord();
         await TestExpiryIsAuthoritativeAsync();
+        await TestNetworkCheckPolicyAsync();
         await TestPreExpiryNeedsTwoCaptiveResponsesAsync();
         await TestPreExpiryTransportFailureDoesNotAuthorizeAsync();
         await TestNotificationLifecycleAsync();
@@ -125,6 +126,30 @@ internal static class AgentContractTests
         Assert(fixture.Authorization.LastRequest?.Reason == AuthorizationAttemptReason.Automatic,
             "first automatic attempt reason changed");
         Assert(fixture.Authorization.LastRequest?.Force == true, "agent did not force the expiry-triggered authorization");
+    }
+
+    private static async Task TestNetworkCheckPolicyAsync()
+    {
+        var expiry = new DateTimeOffset(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
+
+        using (var guarded = AgentFixture.Create(
+                   expiry.AddSeconds(1),
+                   wifi: new NonTargetWifi()))
+        {
+            guarded.SaveState(new RuntimeState { ExpectedExpiryUtc = expiry });
+            await guarded.Agent.TickAsync();
+            Assert(guarded.Authorization.Calls == 0,
+                "agent authorized on a non-target network while the network check was enabled");
+        }
+
+        using var ignored = AgentFixture.Create(
+            expiry.AddSeconds(1),
+            new AppSettings { IgnoreNetworkCheck = true },
+            wifi: new NonTargetWifi());
+        ignored.SaveState(new RuntimeState { ExpectedExpiryUtc = expiry });
+        await ignored.Agent.TickAsync();
+        Assert(ignored.Authorization.Calls == 1,
+            "agent did not authorize when the user chose to ignore the network check");
     }
 
     private static async Task TestPreExpiryNeedsTwoCaptiveResponsesAsync()
@@ -242,7 +267,8 @@ internal static class AgentContractTests
         public static AgentFixture Create(
             DateTimeOffset now,
             AppSettings? settings = null,
-            ScriptedInternetProbe? internet = null)
+            ScriptedInternetProbe? internet = null,
+            IWifiEnvironment? wifi = null)
         {
             var root = Path.Combine(Path.GetTempPath(), "IS74Wifi-agent-" + Guid.NewGuid().ToString("N"));
             var paths = new AppPaths(root);
@@ -263,7 +289,7 @@ internal static class AgentContractTests
                 stateManager,
                 authorization,
                 internet,
-                new TargetWifi(),
+                wifi ?? new TargetWifi(),
                 settings,
                 logger,
                 new FixedTimeProvider(now),
@@ -331,5 +357,10 @@ internal static class AgentContractTests
     private sealed class TargetWifi : IWifiEnvironment
     {
         public bool IsTargetWifiConnected() => true;
+    }
+
+    private sealed class NonTargetWifi : IWifiEnvironment
+    {
+        public bool IsTargetWifiConnected() => false;
     }
 }

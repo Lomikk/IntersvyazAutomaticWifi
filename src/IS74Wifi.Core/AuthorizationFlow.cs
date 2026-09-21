@@ -12,7 +12,7 @@ public sealed class AuthorizationFlow(
     DiagnosticLogger logger,
     AuthorizationFlowOptions? options = null,
     AuthorizationTelemetryRecorder? telemetry = null,
-    bool allowAuthorizationWithoutCampusSsid = false) : IAuthorizationRunner
+    bool ignoreNetworkCheck = false) : IAuthorizationRunner
 {
     private readonly AuthorizationFlowOptions options = options ?? new AuthorizationFlowOptions();
 
@@ -47,18 +47,17 @@ public sealed class AuthorizationFlow(
         CancellationToken cancellationToken)
     {
 
-        var campusSsidVisible = wifi.IsTargetWifiConnected();
-        if (!campusSsidVisible && !allowAuthorizationWithoutCampusSsid)
+        if (!ignoreNetworkCheck && !wifi.IsTargetWifiConnected())
         {
             return Outcome(AuthorizationOutcomeKind.WrongWifi);
         }
-        if (!campusSsidVisible)
+        if (ignoreNetworkCheck)
         {
             logger.Write(
                 DiagnosticLevel.Info,
-                "authorization.network-gate mode=trusted-current-route campusSsidVisible=false");
+                "authorization.network-gate mode=ignored");
         }
-        ReportProgress(request, AuthorizationProgressStage.TargetWifiConfirmed);
+        ReportProgress(request, AuthorizationProgressStage.NetworkGatePassed);
 
         if (!request.Force)
         {

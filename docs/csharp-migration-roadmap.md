@@ -36,7 +36,7 @@ These are requirements, not suggestions for the rewrite:
 
 1. API registration can be completed entirely on Windows and produces a long-lived Bearer.
 2. `check-confirm` uses an empty `authId` for the normal SMS flow and consumes the returned `authId` for `get-token`.
-3. Captive authorization only runs when the currently connected SSID begins with `Campus Wi-Fi` (case-insensitive).
+3. By default captive authorization only runs when the currently connected SSID begins with `Campus Wi-Fi` (case-insensitive). An explicit persisted `IgnoreNetworkCheck` user override bypasses Wi-Fi/network detection entirely for both manual and automatic authorization.
 4. Before `stepOne`, read the current top push message ID as `baselineId`.
 5. Start one `stepOne` at `T=0` and poll `/pushmessages` at absolute offsets:
    `100, 150, 200, 250, 350, 500, 700, 1000, 1400, 2000, 3000, 4500, 6500, 10000 ms`.
@@ -51,7 +51,7 @@ These are requirements, not suggestions for the rewrite:
 14. HTTP 401 from the API is terminal (`bearer-invalid`) and requires re-registration rather than retrying forever.
 15. If the `stepTwo` response is lost, never resend the code blindly. Confirm the possible side effect with Internet probes at the existing delayed recovery offsets before declaring the result ambiguous.
 16. Successful authorization stores the predicted expiry based on the accepted `stepTwo` server date (with local fallback) plus the observed 24-hour window. Treat it as a scheduling prediction, not a formally guaranteed server SLA.
-17. Preserve the 10-second expiry guard behavior and the rule that, at/after predicted expiry, the timer is authoritative once the `Campus Wi-Fi` gate is satisfied.
+17. Preserve the 10-second expiry guard behavior and the rule that, at/after predicted expiry, the timer is authoritative once the default `Campus Wi-Fi` gate is satisfied or the user has explicitly disabled that gate with `IgnoreNetworkCheck`.
 18. Bearer, full phone number, SMS code, and Wi-Fi confirmation code must not be written to diagnostic logs.
 
 ## Error model
@@ -224,7 +224,7 @@ The migration is complete when a clean Windows 10 or Windows 11 machine can:
 2. register once by phone/SMS;
 3. enable normal per-user autostart;
 4. run indefinitely without a visible console/Terminal window;
-5. authorize only on `Campus Wi-Fi*`;
+5. authorize only on `Campus Wi-Fi*` by default, with an explicit persisted user override that bypasses network detection;
 6. survive transient DNS/API failures without raw exception UX;
 7. perform the proven fast captive flow with the same safety limits;
 8. cleanly disable/uninstall autostart and local state;

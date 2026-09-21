@@ -96,5 +96,4 @@ public static class HttpClientProfiles
             Timeout = Timeout.InfiniteTimeSpan
         };
     }
-
 }

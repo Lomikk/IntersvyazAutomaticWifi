@@ -30,7 +30,7 @@ public enum WifiCodeSource
 
 public enum AuthorizationProgressStage
 {
-    TargetWifiConfirmed,
+    NetworkGatePassed,
     BaselineLoaded,
     CaptiveRequestStarted,
     FreshCodeReceived,

@@ -15,6 +15,7 @@ internal static class AuthorizationFlowContractTests
         await TestAutomaticStepOneBudgetAsync();
         await TestPreStepFailureDoesNotSpendBudgetAsync();
         await TestWrongWifiStopsBeforeNetworkAsync();
+        await TestIgnoredNetworkCheckAllowsAuthorizationAsync();
         await TestAlreadyAuthorizedStopsPollingAsync();
         await TestLegacyMutexCanCoexistAsync();
         await TestNamedSemaphoreAcrossThreadsAsync();
@@ -345,6 +346,29 @@ internal static class AuthorizationFlowContractTests
             "foreign SSID performed network authorization work");
     }
 
+    private static async Task TestIgnoredNetworkCheckAllowsAuthorizationAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var api = CodeImmediatelyApi();
+        var portal = new ImmediatePortal();
+        var internet = new SequenceInternetProbe(true);
+        var flow = CreateFlow(
+            temp,
+            api,
+            portal,
+            internet,
+            new ThrowingWifi(),
+            pollOffsets: [1],
+            ignoreNetworkCheck: true);
+
+        var outcome = await flow.RunAsync(Request());
+
+        Assert(outcome.Kind == AuthorizationOutcomeKind.Success,
+            "ignored network check did not allow authorization on a non-target network");
+        Assert(api.BaselineCalls > 0 && api.PushCalls > 0 && portal.StepOneCalls == 1 && portal.StepTwoCalls == 1,
+            "ignored network check did not continue through the authorization flow");
+    }
+
     private static async Task TestAlreadyAuthorizedStopsPollingAsync()
     {
         using var temp = TestDirectory.Create();
@@ -430,7 +454,8 @@ internal static class AuthorizationFlowContractTests
         IInternetConnectivityProbe internet,
         IWifiEnvironment wifi,
         IEnumerable<int> pollOffsets,
-        AuthorizationFlowOptions? options = null)
+        AuthorizationFlowOptions? options = null,
+        bool ignoreNetworkCheck = false)
     {
         var paths = new AppPaths(temp.Path);
         var json = new JsonFileStore();
@@ -438,7 +463,9 @@ internal static class AuthorizationFlowContractTests
         var state = new AuthorizationStateManager(new RuntimeStateStore(paths, json), settings);
         var polling = new PushPollingEngine(api, pollOffsets, TimeSpan.FromMilliseconds(250));
         var logger = new DiagnosticLogger(paths);
-        return new AuthorizationFlow(api, portal, internet, wifi, polling, state, logger, options ?? FastOptions());
+        return new AuthorizationFlow(
+            api, portal, internet, wifi, polling, state, logger, options ?? FastOptions(),
+            ignoreNetworkCheck: ignoreNetworkCheck);
     }
 
     private static AuthorizationFlowOptions FastOptions(int[]? lostStepTwo = null) => new()
@@ -684,6 +711,12 @@ internal static class AuthorizationFlowContractTests
     private sealed class NeverTargetWifi : IWifiEnvironment
     {
         public bool IsTargetWifiConnected() => false;
+    }
+
+    private sealed class ThrowingWifi : IWifiEnvironment
+    {
+        public bool IsTargetWifiConnected() => throw new InvalidOperationException(
+            "network detection must not run when the user chose to ignore it");
     }
 
     private sealed class TestDirectory : IDisposable

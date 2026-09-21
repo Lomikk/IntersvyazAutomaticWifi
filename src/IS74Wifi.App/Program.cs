@@ -403,7 +403,7 @@ internal static class Program
         Console.WriteLine($"Телефон              : {MaskPhone(secrets?.Phone)}");
         var automaticAuthorizationEnabled = app.Autostart.IsEnabledFor(installation.ExecutablePath);
         var agentRunning = AgentProcessControl.IsAgentRunning();
-        Console.WriteLine($"Campus через телефон/USB   : {(app.Settings.AllowAuthorizationWithoutCampusSsid ? "разрешён" : "запрещён")}");
+        Console.WriteLine($"Проверка сети              : {(app.Settings.IgnoreNetworkCheck ? "игнорируется" : "включена")}");
         Console.WriteLine($"Автоматическая авторизация : {(automaticAuthorizationEnabled ? "включена" : "выключена")}");
         Console.WriteLine($"Фоновый агент              : {(agentRunning ? "работает" : "остановлен")}");
         Console.WriteLine($"Уведомления                : {FormatNotificationMode(app.Settings.NotificationMode)}");
@@ -1542,11 +1542,9 @@ internal static class Program
                     case InteractiveMenuAction.Connect:
                     {
                         var history = new InteractiveActionHistory();
-                        history.Start(initialStatus.WifiNetwork == WifiNetworkState.Campus
-                            ? "Проверяю подключение к сети Интерсвязи..."
-                            : initialStatus.AuthorizationWithoutCampusSsidAllowed
-                                ? "Проверяю разрешённый маршрут через телефон/USB..."
-                                : "Проверяю подключение к сети Интерсвязи...");
+                        history.Start(initialStatus.NetworkCheckIgnored
+                            ? "Проверка сети отключена — начинаю авторизацию..."
+                            : "Проверяю подключение к сети Интерсвязи...");
                         ui.ShowActionProgress("АВТОРИЗАЦИЯ WI-FI", history, initialStatus);
 
                         var stepTwoAccepted = false;
@@ -1554,10 +1552,10 @@ internal static class Program
                         {
                             switch (stage)
                             {
-                                case AuthorizationProgressStage.TargetWifiConfirmed:
+                                case AuthorizationProgressStage.NetworkGatePassed:
                                     history.CompleteActive(initialStatus.WifiNetwork == WifiNetworkState.Campus
                                         ? "Подключение к сети Интерсвязи подтверждено"
-                                        : "Разрешён маршрут через телефон/USB без видимого SSID");
+                                        : "Проверка сети пропущена по настройке");
                                     history.Start("Получаю состояние push-очереди...");
                                     break;
                                 case AuthorizationProgressStage.BaselineLoaded:
@@ -1632,15 +1630,15 @@ internal static class Program
                             "Автоматическая авторизация отключена").ConfigureAwait(false);
                         break;
 
-                    case InteractiveMenuAction.ToggleAuthorizationWithoutCampusSsid:
+                    case InteractiveMenuAction.ToggleNetworkCheck:
                     {
-                        var enable = !initialStatus.AuthorizationWithoutCampusSsidAllowed;
-                        if (enable)
+                        var ignore = !initialStatus.NetworkCheckIgnored;
+                        if (ignore)
                         {
                             var confirmed = await ui.ConfirmAsync(
-                                "CAMPUS ЧЕРЕЗ ТЕЛЕФОН/USB",
-                                "Разрешить авторизацию по текущему сетевому маршруту, когда Windows не видит SSID Campus Wi-Fi? Включайте только если телефон подключён к Campus Wi-Fi и раздаёт его компьютеру.",
-                                "Разрешить маршрут без SSID",
+                                "ПРОВЕРКА СЕТИ",
+                                "Игнорировать проверку Campus Wi-Fi перед авторизацией? Приложение будет пытаться авторизоваться независимо от обнаруженных Wi-Fi и сетевых адаптеров. Полезно при USB-раздаче, VPN, proxy/WARP, нескольких сетях и другой нестандартной маршрутизации.",
+                                "Игнорировать проверку",
                                 initialStatus).ConfigureAwait(false);
                             if (!confirmed)
                             {
@@ -1650,13 +1648,13 @@ internal static class Program
 
                         await RunMenuBatchActionAsync(
                             ui,
-                            "CAMPUS ЧЕРЕЗ ТЕЛЕФОН/USB",
+                            "ПРОВЕРКА СЕТИ",
                             initialStatus,
-                            enable ? "Разрешаю авторизацию без видимого SSID..." : "Запрещаю авторизацию без видимого SSID...",
-                            progress => SetAuthorizationWithoutCampusSsid(enable, progress),
-                            enable
-                                ? "Маршрут через телефон/USB разрешён"
-                                : "Авторизация снова требует видимый Campus Wi-Fi").ConfigureAwait(false);
+                            ignore ? "Отключаю блокировку по обнаруженной сети..." : "Включаю проверку Campus Wi-Fi...",
+                            progress => SetIgnoreNetworkCheck(ignore, progress),
+                            ignore
+                                ? "Проверка сети больше не блокирует авторизацию"
+                                : "Проверка Campus Wi-Fi снова включена").ConfigureAwait(false);
                         break;
                     }
 
@@ -2042,7 +2040,7 @@ internal static class Program
             $"API-сессия: {FormatSessionEnd(session?.AccessEnd)}"
         };
 
-        lines.Add($"Campus через телефон/USB: {(app.Settings.AllowAuthorizationWithoutCampusSsid ? "разрешён" : "запрещён")}");
+        lines.Add($"Проверка сети: {(app.Settings.IgnoreNetworkCheck ? "игнорируется" : "включена")}");
         var telemetryStatus = app.TelemetryQueue.GetStatus();
         lines.Add(string.Empty);
         lines.Add("=== Телеметрия ===");
@@ -2314,7 +2312,7 @@ internal static class Program
             WifiNetwork: wifiNetwork,
             WifiSsid: displayedSsid,
             WifiAuthorization: authorization,
-            AuthorizationWithoutCampusSsidAllowed: app.Settings.AllowAuthorizationWithoutCampusSsid,
+            NetworkCheckIgnored: app.Settings.IgnoreNetworkCheck,
             AutomaticAuthorizationEnabled: automatic,
             AgentRunning: agentRunning,
             NotificationMode: FormatNotificationMode(app.Settings.NotificationMode),
@@ -2366,21 +2364,19 @@ internal static class Program
         app.Logger.Write(DiagnosticLevel.Info, $"notifications.mode value={next}");
     }
 
-    private static void SetAuthorizationWithoutCampusSsid(bool enabled, Action<string>? progress = null)
+    private static void SetIgnoreNetworkCheck(bool enabled, Action<string>? progress = null)
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
         var installation = new ProgramInstallation();
-        var restartAgent = AgentProcessControl.IsAgentRunning() &&
-                           installation.IsInstalled &&
-                           app.Autostart.IsEnabledFor(installation.ExecutablePath);
+        var restartAgent = AgentProcessControl.IsAgentRunning() && installation.IsInstalled;
 
         new SettingsStore(app.Paths, app.Json).Save(app.Settings with
         {
-            AllowAuthorizationWithoutCampusSsid = enabled
+            IgnoreNetworkCheck = enabled
         });
         app.Logger.Write(
             DiagnosticLevel.Info,
-            $"authorization.network-policy allowWithoutCampusSsid={enabled.ToString().ToLowerInvariant()}");
+            $"authorization.network-policy ignoreNetworkCheck={enabled.ToString().ToLowerInvariant()}");
         ReportMenuBatchProgress(progress, "Настройка сохранена");
 
         if (!restartAgent)
