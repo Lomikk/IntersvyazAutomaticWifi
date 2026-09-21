@@ -113,7 +113,7 @@ internal static class TelemetryContractTests
 
         var pollEvents = batch.EventJson
             .Where(line => line.Contains("\"event_type\":\"mailbox_poll\"", StringComparison.Ordinal))
-            .Select(JsonDocument.Parse)
+            .Select(static line => JsonDocument.Parse(line))
             .ToList();
         try
         {

@@ -1093,16 +1093,33 @@ internal sealed partial class InteractiveTerminalUi
         };
     }
 
-    private static string FriendlyTelemetryError(string? error) => error switch
+    private static string FriendlyTelemetryError(string? error)
     {
-        "backend_not_configured" => "backend не настроен",
-        "timeout" => "таймаут",
-        "transport" => "нет соединения",
-        "invalid_response" => "неожиданный ответ сервера",
-        "invalid_nickname" => "некорректный никнейм",
-        null or "" => "неизвестная ошибка",
-        _ => error
-    };
+        if (error?.StartsWith("http_", StringComparison.Ordinal) == true)
+        {
+            return "HTTP " + error[5..];
+        }
+
+        return error switch
+        {
+            "backend_not_configured" => "backend не настроен",
+            "timeout" => "таймаут HTTP-запроса",
+            "cancelled" => "запрос отменён интерфейсом",
+            "dns" => "ошибка DNS",
+            "connect" => "не удалось подключиться",
+            "tls" => "ошибка TLS",
+            "proxy" => "ошибка proxy",
+            "redirect" => "ошибка redirect",
+            "http_version" => "ошибка согласования HTTP",
+            "protocol" => "ошибка HTTP-протокола",
+            "transport" => "сетевая ошибка",
+            "contract_mismatch" => "backend устарел или несовместим",
+            "invalid_response" => "некорректный ответ backend",
+            "invalid_nickname" => "некорректный никнейм",
+            null or "" => "неизвестная ошибка",
+            _ => "backend: " + error
+        };
+    }
 
     private static string FriendlySpeedError(string? error)
     {

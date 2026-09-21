@@ -123,7 +123,7 @@ internal sealed class ApplicationRuntime : IDisposable
         if (telemetryEndpoint is not null)
         {
             telemetryHttp = HttpClientProfiles.CreateTelemetryClient();
-            telemetryClient = new TelemetryClient(telemetryHttp, telemetryEndpoint);
+            telemetryClient = new TelemetryClient(telemetryHttp, telemetryEndpoint, logger);
         }
         var telemetryUploader = new TelemetryUploader(
             telemetryQueue,
@@ -186,7 +186,7 @@ internal sealed class ApplicationRuntime : IDisposable
             telemetryHttp);
     }
 
-    private static Uri ResolveTelemetryEndpoint(AppSettings settings)
+    internal static Uri ResolveTelemetryEndpoint(AppSettings settings)
     {
         var configured = Environment.GetEnvironmentVariable("IS74W_TELEMETRY_URL");
         if (string.IsNullOrWhiteSpace(configured))

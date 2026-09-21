@@ -1170,13 +1170,25 @@ internal sealed partial class InteractiveTerminalUi
 
         DrawStatusLine(canvas, PaneY + 2, "Интернет", FormatInternet(s.InternetAvailable),
             s.InternetAvailable == true ? Palette.Good : s.InternetAvailable == false ? Palette.Dim : Palette.Highlight);
-        DrawStatusLine(canvas, PaneY + 3, "Wi-Fi доступ", s.WifiAuthorizationActive ? "активен ●" : "нет ○",
-            s.WifiAuthorizationActive ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 4, "Автовход", s.AutomaticAuthorizationEnabled ? "включён ●" : "выключен ○",
+        var wifiNetwork = s.WifiNetwork switch
+        {
+            WifiNetworkState.Campus => ($"{s.WifiSsid} ●", Palette.Good),
+            WifiNetworkState.Other => ($"{s.WifiSsid} ○", Palette.Dim),
+            _ => ("не определена ◌", Palette.Highlight)
+        };
+        DrawStatusLine(canvas, PaneY + 3, "Wi-Fi сеть", wifiNetwork.Item1, wifiNetwork.Item2);
+        var authorization = s.WifiAuthorization switch
+        {
+            WifiAuthorizationState.Active => ("активна ●", Palette.Good),
+            WifiAuthorizationState.Expired => ("истекла ○", Palette.Dim),
+            _ => ("пока неизвестно ◌", Palette.Highlight)
+        };
+        DrawStatusLine(canvas, PaneY + 4, "Авторизация", authorization.Item1, authorization.Item2);
+        DrawStatusLine(canvas, PaneY + 5, "Автовход", s.AutomaticAuthorizationEnabled ? "включён ●" : "выключен ○",
             s.AutomaticAuthorizationEnabled ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 5, "Агент", s.AgentRunning ? "работает ●" : "остановлен ○",
+        DrawStatusLine(canvas, PaneY + 6, "Агент", s.AgentRunning ? "работает ●" : "остановлен ○",
             s.AgentRunning ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 6, "Уведомления",
+        DrawStatusLine(canvas, PaneY + 7, "Уведомления",
             s.NotificationMode == "выкл" ? "выкл ○" : $"{s.NotificationMode} ●",
             s.NotificationMode == "выкл" ? Palette.Dim : Palette.Good);
 
@@ -1184,11 +1196,10 @@ internal sealed partial class InteractiveTerminalUi
         PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 8, s.MaskedPhone, Palette.Text);
         Put(canvas, rightPaneX + 3, PaneY + 9, "API-сессия", Palette.Dim);
         PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 9, s.ApiSessionEnd, Palette.Text);
-
-        Put(canvas, rightPaneX + 3, PaneY + 11, "Результат", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 11, s.LastResult, Palette.Text);
-        Put(canvas, rightPaneX + 3, PaneY + 12, "Версия", Palette.Dim);
-        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 12, s.Version, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 10, "Результат", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 10, s.LastResult, Palette.Text);
+        Put(canvas, rightPaneX + 3, PaneY + 11, "Версия", Palette.Dim);
+        PutRightAligned(canvas, rightPaneX + 3, rightPaneX + paneWidth - 3, PaneY + 11, s.Version, Palette.Text);
     }
 
     private static string FormatInternet(bool? value) => value switch

@@ -121,6 +121,8 @@ internal static class SpeedTestContractTests
         Assert(!root.TryGetProperty("packet_loss_pct", out _), "unmeasured packet loss must serialize as null/absent, not zero");
 
         await TestGenericTelemetryPostContractAsync(telemetry);
+        await TestTelemetryFailureDiagnosticsAsync();
+        await TestManualAppsScriptRedirectTraceAsync();
     }
 
     private static async Task TestGenericTelemetryPostContractAsync(TelemetrySpeedTestEvent telemetry)
@@ -208,6 +210,85 @@ internal static class SpeedTestContractTests
         var queuedRequest = seen.Last(item => item.Method == "POST");
         Assert(queuedRequest.Uri.Query == "?deployment=test",
             "queued telemetry must stay on the backward-compatible generic POST route");
+    }
+
+    private static async Task TestTelemetryFailureDiagnosticsAsync()
+    {
+        using (var staleClient = new HttpClient(new DelegateHandler((_, _) =>
+                   Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                   {
+                       Content = new StringContent("{\"ok\":true,\"service\":\"old\",\"schema\":1}")
+                   }))))
+        {
+            var stale = await new TelemetryClient(staleClient, new Uri("https://script.example.test/exec"))
+                .GetLeaderboardAsync(3, TimeSpan.FromSeconds(1));
+            Assert(stale.Error == "contract_mismatch",
+                "an old Apps Script deployment was not identified as a contract mismatch");
+        }
+
+        using (var dnsClient = new HttpClient(new DelegateHandler((_, _) =>
+                   throw new HttpRequestException(
+                       HttpRequestError.NameResolutionError,
+                       "host unknown",
+                       null,
+                       null))))
+        {
+            var dns = await new TelemetryClient(dnsClient, new Uri("https://script.example.test/exec"))
+                .GetLeaderboardAsync(3, TimeSpan.FromSeconds(1));
+            Assert(dns.Error == "dns", "telemetry DNS failure was collapsed into generic transport");
+        }
+
+        using (var timeoutClient = new HttpClient(new DelegateHandler(async (_, cancellationToken) =>
+               {
+                   await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                   throw new InvalidOperationException("unreachable");
+               })))
+        {
+            var telemetryClient = new TelemetryClient(timeoutClient, new Uri("https://script.example.test/exec"));
+            var timeout = await telemetryClient.GetLeaderboardAsync(3, TimeSpan.FromMilliseconds(25));
+            Assert(timeout.Error == "timeout", "telemetry timeout was not distinguished");
+
+            using var callerCts = new CancellationTokenSource();
+            callerCts.Cancel();
+            var cancelled = await telemetryClient.GetLeaderboardAsync(
+                3,
+                TimeSpan.FromSeconds(1),
+                callerCts.Token);
+            Assert(cancelled.Error == "cancelled", "caller cancellation was misclassified as timeout");
+        }
+    }
+
+    private static async Task TestManualAppsScriptRedirectTraceAsync()
+    {
+        var methods = new List<string>();
+        using var client = new HttpClient(new DelegateHandler((request, _) =>
+        {
+            methods.Add(request.Method.Method);
+            if (methods.Count == 1)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Found)
+                {
+                    Headers = { Location = new Uri("https://script.googleusercontent.test/macros/echo?token=one") }
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":false,\"error\":\"invalid_payload\"}")
+            });
+        }));
+
+        var report = await TelemetryDiagnostics.ProbePostAsync(
+            client,
+            new Uri("https://script.example.test/exec"),
+            TimeSpan.FromSeconds(1));
+
+        Assert(report.Completed && report.Hops.Count == 2, "Apps Script redirect trace did not reach final response");
+        Assert(methods.SequenceEqual(["POST", "GET"]), "302 after Apps Script POST must be followed as GET");
+        Assert(report.Hops[0].StatusCode == 302 && report.Hops[1].StatusCode == 200,
+            "redirect diagnostic lost hop status codes");
+        Assert(report.Hops[1].Body?.Contains("invalid_payload", StringComparison.Ordinal) == true,
+            "redirect diagnostic lost final response body");
     }
 
     private static void Assert(bool condition, string message)

@@ -133,7 +133,16 @@ public sealed class CampusSpeedToolsService(
     private static bool ShouldRetryLater(string? error) => error is
         "timeout" or
         "transport" or
+        "dns" or
+        "connect" or
+        "tls" or
+        "proxy" or
+        "http_version" or
+        "redirect" or
+        "protocol" or
         "invalid_response" or
+        "http_408" or
+        "http_429" or
         "http_500" or
         "http_502" or
         "http_503" or

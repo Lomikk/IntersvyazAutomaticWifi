@@ -68,6 +68,7 @@ internal static class Program
                 "logs" => OpenLogs(),
                 "update-check" => await CheckForUpdatesAsync().ConfigureAwait(false),
                 "update" => await UpdateCommandAsync().ConfigureAwait(false),
+                "backend-diagnose" => await RunBackendDiagnosticsAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
                 "menu" => await RunMenuAsync().ConfigureAwait(false),
                 _ => UnknownCommand(command)
             };
@@ -96,8 +97,115 @@ internal static class Program
         Console.WriteLine("status             Показать состояние");
         Console.WriteLine("update-check       Проверить обновления");
         Console.WriteLine("update             Установить доступное обновление");
+        Console.WriteLine("backend-diagnose  Проверить DNS, redirects и ответ telemetry backend");
         Console.WriteLine("uninstall          Удалить программу и локальные данные");
         return 0;
+    }
+
+    private static async Task<int> RunBackendDiagnosticsAsync(string[] args)
+    {
+        var includePost = args.Any(arg =>
+            string.Equals(arg, "--post", StringComparison.OrdinalIgnoreCase));
+        var paths = new AppPaths();
+        var settings = new SettingsStore(paths, new JsonFileStore()).Load();
+        var endpoint = ApplicationRuntime.ResolveTelemetryEndpoint(settings);
+
+        Console.WriteLine("IS74Wifi backend diagnostics");
+        Console.WriteLine($"Endpoint: {endpoint}");
+        Console.WriteLine($"System proxy: enabled for telemetry HttpClient");
+        Console.WriteLine();
+
+        var dnsWatch = Stopwatch.StartNew();
+        try
+        {
+            var addresses = await System.Net.Dns.GetHostAddressesAsync(endpoint.Host).ConfigureAwait(false);
+            Console.WriteLine(
+                $"DNS {endpoint.Host}: {string.Join(", ", addresses.Select(address => address.ToString()))} " +
+                $"({dnsWatch.ElapsedMilliseconds} ms)");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"DNS {endpoint.Host}: ERROR {ex.GetType().Name}: {ex.Message} ({dnsWatch.ElapsedMilliseconds} ms)");
+        }
+
+        using var http = HttpClientProfiles.CreateTelemetryDiagnosticClient();
+        Console.WriteLine();
+        Console.WriteLine("GET leaderboard");
+        var getReport = await TelemetryDiagnostics.ProbeGetAsync(
+            http,
+            endpoint,
+            TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        PrintBackendDiagnosticReport(getReport);
+
+        Console.WriteLine();
+        Console.WriteLine("Production TelemetryClient GET");
+        var productionSuccess = false;
+        using (var productionHttp = HttpClientProfiles.CreateTelemetryClient())
+        {
+            var productionClient = new TelemetryClient(productionHttp, endpoint);
+            var productionWatch = Stopwatch.StartNew();
+            var productionResult = await productionClient.GetLeaderboardAsync(
+                3,
+                TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            Console.WriteLine(
+                $"Result: success={productionResult.Success} error={productionResult.Error ?? "none"} " +
+                $"entries={productionResult.Entries.Count} elapsed={productionWatch.ElapsedMilliseconds} ms");
+            productionSuccess = productionResult.Success;
+        }
+
+        TelemetryDiagnosticReport? postReport = null;
+        if (includePost)
+        {
+            Console.WriteLine();
+            Console.WriteLine("POST speedtest probe (invalid empty payload; no row is created)");
+            postReport = await TelemetryDiagnostics.ProbePostAsync(
+                http,
+                endpoint,
+                TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            PrintBackendDiagnosticReport(postReport);
+        }
+        else
+        {
+            Console.WriteLine();
+            Console.WriteLine("Add --post to trace doPost with a deliberately invalid, non-writing payload.");
+        }
+
+        return getReport.Completed && productionSuccess && (postReport?.Completed ?? true) ? 0 : 1;
+    }
+
+    private static void PrintBackendDiagnosticReport(TelemetryDiagnosticReport report)
+    {
+        foreach (var hop in report.Hops)
+        {
+            Console.WriteLine($"[{hop.Index}] START {hop.Method} {FormatDiagnosticUri(hop.Uri)}");
+            if (hop.StatusCode is { } status)
+            {
+                Console.WriteLine(
+                    $"[{hop.Index}] RESPONSE status={status} http={hop.HttpVersion ?? "?"} " +
+                    $"elapsed={hop.Elapsed.TotalMilliseconds:0} ms content-type={hop.ContentType ?? "unknown"}");
+                if (hop.Location is not null)
+                {
+                    Console.WriteLine($"[{hop.Index}] REDIRECT -> {FormatDiagnosticUri(hop.Location)}");
+                }
+                if (!string.IsNullOrWhiteSpace(hop.Body))
+                {
+                    Console.WriteLine($"[{hop.Index}] BODY {hop.Body}");
+                }
+            }
+            if (hop.Error is not null)
+            {
+                Console.WriteLine($"[{hop.Index}] ERROR {hop.Error}: {hop.ErrorDetail}");
+            }
+        }
+        Console.WriteLine(report.Completed
+            ? "Completed: final HTTP response received."
+            : $"Failed: {report.Error ?? "unknown"}.");
+    }
+
+    private static string FormatDiagnosticUri(Uri uri)
+    {
+        var value = uri.ToString();
+        return value.Length <= 320 ? value : value[..320] + "…";
     }
 
     private static int PrintContract()
@@ -300,6 +408,9 @@ internal static class Program
         Console.WriteLine($"Уведомления                : {FormatNotificationMode(app.Settings.NotificationMode)}");
         Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
         Console.WriteLine($"Интернет                     : {(internet.Online ? "доступен" : "не подтверждён")}");
+        var displayedSsid = GetDisplayedWifiSsid();
+        Console.WriteLine($"Wi-Fi сеть                   : {FormatWifiNetwork(displayedSsid)}");
+        Console.WriteLine($"Wi-Fi авторизация            : {FormatWifiAuthorization(GetWifiAuthorizationState(state))}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
         {
             Console.WriteLine($"API-сессия  : до {session.AccessEnd}");
@@ -821,7 +932,17 @@ internal static class Program
             startInfo.ArgumentList.Add(autostartWasEnabled ? "1" : "0");
             startInfo.ArgumentList.Add(restartMenu ? "1" : "0");
 
-            _ = Process.Start(startInfo) ?? throw new InvalidOperationException("Не удалось запустить процесс применения обновления.");
+            using var helperProcess = Process.Start(startInfo) ??
+                throw new InvalidOperationException("Не удалось запустить процесс применения обновления.");
+            app.Logger.Write(DiagnosticLevel.Info,
+                $"update.helper started pid={helperProcess.Id} targetVersion={update.TagName}");
+            if (helperProcess.WaitForExit(750))
+            {
+                app.Logger.Write(DiagnosticLevel.Error,
+                    $"update.helper exited-before-handoff pid={helperProcess.Id} exitCode={helperProcess.ExitCode}");
+                throw new InvalidOperationException(
+                    $"Модуль установки обновления завершился до передачи управления (код {helperProcess.ExitCode}).");
+            }
             app.Logger.Write(DiagnosticLevel.Info,
                 $"update.scheduled from={ProductVersion} to={update.TagName} autostart={autostartWasEnabled}");
 
@@ -874,9 +995,12 @@ internal static class Program
 
     private static int ApplyPreparedUpdate(string[] args)
     {
+        var logger = new DiagnosticLogger(new AppPaths());
+        logger.Write(DiagnosticLevel.Info, $"update.apply entry argCount={args.Length}");
         if (args.Length != 7 ||
             !int.TryParse(args[0], out var parentPid))
         {
+            logger.Write(DiagnosticLevel.Error, "update.apply rejected invalid arguments");
             return 2;
         }
 
@@ -887,7 +1011,6 @@ internal static class Program
         var restartAgent = args[5] == "1";
         var restartMenu = args[6] == "1";
         var installation = new ProgramInstallation();
-        var logger = new DiagnosticLogger(new AppPaths());
 
         if (!ProgramInstallation.PathsEqual(target, installation.ExecutablePath) ||
             !IsPathInside(source, workingDirectory))
@@ -1858,6 +1981,7 @@ internal static class Program
         var internet = await app.Internet.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
         var automatic = installation.IsInstalled && app.Autostart.IsEnabledFor(installation.ExecutablePath);
         var installedVersion = installation.ReadInstalledVersion();
+        var displayedSsid = GetDisplayedWifiSsid();
 
         var lines = new List<string>
         {
@@ -1873,6 +1997,8 @@ internal static class Program
             string.Empty,
             "=== Состояние ===",
             $"Интернет: {(internet.Online ? "доступен" : "не подтверждён")}",
+            $"Wi-Fi сеть: {FormatWifiNetwork(displayedSsid)}",
+            $"Wi-Fi авторизация: {FormatWifiAuthorization(GetWifiAuthorizationState(state))}",
             $"Регистрация: {(secrets is null ? "нет" : "сохранена")}",
             $"Телефон: {MaskPhone(secrets?.Phone)}",
             $"Автовход: {(automatic ? "включён" : "выключен")}",
@@ -2136,16 +2262,22 @@ internal static class Program
         var runtime = app.RuntimeState.Load();
         var automatic = installation.IsInstalled && app.Autostart.IsEnabledFor(installation.ExecutablePath);
         var agentRunning = AgentProcessControl.IsAgentRunning();
-        var authorizationActive = runtime.ExpectedExpiryUtc is { } expiry
-            ? expiry > DateTimeOffset.UtcNow
-            : runtime.LastAuthUtc is not null;
+        var displayedSsid = GetDisplayedWifiSsid();
+        var wifiNetwork = SsidPolicy.IsTarget(displayedSsid)
+            ? WifiNetworkState.Campus
+            : displayedSsid is not null
+                ? WifiNetworkState.Other
+                : WifiNetworkState.Unknown;
+        var authorization = GetWifiAuthorizationState(runtime);
 
         var internet = internetOverride ?? runtime.InternetConfirmed;
         return new InteractiveStatusSnapshot(
             Installed: installation.IsInstalled,
             Registered: secrets is not null,
             InternetAvailable: internet,
-            WifiAuthorizationActive: authorizationActive,
+            WifiNetwork: wifiNetwork,
+            WifiSsid: displayedSsid,
+            WifiAuthorization: authorization,
             AutomaticAuthorizationEnabled: automatic,
             AgentRunning: agentRunning,
             NotificationMode: FormatNotificationMode(app.Settings.NotificationMode),
@@ -2154,6 +2286,34 @@ internal static class Program
             LastResult: string.IsNullOrWhiteSpace(runtime.LastResult) ? "—" : runtime.LastResult,
             Version: ProductVersion);
     }
+
+    private static string? GetDisplayedWifiSsid()
+    {
+        var connectedSsids = WindowsWifiService.GetConnectedSsids();
+        return connectedSsids.FirstOrDefault(SsidPolicy.IsTarget) ?? connectedSsids.FirstOrDefault();
+    }
+
+    private static WifiAuthorizationState GetWifiAuthorizationState(RuntimeState runtime) =>
+        runtime.ExpectedExpiryUtc switch
+        {
+            { } expiry when expiry > DateTimeOffset.UtcNow => WifiAuthorizationState.Active,
+            { } => WifiAuthorizationState.Expired,
+            _ => WifiAuthorizationState.Unknown
+        };
+
+    private static string FormatWifiNetwork(string? ssid) => ssid switch
+    {
+        null => "не определена ◌",
+        _ when SsidPolicy.IsTarget(ssid) => $"{ssid} ●",
+        _ => $"{ssid} ○"
+    };
+
+    private static string FormatWifiAuthorization(WifiAuthorizationState state) => state switch
+    {
+        WifiAuthorizationState.Active => "активна ●",
+        WifiAuthorizationState.Expired => "истекла ○",
+        _ => "пока неизвестно — ожидаем авторизацию ◌"
+    };
 
     private static void CycleNotificationMode()
     {

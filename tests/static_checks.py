@@ -152,7 +152,11 @@ assert 'glint' not in csharp_ui.lower(), 'per-letter glint animation must stay d
 assert 'InterSvyaz Wi-Fi Auth' in csharp_ui
 assert 'IS74W_SKIP_REVEAL' in csharp_program, 'bootstrap must not replay the full reveal after installation'
 assert 'GetPrimaryItems(snapshot)' in csharp_ui, 'compact and rich menus must share the same state-aware action list'
-assert '"Wi-Fi доступ"' in csharp_ui, 'status pane must disambiguate Wi-Fi authorization from API registration'
+assert '"Wi-Fi сеть"' in csharp_ui and '"Авторизация"' in csharp_ui, 'status pane must separate the connected SSID from captive authorization state'
+assert 'пока неизвестно' in csharp_ui, 'unknown captive authorization state must not be presented as denied Wi-Fi access'
+csharp_wifi = (root / 'src' / 'IS74Wifi.Core' / 'WindowsWifiService.cs').read_text(encoding='utf-8')
+assert 'WlanConnectionProfileDetails' in csharp_wifi and 'GetConnectedSsid()' in csharp_wifi, 'SSID detection must use the Windows profile API'
+assert 'WlanQueryInterface' not in csharp_wifi, 'C# client must not use the location-gated current_connection WLAN query'
 assert '"доступен ●"' in csharp_ui, 'status indicators must render after their status text'
 assert '"Отключить автоавторизацию" : "Включить автоавторизацию"' in csharp_ui
 assert 'registered ? "Сбросить регистрацию" : "Зарегистрировать устройство"' in csharp_ui
@@ -199,6 +203,7 @@ assert 'File.Copy(prepared.ExecutablePath, helperPath, overwrite: true);' in csh
 assert 'ReplaceInstalledExecutableWithRetry' in csharp_program and 'attempts: 24' in csharp_program, 'update apply must retry transient executable locks'
 assert 'Func<Task<bool>>? confirmApply = null' in csharp_program and 'ОБНОВЛЕНИЕ ГОТОВО' in csharp_program, 'interactive update must confirm handoff before launching the apply helper'
 assert 'if (!WaitForProcessExit(parentPid))' in csharp_program, 'update apply helper must wait for deliberate user confirmation without a fixed timeout'
+assert 'update.helper exited-before-handoff' in csharp_program and 'WaitForExit(750)' in csharp_program, 'parent must detect an apply helper that dies before handoff'
 assert 'IS74W_UPDATE_RESULT' in csharp_program and 'РЕЗУЛЬТАТ ОБНОВЛЕНИЯ' in csharp_program, 'post-restart update result handoff missing'
 
 
@@ -242,7 +247,7 @@ assert 'BuildUri("backend/getIP.php"' not in speedtest and 'BuildUri("results/te
 assert 'PacketLossPct: null' in speedtest, 'unsupported packet loss must remain unmeasured'
 assert 'IProgress<SpeedTestProgress>' in speedtest_models and 'CancellationToken' in speedtest_models, 'speed-test UI progress/cancellation contract missing'
 assert 'BuildRouteUri("speedtest")' in telemetry_client and 'BuildRouteUri("leaderboard")' in telemetry_client, 'speed-test and leaderboard routes must be explicit'
-assert 'PostAsync(endpoint, body' in telemetry_client, 'queued telemetry batches must preserve legacy generic POST compatibility'
+assert 'PostAsync("batch", endpoint, body' in telemetry_client, 'queued telemetry batches must preserve legacy generic POST compatibility'
 assert 'QueueSpeedTest(telemetry)' in speed_tools_service, 'completed speed tests must remain local-first when backend upload is unavailable'
 assert '"=+-@".Contains(trimmed[0])' in speed_tools_service, 'leaderboard nickname validation must mirror the Sheets formula-injection guard'
 speed_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.SpeedTools.cs').read_text(encoding='utf-8')

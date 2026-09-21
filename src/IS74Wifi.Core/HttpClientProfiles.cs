@@ -39,7 +39,26 @@ public static class HttpClientProfiles
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = true,
-            UseProxy = false,
+            // The IS74 API and captive portal deliberately bypass system proxies,
+            // but the public Google endpoint must respect the user's Windows proxy
+            // configuration.  A PAC/corporate proxy can be the only route to
+            // script.google.com even while s.is74.ru is directly reachable.
+            UseProxy = true,
+            MaxConnectionsPerServer = 2
+        };
+        return new HttpClient(handler, disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+    }
+
+    public static HttpClient CreateTelemetryDiagnosticClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            // Diagnostics follows redirects itself so every hop is observable.
+            AllowAutoRedirect = false,
+            UseProxy = true,
             MaxConnectionsPerServer = 2
         };
         return new HttpClient(handler, disposeHandler: true)

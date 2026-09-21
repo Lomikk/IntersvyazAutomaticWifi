@@ -89,6 +89,17 @@ By default a flush sends one bounded batch. This keeps normal operation close to
 
 The production HTTPS telemetry endpoint is built into the client. `IS74W_TELEMETRY_URL` or the `TelemetryEndpoint` setting can override it for development/testing. Transport failures keep data in the local queue and never block authorization.
 
+The Google client uses the Windows system proxy configuration. Normal requests write a bounded final response preview, elapsed time, HTTP status/version, and a classified failure (`dns`, `connect`, `tls`, `proxy`, `redirect`, `protocol`, `timeout`, or caller `cancelled`) to `diagnostic.log`. Interactive UI calls use their own 15-second budget by default; the background uploader keeps its independent short timeout.
+
+For an end-to-end Windows trace, run:
+
+```powershell
+IS74Wifi.exe backend-diagnose
+IS74Wifi.exe backend-diagnose --post
+```
+
+The first command performs DNS resolution, manually displays every GET redirect and final body, then repeats the leaderboard read through the production `TelemetryClient`. `--post` additionally sends an invalid empty speed-test payload: it exercises `doPost` and the expected POST-to-GET ContentService redirect without appending a sheet row.
+
 ## Ingestion API contract
 
 The Apps Script source is intentionally kept outside this public repository. The updated schema-v3 receiver keeps the original generic POST contract for backward compatibility and adds explicit routes for user-triggered speed features:
@@ -101,6 +112,8 @@ GET  <web-app endpoint>?route=leaderboard&limit=100
 ```
 
 The payload `event_type` still selects the row schema (`attempt`, `mailbox_poll`, `internet_probe`, `portal_response`, `error`, `speed_test`, or `leaderboard_entry`). Authorization traces use a `{batch_id, events[]}` envelope. The receiver guards each request at 64 events / 64 KiB, which is why the local queue emits at most 64 events and targets roughly 60 KiB per transport batch.
+
+The production `/exec` URL is a versioned Apps Script deployment. Saving editor code is not enough: after a receiver change, create a new script version and edit the existing deployment to use it. Keep execution as the deploying account and anonymous/public access enabled. A quick contract check is that the root GET reports schema 3 and `GET ?route=leaderboard&limit=3` returns an object with an `entries` array.
 
 The public leaderboard is sorted by download speed, then upload speed, then lower latency, with newest rows as the final tie-breaker. Its response exposes only rank, nickname, download/upload, latency, jitter and optional packet loss. Private `install_id`, `test_id`, `event_id`, radio metadata and time bucket remain server-side.
 
