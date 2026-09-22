@@ -32,7 +32,7 @@ public sealed record AppSettings
     // in the local queue and authorization behavior is unchanged.
     public string? TelemetryEndpoint { get; init; }
     public int TelemetryUploadIntervalHours { get; init; } = 12;
-    public int TelemetryHttpTimeoutMilliseconds { get; init; } = 3000;
+    public int TelemetryHttpTimeoutMilliseconds { get; init; } = 10000;
     public int InteractiveBackendTimeoutMilliseconds { get; init; } = 15000;
     public int TelemetryMaxBatchesPerFlush { get; init; } = 1;
 }

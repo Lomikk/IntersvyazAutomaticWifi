@@ -15,6 +15,9 @@ public sealed class TelemetryUploader(
 
     public bool Enabled => client is not null && statisticsAllowed();
 
+    public static TimeSpan GetHttpTimeout(AppSettings settings) => TimeSpan.FromMilliseconds(
+        Math.Clamp(settings.TelemetryHttpTimeoutMilliseconds, 10000, 30000));
+
     public async Task TryFlushIfDueAsync(CancellationToken cancellationToken = default)
     {
         if (client is null || !statisticsAllowed() || !queue.HasPending || cancellationToken.IsCancellationRequested)
@@ -46,8 +49,10 @@ public sealed class TelemetryUploader(
             return;
         }
 
-        var timeout = TimeSpan.FromMilliseconds(
-            Math.Clamp(settings.TelemetryHttpTimeoutMilliseconds, 1000, 10000));
+        // Google Apps Script can take several seconds to acquire its sheet lock
+        // and return the final redirect. Apply the floor at runtime as well:
+        // existing settings.json files may still contain the old 1–3s value.
+        var timeout = GetHttpTimeout(settings);
         var sentAny = false;
         var maxBatches = Math.Clamp(settings.TelemetryMaxBatchesPerFlush, 1, 8);
 

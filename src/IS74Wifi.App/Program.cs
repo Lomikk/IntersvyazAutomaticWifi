@@ -472,8 +472,14 @@ internal static class Program
             Console.WriteLine("Требуется действие           : да — автоматические попытки остановлены");
         }
         var telemetryStatus = app.TelemetryQueue.GetStatus();
+        var telemetryUpload = new TelemetryUploadStateStore(app.Paths, app.Json).Load();
         Console.WriteLine($"Анонимная статистика         : {FormatAnonymousStatisticsConsent(app.Settings.AnonymousStatisticsConsent)}");
         Console.WriteLine($"Очередь телеметрии           : {telemetryStatus.PendingFiles} файлов / {FormatByteCount(telemetryStatus.PendingBytes)}");
+        Console.WriteLine($"Последняя выгрузка телеметрии: {(telemetryUpload.LastSuccessfulUploadUtc is { } lastUpload ? lastUpload.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") : "ещё не было")}");
+        if (telemetryUpload.NextAttemptUtc is { } nextUpload)
+        {
+            Console.WriteLine($"Следующая попытка выгрузки  : {nextUpload.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+        }
         if (telemetryStatus.RejectedFiles > 0)
         {
             Console.WriteLine($"Отклонённые trace-файлы      : {telemetryStatus.RejectedFiles} / {FormatByteCount(telemetryStatus.RejectedBytes)}");
@@ -2234,10 +2240,16 @@ internal static class Program
         }
 
         var telemetryStatus = app.TelemetryQueue.GetStatus();
+        var telemetryUpload = new TelemetryUploadStateStore(app.Paths, app.Json).Load();
         lines.Add(string.Empty);
         lines.Add("=== Телеметрия ===");
         lines.Add($"Режим: {FormatAnonymousStatisticsConsent(app.Settings.AnonymousStatisticsConsent)}");
         lines.Add($"Ожидает выгрузки: {telemetryStatus.PendingFiles} файлов / {FormatByteCount(telemetryStatus.PendingBytes)}");
+        lines.Add($"Последняя выгрузка: {(telemetryUpload.LastSuccessfulUploadUtc is { } lastUpload ? lastUpload.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") : "ещё не было")}");
+        if (telemetryUpload.NextAttemptUtc is { } nextUpload)
+            lines.Add($"Следующая попытка: {nextUpload.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+        if (telemetryUpload.ConsecutiveFailures > 0)
+            lines.Add($"Неудачных попыток подряд: {telemetryUpload.ConsecutiveFailures}");
         lines.Add($"Карантин: {telemetryStatus.RejectedFiles} файлов / {FormatByteCount(telemetryStatus.RejectedBytes)}");
 
         if (state.LastAuthUtc is { } lastAuth)
@@ -3136,8 +3148,9 @@ internal static class Program
                         $"update.maintenance error={ex.GetType().Name}");
                 }
 
-                var delay = app.Agent.GetSleepDelay();
-                if (delay >= TimeSpan.FromMinutes(1))
+                // Only the actual time until authorization/retry matters here:
+                // the normal idle tick is 15 seconds even when expiry is hours away.
+                if (app.Agent.CanUploadTelemetry())
                 {
                     try
                     {
@@ -3152,8 +3165,9 @@ internal static class Program
                         app.Logger.Write(DiagnosticLevel.Warn,
                             $"telemetry.upload error={ex.GetType().Name}");
                     }
-                    delay = app.Agent.GetSleepDelay();
                 }
+
+                var delay = app.Agent.GetSleepDelay();
 
                 if (stopEvent.WaitOne(delay))
                 {

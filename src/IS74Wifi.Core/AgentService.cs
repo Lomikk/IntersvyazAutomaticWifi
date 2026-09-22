@@ -2,6 +2,39 @@ namespace IS74Wifi.Core;
 
 public static class AgentTiming
 {
+    private static readonly TimeSpan MinimumTelemetrySafetyWindow = TimeSpan.FromMinutes(1);
+
+    // This must not depend on GetSleepDelay: the normal 15-second agent tick
+    // says nothing about how far away the next authorization actually is.
+    public static bool CanUploadTelemetry(RuntimeState state, AppSettings settings, DateTimeOffset now)
+    {
+        // A raised batch cap/timeout can extend the upload well beyond a minute.
+        // Reserve enough time for the entire flush plus a small scheduling margin.
+        var uploadBudget = TelemetryUploader.GetHttpTimeout(settings) *
+                           Math.Clamp(settings.TelemetryMaxBatchesPerFlush, 1, 8) +
+                           TimeSpan.FromSeconds(10);
+        var safetyWindow = uploadBudget > MinimumTelemetrySafetyWindow
+            ? uploadBudget
+            : MinimumTelemetrySafetyWindow;
+
+        if (state.UserActionRequired || state.ExpectedExpiryUtc is not { } expiry)
+        {
+            // No automatic authorization is scheduled while the user must act,
+            // or before the first successful Wi-Fi authorization on a clean install.
+            return true;
+        }
+
+        if (expiry - now > safetyWindow)
+        {
+            return true;
+        }
+
+        // Once expiry has been reached, a distant explicit retry leaves a safe
+        // idle window in which queued diagnostics can still be delivered.
+        return state.NextAutomaticRetryUtc is { } retryAt &&
+               retryAt - now > safetyWindow;
+    }
+
     public static TimeSpan GetSleepDelay(RuntimeState state, AppSettings settings, DateTimeOffset now)
     {
         var idle = TimeSpan.FromSeconds(Math.Max(1, settings.AgentPollSeconds));
@@ -57,6 +90,8 @@ public sealed class AgentService(
     private static readonly TimeSpan ExpiryReminderWindow = TimeSpan.FromMinutes(5);
 
     public TimeSpan GetSleepDelay() => AgentTiming.GetSleepDelay(state.Load(), settings, clock.GetUtcNow());
+
+    public bool CanUploadTelemetry() => AgentTiming.CanUploadTelemetry(state.Load(), settings, clock.GetUtcNow());
 
     public async Task TickAsync(CancellationToken cancellationToken = default)
     {

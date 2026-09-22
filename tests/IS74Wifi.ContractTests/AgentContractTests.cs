@@ -7,6 +7,7 @@ internal static class AgentContractTests
     public static async Task RunAsync()
     {
         TestSleepPolicy();
+        TestTelemetryUploadSafety();
         TestAutostartCommand();
         TestAutostartRegistrationState();
         TestAgentPidRecord();
@@ -40,6 +41,52 @@ internal static class AgentContractTests
         state = state with { NextAutomaticRetryUtc = expiry.AddSeconds(30) };
         Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(20)) == TimeSpan.FromSeconds(10),
             "agent did not wake at scheduled retry");
+    }
+
+    private static void TestTelemetryUploadSafety()
+    {
+        var now = new DateTimeOffset(2026, 9, 23, 10, 0, 0, TimeSpan.Zero);
+        var settings = new AppSettings();
+
+        // The old delay-based condition would never permit an upload: even
+        // with expiry a day away, the idle tick is only 15 seconds.
+        var healthy = new RuntimeState { ExpectedExpiryUtc = now.AddHours(12) };
+        Assert(AgentTiming.GetSleepDelay(healthy, settings, now) == TimeSpan.FromSeconds(15),
+            "default agent tick changed");
+        Assert(AgentTiming.CanUploadTelemetry(healthy, settings, now),
+            "background telemetry is still blocked by the default 15-second tick");
+
+        Assert(AgentTiming.CanUploadTelemetry(new RuntimeState(), settings, now),
+            "clean install should upload registration telemetry without a Wi-Fi expiry baseline");
+        Assert(AgentTiming.CanUploadTelemetry(healthy with { UserActionRequired = true }, settings, now),
+            "terminal authorization state should not strand the telemetry queue");
+
+        Assert(AgentTiming.CanUploadTelemetry(healthy with { ExpectedExpiryUtc = now.AddMinutes(2) }, settings, now),
+            "telemetry was blocked despite a safe interval before expiry");
+        Assert(!AgentTiming.CanUploadTelemetry(healthy with { ExpectedExpiryUtc = now.AddMinutes(1) }, settings, now),
+            "telemetry must stop at the one-minute safety boundary");
+        Assert(!AgentTiming.CanUploadTelemetry(healthy with { ExpectedExpiryUtc = now.AddSeconds(10) }, settings, now),
+            "telemetry must not compete with the approaching guard window");
+        Assert(!AgentTiming.CanUploadTelemetry(healthy with { ExpectedExpiryUtc = now.AddSeconds(-10) }, settings, now),
+            "an imminent automatic retry must block telemetry");
+
+        var expired = healthy with { ExpectedExpiryUtc = now.AddMinutes(-5) };
+        Assert(AgentTiming.CanUploadTelemetry(expired with { NextAutomaticRetryUtc = now.AddMinutes(3) }, settings, now),
+            "a safely deferred automatic retry should allow queued telemetry to flush");
+        Assert(!AgentTiming.CanUploadTelemetry(expired with { NextAutomaticRetryUtc = now.AddSeconds(30) }, settings, now),
+            "telemetry must not run when the scheduled retry is imminent");
+
+        var largerUpload = settings with
+        {
+            TelemetryHttpTimeoutMilliseconds = 30000,
+            TelemetryMaxBatchesPerFlush = 8
+        };
+        Assert(!AgentTiming.CanUploadTelemetry(
+                healthy with { ExpectedExpiryUtc = now.AddMinutes(4) }, largerUpload, now),
+            "larger upload settings must reserve enough time before authorization");
+        Assert(AgentTiming.CanUploadTelemetry(
+                healthy with { ExpectedExpiryUtc = now.AddMinutes(5) }, largerUpload, now),
+            "safety budget unnecessarily blocked an upload with enough time");
     }
 
     private static void TestAutostartCommand()

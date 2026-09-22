@@ -248,7 +248,12 @@ assert 'install-id.txt' in (root / 'src' / 'IS74Wifi.Core' / 'AppPaths.cs').read
 assert 'Guid.NewGuid().ToString("N")' in telemetry_store, 'telemetry install ID must be random and app-generated'
 assert 'IS74W_TELEMETRY_URL' in csharp_runtime, 'telemetry endpoint override missing'
 assert 'AKfycbx0vUU3ypA1q_Mehd7e3r4Ker3XHOsYuc1stSucHecBqy6wzlsHBFA_48kJYmdntXwlKg/exec' in csharp_runtime, 'production telemetry endpoint missing'
-assert 'delay >= TimeSpan.FromMinutes(1)' in csharp_program and 'TryFlushIfDueAsync' in csharp_program, 'agent must upload telemetry only away from the near-expiry critical window'
+agent_service = (root / 'src' / 'IS74Wifi.Core' / 'AgentService.cs').read_text(encoding='utf-8')
+assert 'app.Agent.CanUploadTelemetry()' in csharp_program and 'TryFlushIfDueAsync' in csharp_program, 'agent must check the actual authorization schedule before uploading'
+assert 'AgentTiming.CanUploadTelemetry(state.Load(), settings, clock.GetUtcNow())' in agent_service, 'telemetry safety must use persisted expiry/retry timestamps'
+assert 'delay >= TimeSpan.FromMinutes(1)' not in csharp_program, 'do not gate telemetry on the normal 15-second agent sleep'
+assert 'Math.Clamp(settings.TelemetryHttpTimeoutMilliseconds, 10000, 30000)' in telemetry_uploader, 'persisted short telemetry timeouts must not strand existing users'
+assert 'TelemetryUploader.GetHttpTimeout(settings)' in agent_service and 'TelemetryMaxBatchesPerFlush' in agent_service, 'the pre-auth safety window must reserve the entire configured flush budget'
 
 # Campus speed test: reproduce the provider's observed standalone LibreSpeed
 # measurement traffic without leaking the captured public IP or calling the

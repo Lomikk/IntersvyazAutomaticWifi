@@ -140,7 +140,23 @@ internal static class TelemetryContractTests
         Assert(!queue.HasPending, "successful telemetry batch was not removed from local queue");
 
         TestRegistrationTelemetry();
+        TestUploadTimeoutCompatibility();
         await TestUploadConsentGateAsync();
+    }
+
+    private static void TestUploadTimeoutCompatibility()
+    {
+        Assert(TelemetryUploader.GetHttpTimeout(new AppSettings()) == TimeSpan.FromSeconds(10),
+            "new installations must allow slow Apps Script responses");
+        Assert(TelemetryUploader.GetHttpTimeout(new AppSettings
+            { TelemetryHttpTimeoutMilliseconds = 1000 }) == TimeSpan.FromSeconds(10),
+            "old persisted 1-second timeout must not strand telemetry");
+        Assert(TelemetryUploader.GetHttpTimeout(new AppSettings
+            { TelemetryHttpTimeoutMilliseconds = 3000 }) == TimeSpan.FromSeconds(10),
+            "old persisted 3-second timeout must not strand telemetry");
+        Assert(TelemetryUploader.GetHttpTimeout(new AppSettings
+            { TelemetryHttpTimeoutMilliseconds = 60000 }) == TimeSpan.FromSeconds(30),
+            "a misconfigured timeout must not stall the agent indefinitely");
     }
 
     private static void TestRegistrationTelemetry()
