@@ -121,6 +121,7 @@ internal static class SpeedTestContractTests
         Assert(!root.TryGetProperty("packet_loss_pct", out _), "unmeasured packet loss must serialize as null/absent, not zero");
 
         await TestGenericTelemetryPostContractAsync(telemetry);
+        await TestUntrustedLeaderboardValuesAsync();
         await TestTelemetryFailureDiagnosticsAsync();
         await TestManualAppsScriptRedirectTraceAsync();
         await TestCampusSpeedToolsConsentAsync();
@@ -211,6 +212,108 @@ internal static class SpeedTestContractTests
         var queuedRequest = seen.Last(item => item.Method == "POST");
         Assert(queuedRequest.Uri.Query == "?deployment=test",
             "queued telemetry must stay on the backward-compatible generic POST route");
+    }
+
+    private static async Task TestUntrustedLeaderboardValuesAsync()
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            ok = true,
+            entries = new object[]
+            {
+                new
+                {
+                    rank = int.MaxValue,
+                    nickname = "Ма\u001b[31mша\r\n\u202e\u200d\u009b\u0007",
+                    download_mbps = 1e100,
+                    upload_mbps = 80d,
+                    latency_ms = -1d,
+                    jitter_ms = 70_000d,
+                    packet_loss_pct = 101d
+                },
+                new
+                {
+                    rank = -4,
+                    nickname = new string('Я', 500),
+                    download_mbps = 120d
+                },
+                new
+                {
+                    rank = 3,
+                    nickname = "\u001b\u202e\u200d\n",
+                    download_mbps = 120d
+                },
+                new
+                {
+                    rank = 3,
+                    nickname = "Ник-07_测试",
+                    download_mbps = 180d,
+                    latency_ms = 10d
+                }
+            }
+        });
+
+        using (var http = new HttpClient(new DelegateHandler((_, _) =>
+                   Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                   {
+                       Content = new StringContent(payload)
+                   }))))
+        {
+            var result = await new TelemetryClient(http, new Uri("https://script.example.test/exec"))
+                .GetLeaderboardAsync(50, TimeSpan.FromSeconds(1));
+            Assert(result.Success && result.Entries.Count == 3,
+                "unsafe-only nickname was not skipped or safe entries were lost");
+            Assert(result.Entries[0].Nickname == "Ма31mша" && result.Entries[0].Rank == 1,
+                "ESC/CSI/CR/LF/C1/bidi/zero-width characters must not reach the UI");
+            Assert(result.Entries[0].DownloadMbps is null && result.Entries[0].UploadMbps == 80 &&
+                   result.Entries[0].LatencyMs is null && result.Entries[0].JitterMs is null &&
+                   result.Entries[0].PacketLossPct is null,
+                "out-of-range metrics must not reach the terminal renderer");
+            Assert(result.Entries[1].Nickname.Length == LeaderboardDisplayPolicy.MaximumNicknameScalars &&
+                   result.Entries[1].Rank == 2, "unbounded nicknames and ranks must be capped");
+            Assert(result.Entries[2].Nickname == "Ник-07_测试",
+                "legitimate Russian/Latin/CJK nicknames should be preserved");
+        }
+
+        Assert(LeaderboardDisplayPolicy.SanitizeNickname("A\u001b]52;c;evil\u0007B") == "A52cevilB",
+            "OSC escape and BEL must not survive nickname sanitization");
+        Assert(LeaderboardDisplayPolicy.SanitizeNickname("a\u200fb\u202ec\u2066d\u2069e\u200df") == "abcdef",
+            "bidi isolates and direction overrides must not survive nickname sanitization");
+        Assert(LeaderboardDisplayPolicy.SanitizeNickname("\u001b\r\n\u202e") == string.Empty,
+            "control-only nicknames must be discarded");
+
+        var tooMany = JsonSerializer.Serialize(new
+        {
+            ok = true,
+            entries = Enumerable.Range(1, 260).Select(i => new
+            {
+                rank = i,
+                nickname = "Player" + i,
+                download_mbps = 50d
+            }).ToArray()
+        });
+        using (var http = new HttpClient(new DelegateHandler((_, _) =>
+                   Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                   {
+                       Content = new StringContent(tooMany)
+                   }))))
+        {
+            var limited = await new TelemetryClient(http, new Uri("https://script.example.test/exec"))
+                .GetLeaderboardAsync(5, TimeSpan.FromSeconds(1));
+            Assert(limited.Success && limited.Entries.Count == 5,
+                "server cannot force more rows than the requested leaderboard limit");
+        }
+
+        using (var http = new HttpClient(new DelegateHandler((_, _) =>
+                   Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                   {
+                       Content = new StringContent("{\"ok\":false,\"error\":\"\\u001b[31minjected\"}")
+                   }))))
+        {
+            var rejected = await new TelemetryClient(http, new Uri("https://script.example.test/exec"))
+                .GetLeaderboardAsync(5, TimeSpan.FromSeconds(1));
+            Assert(rejected.Error == "rejected", "untrusted backend error strings must not reach terminal status");
+        }
     }
 
     private static async Task TestTelemetryFailureDiagnosticsAsync()
@@ -325,7 +428,7 @@ internal static class SpeedTestContractTests
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("{\"ok\":false,\"error\":\"invalid_payload\"}")
+                Content = new StringContent("{\"ok\":false,\"error\":\"invalid_payload\"}\u001b[31m\u202e")
             });
         }));
 
@@ -340,6 +443,9 @@ internal static class SpeedTestContractTests
             "redirect diagnostic lost hop status codes");
         Assert(report.Hops[1].Body?.Contains("invalid_payload", StringComparison.Ordinal) == true,
             "redirect diagnostic lost final response body");
+        Assert(report.Hops[1].Body?.Contains('\u001b') == false &&
+               report.Hops[1].Body?.Contains('\u202e') == false,
+            "backend-diagnose preview must remove terminal escapes and bidi controls");
     }
 
     private static void Assert(bool condition, string message)
