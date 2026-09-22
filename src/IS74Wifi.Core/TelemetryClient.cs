@@ -84,7 +84,8 @@ public sealed class TelemetryClient(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 timeoutCts.Token).ConfigureAwait(false);
-            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+            var body = await BoundedHttpContent.ReadAsStringAsync(
+                response.Content, BoundedHttpContent.TelemetryBodyLimitBytes, timeoutCts.Token).ConfigureAwait(false);
             LogResponse("leaderboard_read", response, stopwatch.Elapsed, body);
 
             if (!response.IsSuccessStatusCode)
@@ -149,6 +150,11 @@ public sealed class TelemetryClient(
             LogFailure("leaderboard_read", error, stopwatch.Elapsed, ex);
             return new LeaderboardReadResult(false, error, []);
         }
+        catch (ResponseBodyTooLargeException)
+        {
+            LogFailure("leaderboard_read", "response_too_large", stopwatch.Elapsed, null);
+            return new LeaderboardReadResult(false, "response_too_large", []);
+        }
         catch (JsonException ex)
         {
             LogFailure("leaderboard_read", "invalid_response", stopwatch.Elapsed, ex);
@@ -175,7 +181,8 @@ public sealed class TelemetryClient(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 timeoutCts.Token).ConfigureAwait(false);
-            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+            var body = await BoundedHttpContent.ReadAsStringAsync(
+                response.Content, BoundedHttpContent.TelemetryBodyLimitBytes, timeoutCts.Token).ConfigureAwait(false);
             LogResponse("leaderboard_json", response, stopwatch.Elapsed, body);
             if (!response.IsSuccessStatusCode)
             {
@@ -188,6 +195,11 @@ public sealed class TelemetryClient(
         {
             var error = cancellationToken.IsCancellationRequested ? "cancelled" : "timeout";
             LogFailure("leaderboard_json", error, stopwatch.Elapsed, ex);
+            return null;
+        }
+        catch (ResponseBodyTooLargeException)
+        {
+            LogFailure("leaderboard_json", "response_too_large", stopwatch.Elapsed, null);
             return null;
         }
         catch (HttpRequestException ex)
@@ -217,7 +229,8 @@ public sealed class TelemetryClient(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 timeoutCts.Token).ConfigureAwait(false);
-            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+            var body = await BoundedHttpContent.ReadAsStringAsync(
+                response.Content, BoundedHttpContent.TelemetryBodyLimitBytes, timeoutCts.Token).ConfigureAwait(false);
             LogResponse(operation, response, stopwatch.Elapsed, body);
             if (!response.IsSuccessStatusCode)
             {
@@ -259,6 +272,11 @@ public sealed class TelemetryClient(
         {
             LogFailure(operation, "timeout", stopwatch.Elapsed, ex);
             return new TelemetryWriteResult(false, false, "timeout");
+        }
+        catch (ResponseBodyTooLargeException)
+        {
+            LogFailure(operation, "response_too_large", stopwatch.Elapsed, null);
+            return new TelemetryWriteResult(false, false, "response_too_large");
         }
         catch (HttpRequestException ex)
         {

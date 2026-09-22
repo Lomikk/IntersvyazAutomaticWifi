@@ -9,7 +9,8 @@ public sealed class HttpTransport(HttpClient client)
         HttpRequestMessage request,
         TimeSpan timeout,
         CancellationToken cancellationToken = default,
-        bool readBody = true)
+        bool readBody = true,
+        bool readBodyOnRedirect = true)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
@@ -21,8 +22,10 @@ public sealed class HttpTransport(HttpClient client)
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 timeoutCts.Token).ConfigureAwait(false);
-            var body = readBody
-                ? await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false)
+            var isRedirect = (int)response.StatusCode is >= 300 and <= 399;
+            var body = readBody && (!isRedirect || readBodyOnRedirect)
+                ? await BoundedHttpContent.ReadAsStringAsync(
+                    response.Content, BoundedHttpContent.DefaultBodyLimitBytes, timeoutCts.Token).ConfigureAwait(false)
                 : string.Empty;
             var location = response.Headers.Location;
             var serverDate = response.Headers.Date;
@@ -53,6 +56,10 @@ public sealed class HttpTransport(HttpClient client)
         {
             return HttpCallResult.Failure(TransportFailureKind.Timeout, null, clock.Elapsed);
         }
+        catch (ResponseBodyTooLargeException)
+        {
+            return HttpCallResult.Failure(TransportFailureKind.ResponseTooLarge, null, clock.Elapsed);
+        }
         catch (CachedDnsUnavailableException exception)
         {
             return HttpCallResult.Failure(TransportFailureKind.DnsUnavailable, exception.Message, clock.Elapsed);
@@ -66,6 +73,10 @@ public sealed class HttpTransport(HttpClient client)
         catch (HttpRequestException exception) when (exception.HttpRequestError == HttpRequestError.ConnectionError)
         {
             return HttpCallResult.Failure(TransportFailureKind.ConnectionFailure, exception.Message, clock.Elapsed);
+        }
+        catch (HttpRequestException exception) when (exception.HttpRequestError == HttpRequestError.SecureConnectionError)
+        {
+            return HttpCallResult.Failure(TransportFailureKind.TlsFailure, null, clock.Elapsed);
         }
         catch (HttpRequestException exception)
         {

@@ -106,6 +106,8 @@ public sealed class RegistrationTelemetryTrace
             {
                 TransportFailureKind.DnsUnavailable => "dns",
                 TransportFailureKind.ConnectionFailure => "tcp_connect",
+                TransportFailureKind.TlsFailure => "tls",
+                TransportFailureKind.ResponseTooLarge => "parse_error",
                 TransportFailureKind.Timeout => "timeout",
                 TransportFailureKind.Cancelled => "cancelled",
                 _ => "internal"

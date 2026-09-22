@@ -97,7 +97,6 @@ jobs:
           ./tests/critical_path_contract.ps1
 
       - name: Legacy static checks
-        continue-on-error: true
         shell: powershell
         run: py -3 ./tests/static_checks.py
 
