@@ -20,6 +20,8 @@ public sealed record AppSettings
     // continue receiving prereleases, stable builds stay on stable releases.
     public bool? IncludePrereleaseUpdates { get; init; }
     public double AuthWindowHours { get; init; } = 24;
+    // Cadence during the five-minute approach to expiry; distant daytime
+    // checks use AgentTiming's 15-minute heartbeat instead.
     public int AgentPollSeconds { get; init; } = 15;
     public int GuardWindowSeconds { get; init; } = 10;
     public int GuardProbeIntervalMilliseconds { get; init; } = 250;

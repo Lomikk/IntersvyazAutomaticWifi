@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.NetworkInformation;
 using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
@@ -3098,6 +3099,19 @@ internal static class Program
         }
 
         using var stopEvent = AgentProcessControl.CreateStopEvent();
+        using var networkWake = new AutoResetEvent(false);
+        // A laptop may join the campus Wi-Fi after a long idle wait or after
+        // resuming from sleep. Network change events shorten that wait without
+        // introducing a polling loop or a timer that wakes the sleeping PC.
+        void WakeForNetworkChange()
+        {
+            // A callback already queued by Windows may race with shutdown.
+            try { networkWake.Set(); } catch (ObjectDisposedException) { }
+        }
+        void OnNetworkAddressChanged(object? _, EventArgs __) => WakeForNetworkChange();
+        void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs __) => WakeForNetworkChange();
+        NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
+        NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
         AgentProcessControl.RegisterCurrentAgentProcess();
         using var stopCts = new CancellationTokenSource();
         var stopRegistration = ThreadPool.RegisterWaitForSingleObject(
@@ -3168,8 +3182,32 @@ internal static class Program
                 }
 
                 var delay = app.Agent.GetSleepDelay();
+                try
+                {
+                    var now = DateTimeOffset.UtcNow;
+                    var nextUpdate = new UpdateStateStore(app.Paths, app.Json).Load().NextCheckUtc;
+                    DateTimeOffset? nextTelemetry = null;
+                    if (app.TelemetryUploader.Enabled && app.TelemetryQueue.HasPending)
+                    {
+                        var uploadState = new TelemetryUploadStateStore(app.Paths, app.Json).Load();
+                        nextTelemetry = uploadState.NextAttemptUtc ??
+                            uploadState.LastSuccessfulUploadUtc?.AddHours(
+                                Math.Clamp(app.Settings.TelemetryUploadIntervalHours, 1, 72)) ?? now;
+                    }
+                    delay = AgentTiming.BoundSleepByBackgroundWork(delay, now, nextUpdate, nextTelemetry);
+                }
+                catch (Exception ex)
+                {
+                    // An unreadable maintenance state must never terminate the
+                    // agent or interfere with its authorization timer.
+                    app.Logger.Write(DiagnosticLevel.Warn,
+                        $"agent.background-schedule deferred error={ex.GetType().Name}");
+                }
 
-                if (stopEvent.WaitOne(delay))
+                // The first handle remains the existing cross-process stop
+                // signal. Joining/leaving a network may wake the idle agent,
+                // but does not override the user's IgnoreNetworkCheck choice.
+                if (WaitHandle.WaitAny([stopEvent, networkWake], delay) == 0)
                 {
                     break;
                 }
@@ -3177,6 +3215,8 @@ internal static class Program
         }
         finally
         {
+            NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
+            NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
             stopRegistration.Unregister(null);
             AgentProcessControl.ClearCurrentAgentProcess();
             app.Logger.Write(DiagnosticLevel.Info, "agent.stop runtime=csharp");

@@ -8,9 +8,11 @@ internal static class AgentContractTests
     {
         TestSleepPolicy();
         TestTelemetryUploadSafety();
+        TestBackgroundDueScheduling();
         TestAutostartCommand();
         TestAutostartRegistrationState();
         TestAgentPidRecord();
+        await TestDaytimeTickDoesNotProbeAsync();
         await TestExpiryIsAuthoritativeAsync();
         await TestNetworkCheckPolicyAsync();
         await TestPreExpiryNeedsTwoCaptiveResponsesAsync();
@@ -29,8 +31,24 @@ internal static class AgentContractTests
         var expiry = new DateTimeOffset(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
         var state = new RuntimeState { ExpectedExpiryUtc = expiry };
 
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddHours(-12)) == TimeSpan.FromMinutes(15),
+            "daytime agent should use a 15-minute idle heartbeat");
+        Assert(AgentTiming.GetSleepDelay(new RuntimeState(), settings, expiry.AddHours(-12)) == TimeSpan.FromMinutes(15),
+            "clean install without an expiry baseline must also stay idle");
+        Assert(AgentTiming.GetSleepDelay(state with { UserActionRequired = true }, settings,
+                   expiry.AddHours(1)) == TimeSpan.FromMinutes(15),
+            "terminal state must not keep waking once a second after expiry");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddMinutes(-20)) == TimeSpan.FromMinutes(15),
+            "long sleep must stop at the five-minute reminder boundary");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddMinutes(-6)) == TimeSpan.FromMinutes(1),
+            "long sleep overshot the expiry reminder boundary");
+        var widenedGuard = settings with { GuardWindowSeconds = 600 };
+        Assert(AgentTiming.GetSleepDelay(state, widenedGuard, expiry.AddMinutes(-15)) == TimeSpan.FromMinutes(5),
+            "wide guard must interrupt long idle before its earlier guard start");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddMinutes(-5)) == TimeSpan.FromSeconds(15),
+            "five-minute approach should retain the old lightweight tick");
         Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddMinutes(-1)) == TimeSpan.FromSeconds(15),
-            "agent idle sleep changed far before guard");
+            "pre-guard approach cadence changed");
         Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(-20)) == TimeSpan.FromSeconds(10),
             "agent sleep crossed guard start");
         Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(-5)) == TimeSpan.FromMilliseconds(250),
@@ -51,8 +69,8 @@ internal static class AgentContractTests
         // The old delay-based condition would never permit an upload: even
         // with expiry a day away, the idle tick is only 15 seconds.
         var healthy = new RuntimeState { ExpectedExpiryUtc = now.AddHours(12) };
-        Assert(AgentTiming.GetSleepDelay(healthy, settings, now) == TimeSpan.FromSeconds(15),
-            "default agent tick changed");
+        Assert(AgentTiming.GetSleepDelay(healthy, settings, now) == TimeSpan.FromMinutes(15),
+            "default agent idle heartbeat must not poll every 15 seconds");
         Assert(AgentTiming.CanUploadTelemetry(healthy, settings, now),
             "background telemetry is still blocked by the default 15-second tick");
 
@@ -87,6 +105,29 @@ internal static class AgentContractTests
         Assert(AgentTiming.CanUploadTelemetry(
                 healthy with { ExpectedExpiryUtc = now.AddMinutes(5) }, largerUpload, now),
             "safety budget unnecessarily blocked an upload with enough time");
+    }
+
+    private static void TestBackgroundDueScheduling()
+    {
+        var now = new DateTimeOffset(2026, 9, 23, 10, 0, 0, TimeSpan.Zero);
+        var idle = TimeSpan.FromMinutes(15);
+        Assert(AgentTiming.BoundSleepByBackgroundWork(idle, now, null, null) == idle,
+            "no background work should preserve long idle sleep");
+        Assert(AgentTiming.BoundSleepByBackgroundWork(idle, now, now.AddHours(2), now.AddMinutes(5)) ==
+               TimeSpan.FromMinutes(5),
+            "telemetry retry must wake the agent before long idle timeout");
+        Assert(AgentTiming.BoundSleepByBackgroundWork(idle, now, now.AddMinutes(3), now.AddMinutes(5)) ==
+               TimeSpan.FromMinutes(3),
+            "next update check must not be delayed by telemetry or idle heartbeat");
+        Assert(AgentTiming.BoundSleepByBackgroundWork(TimeSpan.FromMilliseconds(250), now,
+                   now.AddMinutes(3), now.AddMinutes(5)) == TimeSpan.FromMilliseconds(250),
+            "background scheduling must not slow the active guard");
+        Assert(AgentTiming.BoundSleepByBackgroundWork(idle, now, now.AddSeconds(-1), null) ==
+               TimeSpan.FromMinutes(1),
+            "overdue maintenance must not cause a busy loop");
+        Assert(AgentTiming.BoundSleepByBackgroundWork(idle, now, null, now.AddMilliseconds(50)) ==
+               TimeSpan.FromMilliseconds(100),
+            "very near background deadlines must respect minimum sleep");
     }
 
     private static void TestAutostartCommand()
@@ -157,6 +198,21 @@ internal static class AgentContractTests
         {
             try { Directory.Delete(root, recursive: true); } catch { }
         }
+    }
+
+    private static async Task TestDaytimeTickDoesNotProbeAsync()
+    {
+        var now = new DateTimeOffset(2026, 9, 18, 0, 0, 0, TimeSpan.Zero);
+        using var fixture = AgentFixture.Create(now);
+        fixture.SaveState(new RuntimeState { ExpectedExpiryUtc = now.AddHours(12) });
+
+        await fixture.Agent.TickAsync();
+        Assert(fixture.Internet.Calls == 0,
+            "daytime tick must not probe Internet before the active guard");
+        Assert(fixture.Authorization.Calls == 0,
+            "daytime tick must not attempt authorization before the active guard");
+        Assert(fixture.Agent.GetSleepDelay() == TimeSpan.FromMinutes(15),
+            "daytime tick must return to the energy-saving idle heartbeat");
     }
 
     private static async Task TestExpiryIsAuthoritativeAsync()

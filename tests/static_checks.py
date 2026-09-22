@@ -254,6 +254,10 @@ assert 'AgentTiming.CanUploadTelemetry(state.Load(), settings, clock.GetUtcNow()
 assert 'delay >= TimeSpan.FromMinutes(1)' not in csharp_program, 'do not gate telemetry on the normal 15-second agent sleep'
 assert 'Math.Clamp(settings.TelemetryHttpTimeoutMilliseconds, 10000, 30000)' in telemetry_uploader, 'persisted short telemetry timeouts must not strand existing users'
 assert 'TelemetryUploader.GetHttpTimeout(settings)' in agent_service and 'TelemetryMaxBatchesPerFlush' in agent_service, 'the pre-auth safety window must reserve the entire configured flush budget'
+assert 'LongIdleInterval = TimeSpan.FromMinutes(15)' in agent_service and 'ExpiryReminderWindow = TimeSpan.FromMinutes(5)' in agent_service, 'daytime agent must preserve energy-saving idle and reminder boundary'
+assert 'BoundSleepByBackgroundWork' in csharp_program and 'BoundSleepByBackgroundWork' in agent_service, 'idle sleep must respect update and telemetry deadlines'
+assert 'NetworkChange.NetworkAddressChanged +=' in csharp_program and 'NetworkChange.NetworkAvailabilityChanged +=' in csharp_program, 'long-idle agent must respond to network changes'
+
 
 # Campus speed test: reproduce the provider's observed standalone LibreSpeed
 # measurement traffic without leaking the captured public IP or calling the

@@ -3,6 +3,11 @@ namespace IS74Wifi.Core;
 public static class AgentTiming
 {
     private static readonly TimeSpan MinimumTelemetrySafetyWindow = TimeSpan.FromMinutes(1);
+    // Outside the five-minute reminder/edge approach there is no authorization
+    // work to perform. Keep a bounded housekeeping heartbeat rather than
+    // waking the process every AgentPollSeconds (15 s by default).
+    private static readonly TimeSpan LongIdleInterval = TimeSpan.FromMinutes(15);
+    public static readonly TimeSpan ExpiryReminderWindow = TimeSpan.FromMinutes(5);
 
     // This must not depend on GetSleepDelay: the normal 15-second agent tick
     // says nothing about how far away the next authorization actually is.
@@ -37,10 +42,12 @@ public static class AgentTiming
 
     public static TimeSpan GetSleepDelay(RuntimeState state, AppSettings settings, DateTimeOffset now)
     {
-        var idle = TimeSpan.FromSeconds(Math.Max(1, settings.AgentPollSeconds));
-        if (state.ExpectedExpiryUtc is not { } expiry)
+        var approachInterval = TimeSpan.FromSeconds(Math.Max(1, settings.AgentPollSeconds));
+        if (state.UserActionRequired || state.ExpectedExpiryUtc is not { } expiry)
         {
-            return idle;
+            // No successful stepTwo baseline exists, or automatic attempts
+            // are paused until the user acts. Only maintenance is scheduled.
+            return LongIdleInterval;
         }
 
         var guardSeconds = Math.Max(1, settings.GuardWindowSeconds);
@@ -50,8 +57,18 @@ public static class AgentTiming
 
         if (now < guardStart)
         {
-            var untilGuard = guardStart - now;
-            return ClampMinimum(untilGuard < idle ? untilGuard : idle);
+            var reminderStart = expiry - ExpiryReminderWindow;
+            var longIdleEnd = reminderStart < guardStart ? reminderStart : guardStart;
+            if (now < longIdleEnd)
+            {
+                // Wake precisely at the five-minute reminder boundary even if
+                // a long idle sleep would otherwise overshoot it.
+                return ClampMinimum(Min(LongIdleInterval, longIdleEnd - now));
+            }
+
+            // Retain the existing cadence near expiry and never cross the
+            // 10-second guard boundary in a single sleep.
+            return ClampMinimum(Min(approachInterval, guardStart - now));
         }
 
         if (now <= guardEnd)
@@ -62,12 +79,43 @@ public static class AgentTiming
         if (state.NextAutomaticRetryUtc is { } retryAt && now < retryAt)
         {
             var untilRetry = retryAt - now;
-            return ClampMinimum(untilRetry < idle ? untilRetry : idle);
+            return ClampMinimum(Min(untilRetry, approachInterval));
         }
 
         var overdue = TimeSpan.FromSeconds(1);
-        return idle < overdue ? idle : overdue;
+        return Min(approachInterval, overdue);
     }
+
+    // The authorization clock is independent of update checks and queued
+    // telemetry. A shorter due time must still wake the agent while it is
+    // otherwise waiting in the 15-minute long-idle mode.
+    public static TimeSpan BoundSleepByBackgroundWork(
+        TimeSpan authorizationDelay,
+        DateTimeOffset now,
+        DateTimeOffset? updateDueUtc,
+        DateTimeOffset? telemetryDueUtc)
+    {
+        var delay = authorizationDelay;
+        delay = BoundByDueTime(delay, now, updateDueUtc);
+        delay = BoundByDueTime(delay, now, telemetryDueUtc);
+        return ClampMinimum(delay);
+    }
+
+    private static TimeSpan BoundByDueTime(TimeSpan delay, DateTimeOffset now, DateTimeOffset? dueUtc)
+    {
+        if (dueUtc is not { } due)
+        {
+            return delay;
+        }
+
+        // The due task was already attempted on this iteration. Avoid a busy
+        // loop if its state could not be persisted or another process holds
+        // the upload lease.
+        var untilDue = due > now ? due - now : TimeSpan.FromMinutes(1);
+        return Min(delay, untilDue);
+    }
+
+    private static TimeSpan Min(TimeSpan a, TimeSpan b) => a < b ? a : b;
 
     private static TimeSpan ClampMinimum(TimeSpan value) =>
         value < TimeSpan.FromMilliseconds(100) ? TimeSpan.FromMilliseconds(100) : value;
@@ -87,8 +135,6 @@ public sealed class AgentService(
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private DateTimeOffset? notifiedExpiryUtc;
-    private static readonly TimeSpan ExpiryReminderWindow = TimeSpan.FromMinutes(5);
-
     public TimeSpan GetSleepDelay() => AgentTiming.GetSleepDelay(state.Load(), settings, clock.GetUtcNow());
 
     public bool CanUploadTelemetry() => AgentTiming.CanUploadTelemetry(state.Load(), settings, clock.GetUtcNow());
@@ -238,7 +284,7 @@ public sealed class AgentService(
         }
 
         var remaining = expiry - now;
-        if (remaining > ExpiryReminderWindow || notifiedExpiryUtc == expiry || !IsNetworkPolicySatisfied())
+        if (remaining > AgentTiming.ExpiryReminderWindow || notifiedExpiryUtc == expiry || !IsNetworkPolicySatisfied())
         {
             return;
         }

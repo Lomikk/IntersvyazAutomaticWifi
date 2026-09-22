@@ -6,9 +6,10 @@ This note records a source-level audit of the current C# authorization path. It 
 
 ## Current trigger model
 
-The long-running per-user agent does **not** subscribe to a WLAN/network-change event. Its wake-up policy is driven by the persisted `ExpectedExpiryUtc` produced by the last successful `stepTwo`:
+The long-running per-user agent subscribes to system network address/availability changes as an early wake signal; the persisted `ExpectedExpiryUtc` remains authoritative. Its wake-up policy is driven by the persisted `ExpectedExpiryUtc` produced by the last successful `stepTwo`:
 
-- far before the predicted 24-hour edge: sleep up to `AgentPollSeconds` (15 s by default); no Internet/captive probe is performed;
+- far before the predicted 24-hour edge: sleep up to 15 minutes, waking earlier for the five-minute reminder boundary, due background maintenance, or a network change; no Internet/captive probe is performed;
+- during the last five minutes before the guard: retain the `AgentPollSeconds` approach cadence (15 s by default);
 - from `expiry - 10 s` through `expiry + 10 s`: wake every 250 ms by default;
 - before the exact expiry, two nearby local SUSU connectivity-probe responses are required before an early `stepOne` is allowed;
 - at/after the predicted expiry, the timer itself is authoritative and the agent does not wait for an Internet probe before entering the authorization flow;
