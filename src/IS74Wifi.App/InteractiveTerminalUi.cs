@@ -12,6 +12,7 @@ internal sealed partial class InteractiveTerminalUi
     private const int CanvasHeight = 30;
     private const int PaneY = 14;
     private const int PaneHeight = 14;
+    private static readonly TimeSpan LocalStatusRefreshInterval = TimeSpan.FromSeconds(2);
 
     private static readonly string[] Banner =
     [
@@ -101,6 +102,7 @@ internal sealed partial class InteractiveTerminalUi
         InteractiveStatusSnapshot initialStatus,
         Task<InteractiveStatusSnapshot>? refreshedStatusTask,
         bool showReveal,
+        Func<InteractiveStatusSnapshot> readLocalStatus,
         CancellationToken cancellationToken = default)
     {
         status = initialStatus;
@@ -134,6 +136,8 @@ internal sealed partial class InteractiveTerminalUi
             ambientSweepStartedUtc = null;
 
             var keyTask = ReadKeyAsync();
+            Task<InteractiveStatusSnapshot>? localStatusTask = null;
+            var nextLocalStatusRefreshUtc = DateTimeOffset.UtcNow + LocalStatusRefreshInterval;
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -143,10 +147,41 @@ internal sealed partial class InteractiveTerminalUi
                 // narrow resize permanent until the whole menu was restarted.
                 UpdateLayout();
 
-                if (refreshedStatusTask is { IsCompletedSuccessfully: true })
+                if (refreshedStatusTask is { IsCompleted: true })
                 {
-                    status = refreshedStatusTask.Result;
+                    if (refreshedStatusTask.IsCompletedSuccessfully)
+                    {
+                        status = refreshedStatusTask.Result;
+                    }
+                    else if (refreshedStatusTask.IsFaulted)
+                    {
+                        _ = refreshedStatusTask.Exception;
+                    }
                     refreshedStatusTask = null;
+                }
+
+                // The agent writes its authorization result into local runtime state.
+                // Re-read that state while the menu stays open; otherwise the timer
+                // keeps displaying the pre-authorization expiry until navigation.
+                // Keep disk/WLAN reads off the 16 ms renderer and never issue an
+                // Internet probe or update check from this periodic refresh.
+                if (localStatusTask is { IsCompleted: true })
+                {
+                    if (localStatusTask.IsCompletedSuccessfully)
+                    {
+                        status = localStatusTask.Result;
+                    }
+                    else if (localStatusTask.IsFaulted)
+                    {
+                        _ = localStatusTask.Exception;
+                    }
+                    localStatusTask = null;
+                }
+
+                if (localStatusTask is null && DateTimeOffset.UtcNow >= nextLocalStatusRefreshUtc)
+                {
+                    nextLocalStatusRefreshUtc = DateTimeOffset.UtcNow + LocalStatusRefreshInterval;
+                    localStatusTask = Task.Run(readLocalStatus, cancellationToken);
                 }
 
                 UpdateAmbientSweepState();

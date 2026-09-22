@@ -1608,7 +1608,11 @@ internal static class Program
 
             var initialStatus = GetInteractiveStatusSnapshot();
             var refreshedStatus = RefreshInteractiveStatusAsync();
-            var action = await ui.RunMenuAsync(initialStatus, refreshedStatus, showReveal).ConfigureAwait(false);
+            var action = await ui.RunMenuAsync(
+                initialStatus,
+                refreshedStatus,
+                showReveal,
+                ReadLocalInteractiveStatusSnapshot).ConfigureAwait(false);
             showReveal = false;
 
             try
@@ -2475,6 +2479,22 @@ internal static class Program
         return BuildInteractiveStatusSnapshot(app, internetOverride);
     }
 
+    private static InteractiveStatusSnapshot ReadLocalInteractiveStatusSnapshot()
+    {
+        // Polling the open menu must not construct API/portal clients or perform
+        // network checks. All values below come from local state or Windows.
+        var paths = new AppPaths();
+        var json = new JsonFileStore();
+        return BuildInteractiveStatusSnapshot(
+            paths,
+            json,
+            new SettingsStore(paths, json).Load(),
+            new DpapiSecretStore(paths).Load(),
+            new SessionMetadataStore(paths, json).Load(),
+            new RuntimeStateStore(paths, json).Load(),
+            internetOverride: null);
+    }
+
     private static async Task<InteractiveStatusSnapshot> RefreshInteractiveStatusAsync()
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
@@ -2503,13 +2523,26 @@ internal static class Program
 
     private static InteractiveStatusSnapshot BuildInteractiveStatusSnapshot(
         ApplicationRuntime app,
+        bool? internetOverride) => BuildInteractiveStatusSnapshot(
+            app.Paths,
+            app.Json,
+            app.Settings,
+            app.Secrets.Load(),
+            app.Session.Load(),
+            app.RuntimeState.Load(),
+            internetOverride);
+
+    private static InteractiveStatusSnapshot BuildInteractiveStatusSnapshot(
+        AppPaths paths,
+        JsonFileStore json,
+        AppSettings settings,
+        StoredSecrets? secrets,
+        SessionMetadata? session,
+        RuntimeState runtime,
         bool? internetOverride)
     {
         var installation = new ProgramInstallation();
-        var secrets = app.Secrets.Load();
-        var session = app.Session.Load();
-        var runtime = app.RuntimeState.Load();
-        var automatic = installation.IsInstalled && app.Autostart.IsEnabledFor(installation.ExecutablePath);
+        var automatic = installation.IsInstalled && new WindowsAutostartService().IsEnabledFor(installation.ExecutablePath);
         var agentRunning = AgentProcessControl.IsAgentRunning();
         var displayedSsid = GetDisplayedWifiSsid();
         var wifiNetwork = SsidPolicy.IsTarget(displayedSsid)
@@ -2518,7 +2551,7 @@ internal static class Program
                 ? WifiNetworkState.Other
                 : WifiNetworkState.Unknown;
         var internet = internetOverride ?? runtime.InternetConfirmed;
-        var updateMaintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
+        var updateMaintenance = new UpdateMaintenanceService(ProductVersion, paths, json, new DiagnosticLogger(paths));
         var updateState = updateMaintenance.LoadState();
         return new InteractiveStatusSnapshot(
             Installed: installation.IsInstalled,
@@ -2528,15 +2561,15 @@ internal static class Program
             WifiSsid: displayedSsid,
             AuthorizationExpectedExpiryUtc: runtime.ExpectedExpiryUtc,
             AuthorizationAlreadyActive: string.Equals(runtime.LastResult, "already-authorized", StringComparison.Ordinal),
-            NetworkCheckIgnored: app.Settings.IgnoreNetworkCheck,
-            AnonymousStatisticsConsent: app.Settings.AnonymousStatisticsConsent,
-            AutomaticUpdates: app.Settings.AutomaticUpdates,
-            IncludePrereleaseUpdates: updateMaintenance.IncludePrereleases(app.Settings),
+            NetworkCheckIgnored: settings.IgnoreNetworkCheck,
+            AnonymousStatisticsConsent: settings.AnonymousStatisticsConsent,
+            AutomaticUpdates: settings.AutomaticUpdates,
+            IncludePrereleaseUpdates: updateMaintenance.IncludePrereleases(settings),
             AvailableUpdateVersion: updateState.AvailableVersion,
             LastUpdateCheckUtc: updateState.LastCheckedUtc,
             AutomaticAuthorizationEnabled: automatic,
             AgentRunning: agentRunning,
-            NotificationMode: FormatNotificationMode(app.Settings.NotificationMode),
+            NotificationMode: FormatNotificationMode(settings.NotificationMode),
             MaskedPhone: MaskPhone(secrets?.Phone),
             ApiSessionEnd: FormatSessionEnd(session?.AccessEnd),
             LastResult: FormatRuntimeResultForUi(runtime.LastResult),

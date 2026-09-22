@@ -37,6 +37,9 @@ jobs:
       - name: C# contract tests
         run: dotnet run --project .\tests\IS74Wifi.ContractTests\IS74Wifi.ContractTests.csproj --configuration Release --no-build
 
+      - name: Interactive UI live status contract
+        run: py -3 .\tests\ui_live_status_contract.py
+
       - name: Smoke test CLI
         shell: pwsh
         run: |
