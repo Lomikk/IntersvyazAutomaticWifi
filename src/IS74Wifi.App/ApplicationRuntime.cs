@@ -104,9 +104,9 @@ internal sealed class ApplicationRuntime : IDisposable
         var portalHttp = HttpClientProfiles.CreatePortalClient();
         var internetHttp = HttpClientProfiles.CreateInternetProbeClient();
         var speedTestHttp = HttpClientProfiles.CreateSpeedTestClient();
-        var api = new Is74ApiClient(new HttpTransport(apiHttp));
-        var portal = new CaptivePortalClient(new HttpTransport(portalHttp));
-        var internet = new InternetConnectivityProbe(new HttpTransport(internetHttp));
+        var api = new Is74ApiClient(new HttpTransport(apiHttp, logger));
+        var portal = new CaptivePortalClient(new HttpTransport(portalHttp, logger));
+        var internet = new InternetConnectivityProbe(new HttpTransport(internetHttp, logger));
         var wifi = new WindowsWifiEnvironment();
         var polling = new PushPollingEngine(api);
 

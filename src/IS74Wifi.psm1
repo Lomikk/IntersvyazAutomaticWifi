@@ -605,8 +605,8 @@ function Register-IS74Account {
             throw "get-confirm вернул HTTP $($getConfirm.StatusCode)."
         }
 
-        $smsCode = (Read-Host 'Введите SMS-код').Trim()
-        if ($smsCode -notmatch '^\d+$') { throw 'SMS-код должен состоять из цифр.' }
+        $smsCode = (Read-Host 'Введите код подтверждения').Trim()
+        if ($smsCode -notmatch '^\d+$') { throw 'Код подтверждения должен состоять из цифр.' }
 
         $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$($script:ApiBase)/mobile/auth/check-confirm")
         Add-IS74ApiHeaders -Request $request -DeviceId $deviceId

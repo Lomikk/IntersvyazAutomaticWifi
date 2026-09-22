@@ -12,6 +12,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("windows-wlan", TestWindowsWlanAsync),
     ("named-mutex", TestMutexAsync),
     ("http-transport", TestHttpTransportAsync),
+    ("local-network-diagnostics", TestLocalNetworkDiagnosticsAsync),
     ("bounded-http-content", TestBoundedHttpContentAsync),
     ("is74-api", TestIs74ApiAsync),
     ("captive-portal", TestCaptivePortalAsync),
@@ -180,6 +181,132 @@ static async Task TestHttpTransportAsync()
     using var oversizedRequest = new HttpRequestMessage(HttpMethod.Get, "https://example.test/");
     var oversized = await new HttpTransport(oversizedClient).SendAsync(oversizedRequest, TimeSpan.FromSeconds(1));
     Assert(oversized.FailureKind == TransportFailureKind.ResponseTooLarge, "oversized transport body was not rejected");
+}
+
+static async Task TestLocalNetworkDiagnosticsAsync()
+{
+    using var temp = TempDirectory.Create();
+    var paths = new AppPaths(temp.Path);
+    var logger = new DiagnosticLogger(paths);
+
+    using (var dnsClient = new HttpClient(new DelegateHandler((_, _) =>
+        throw new HttpRequestException(HttpRequestError.NameResolutionError,
+            "secret: device=abcdef", null, null))))
+    using (var request = new HttpRequestMessage(HttpMethod.Post,
+        "https://api.is74.ru/mobile/auth/get-confirm?phone=9123456789"))
+    {
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer private-token");
+        request.Content = new StringContent("phone=9123456789&confirmCode=1234");
+        var result = await new HttpTransport(dnsClient, logger)
+            .SendAsync(request, TimeSpan.FromMilliseconds(100));
+        Assert(result.FailureKind == TransportFailureKind.DnsUnavailable,
+            "instrumented HTTP transport changed DNS failure classification");
+    }
+
+    using (var timeoutClient = new HttpClient(new DelegateHandler(async (_, ct) =>
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        return new HttpResponseMessage(HttpStatusCode.OK);
+    })))
+    using (var request = new HttpRequestMessage(HttpMethod.Post,
+        "https://w.is74.ru/stepTwo?phone=9123456789&isMp=true"))
+    {
+        var result = await new HttpTransport(timeoutClient, logger)
+            .SendAsync(request, TimeSpan.FromMilliseconds(35));
+        Assert(result.FailureKind == TransportFailureKind.Timeout,
+            "instrumented HTTP transport changed timeout classification");
+    }
+
+    using (var responseTooLargeClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(new byte[BoundedHttpContent.DefaultBodyLimitBytes + 1])
+        }))))
+    using (var request = new HttpRequestMessage(HttpMethod.Get,
+        "https://api.is74.ru/mobile/pushmessages?page=1&pageSize=1"))
+    {
+        var result = await new HttpTransport(responseTooLargeClient, logger)
+            .SendAsync(request, TimeSpan.FromSeconds(1));
+        Assert(result.FailureKind == TransportFailureKind.ResponseTooLarge,
+            "instrumented transport lost oversized response classification");
+    }
+
+    using (var rateLimitedClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        new HttpResponseMessage((HttpStatusCode)429)
+        {
+            Headers =
+            {
+                RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(2))
+            }
+        }))))
+    using (var request = new HttpRequestMessage(HttpMethod.Get,
+        "https://api.is74.ru/mobile/pushmessages?page=1&pageSize=1"))
+    {
+        var result = await new HttpTransport(rateLimitedClient, logger)
+            .SendAsync(request, TimeSpan.FromSeconds(1));
+        Assert(result.Response?.StatusCode == (HttpStatusCode)429,
+            "instrumented transport lost HTTP 429");
+    }
+
+    using (var connectionClient = new HttpClient(new DelegateHandler((_, _) =>
+        throw new HttpRequestException(HttpRequestError.ConnectionError,
+            "socket diagnostic message with a secret", null, null))))
+    using (var request = new HttpRequestMessage(HttpMethod.Get,
+        "https://api.is74.ru/mobile/pushmessages"))
+    {
+        var result = await new HttpTransport(connectionClient, logger)
+            .SendAsync(request, TimeSpan.FromSeconds(1));
+        Assert(result.FailureKind == TransportFailureKind.ConnectionFailure,
+            "instrumented transport changed TCP connection classification");
+    }
+
+    using (var tlsClient = new HttpClient(new DelegateHandler((_, _) =>
+        throw new HttpRequestException(HttpRequestError.SecureConnectionError,
+            "certificate diagnostic message with a secret", null, null))))
+    using (var request = new HttpRequestMessage(HttpMethod.Get,
+        "https://api.is74.ru/mobile/pushmessages"))
+    {
+        var result = await new HttpTransport(tlsClient, logger)
+            .SendAsync(request, TimeSpan.FromSeconds(1));
+        Assert(result.FailureKind == TransportFailureKind.TlsFailure,
+            "instrumented transport changed TLS failure classification");
+    }
+
+    var log = File.ReadAllText(paths.DiagnosticLogFile);
+    Assert(log.Contains("route=api.get-confirm kind=DnsUnavailable phase=before_headers", StringComparison.Ordinal),
+        "DNS failure phase not logged locally");
+    Assert(log.Contains("route=portal.stepTwo kind=Timeout phase=before_headers", StringComparison.Ordinal),
+        "pre-header timeout phase not logged locally");
+    Assert(log.Contains("route=api.pushmessages kind=ResponseTooLarge phase=reading_body", StringComparison.Ordinal),
+        "response-body failure phase not logged locally");
+    Assert(log.Contains("route=api.pushmessages status=429", StringComparison.Ordinal) &&
+           log.Contains("retryAfterMs=2000", StringComparison.Ordinal),
+        "HTTP 429 and Retry-After were not recorded locally");
+    Assert(log.Contains("kind=ConnectionFailure phase=before_headers", StringComparison.Ordinal) &&
+           log.Contains("kind=TlsFailure phase=before_headers", StringComparison.Ordinal),
+        "TCP/TLS failure classes not distinguished in the local log");
+    foreach (var secret in new[] { "9123456789", "1234", "private-token", "abcdef", "?phone=", "pageSize=", "diagnostic message" })
+    {
+        Assert(!log.Contains(secret, StringComparison.Ordinal), $"local network diagnostics leaked: {secret}");
+    }
+
+    using (var cancelledClient = new HttpClient(new DelegateHandler(async (_, ct) =>
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        return new HttpResponseMessage(HttpStatusCode.OK);
+    })))
+    using (var cts = new CancellationTokenSource())
+    using (var request = new HttpRequestMessage(HttpMethod.Get,
+        "https://api.is74.ru/mobile/pushmessages"))
+    {
+        cts.Cancel();
+        var result = await new HttpTransport(cancelledClient, logger)
+            .SendAsync(request, TimeSpan.FromSeconds(1), cts.Token);
+        Assert(result.FailureKind == TransportFailureKind.Cancelled,
+            "caller cancellation was incorrectly classified as timeout");
+        Assert(File.ReadAllText(paths.DiagnosticLogFile) == log,
+            "expected mailbox cancellation polluted the diagnostic log");
+    }
 }
 
 static async Task TestBoundedHttpContentAsync()

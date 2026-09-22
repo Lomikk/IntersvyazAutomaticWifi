@@ -189,13 +189,15 @@ assert 'CampusSpeedToolsService' in speed_tools_ui and 'speedTools.MeasureAsync'
 launch_settings = (root / 'src' / 'IS74Wifi.App' / 'Properties' / 'launchSettings.json').read_text(encoding='utf-8')
 assert 'IS74Wifi.App (Local Debug)' in launch_settings and 'IS74W_RUN_LOCAL' in launch_settings, 'Visual Studio local-debug profile missing'
 
-# Menu UX: Esc is explicitly labeled as exit on the main screen, SMS confirmation is fixed at four digits,
+# Menu UX: Esc is explicitly labeled as exit on the main screen, confirmation code is fixed at four digits,
 # successful manual authorization remains visible until the user returns, and technical details open copy-friendly.
 assert 'Esc выход' in csharp_ui, 'main menu must label Esc as exit'
-assert 'minimumDigits: 4' in csharp_program and 'maximumDigits: 4' in csharp_program, 'SMS confirmation must require exactly four digits'
+assert 'minimumDigits: 4' in csharp_program and 'maximumDigits: 4' in csharp_program, 'confirmation code must require exactly four digits'
 assert 'ShowActionHistoryAsync' in csharp_program and 'DescribeAuthorizationOutcomeForUi(outcome)' in csharp_program, 'manual authorization history must stay visible for success and failure'
 assert 'IS74Wifi-status.txt' in csharp_program and 'notepad.exe' in csharp_program, 'detailed status must open as a copy-friendly external report'
-assert 'smsCode.Length != 4' in csharp_program, 'non-interactive registration must enforce the same four-digit SMS contract'
+assert 'smsCode.Length != 4' in csharp_program, 'non-interactive registration must enforce the same four-digit confirmation contract'
+assert 'SMS-код' not in csharp_program and 'код подтверждения' in csharp_program, 'registration UI must not assume SMS delivery'
+assert 'network.failure route=' in (root / 'src' / 'IS74Wifi.Core' / 'HttpTransport.cs').read_text(encoding='utf-8'), 'local network failure diagnostics missing'
 
 # Multi-step interactive actions keep a readable, scrollable history instead of replacing the pane with only a final verdict.
 action_history = (root / 'src' / 'IS74Wifi.App' / 'InteractiveActionHistory.cs').read_text(encoding='utf-8')

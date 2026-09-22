@@ -250,22 +250,22 @@ internal static class Program
             registrationTelemetry.Record("get_confirm", 1, requested);
             if (!requested.IsSuccess)
             {
-                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-confirm failure={requested.Failure!.Kind}");
+                LogRegistrationFailure(app.Logger, "get-confirm", requested.Failure!, requested.Elapsed);
                 throw new InvalidOperationException(DescribeApiFailure(requested.Failure));
             }
 
-            Console.Write("Введите SMS-код: ");
+            Console.Write("Введите код подтверждения: ");
             var smsCode = (Console.ReadLine() ?? string.Empty).Trim();
             if (smsCode.Length != 4 || smsCode.Any(c => c is < '0' or > '9'))
             {
-                throw new InvalidOperationException("SMS-код должен состоять ровно из 4 цифр.");
+                throw new InvalidOperationException("Код подтверждения должен состоять ровно из 4 цифр.");
             }
 
             var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
             registrationTelemetry.Record("check_confirm", 1, checkedCode);
             if (!checkedCode.IsSuccess)
             {
-                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=check-confirm failure={checkedCode.Failure!.Kind}");
+                LogRegistrationFailure(app.Logger, "check-confirm", checkedCode.Failure!, checkedCode.Elapsed);
                 throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure));
             }
 
@@ -278,7 +278,7 @@ internal static class Program
             registrationTelemetry.Record("get_token", 1, sessionResult);
             if (!sessionResult.IsSuccess)
             {
-                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
+                LogRegistrationFailure(app.Logger, "get-token", sessionResult.Failure!, sessionResult.Elapsed);
                 throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure));
             }
 
@@ -1960,14 +1960,14 @@ internal static class Program
             var phone = NormalizePhone(phoneInput);
             var deviceId = app.DeviceIdentity.GetOrCreate();
 
-            history.Start("Запрашиваю 4-значный SMS-код...");
+            history.Start("Запрашиваю 4-значный код подтверждения...");
             ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
             var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
             registrationTelemetry.Record("get_confirm", 1, requested);
             if (!requested.IsSuccess)
             {
-                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-confirm failure={requested.Failure!.Kind}");
-                history.FailActive("Не удалось запросить SMS-код");
+                LogRegistrationFailure(app.Logger, "get-confirm", requested.Failure!, requested.Elapsed);
+                history.FailActive("Не удалось запросить код подтверждения");
                 history.AddError(DescribeApiFailure(requested.Failure));
                 await ui.ShowActionHistoryAsync(
                     "РЕГИСТРАЦИЯ",
@@ -1975,11 +1975,11 @@ internal static class Program
                     GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                 return;
             }
-            history.CompleteActive("SMS-код запрошен");
+            history.CompleteActive("Код подтверждения запрошен");
 
             var smsCode = await ui.PromptDigitsAsync(
                 "РЕГИСТРАЦИЯ",
-                "Введите 4-значный SMS-код. Esc отменяет продолжение регистрации.",
+                "Введите 4-значный код подтверждения. Esc отменяет продолжение регистрации.",
                 string.Empty,
                 minimumDigits: 4,
                 maximumDigits: 4,
@@ -1989,7 +1989,7 @@ internal static class Program
             {
                 return;
             }
-            history.AddSuccess("4-значный SMS-код введён");
+            history.AddSuccess("4-значный код подтверждения введён");
 
             history.Start("Проверяю код подтверждения...");
             ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
@@ -1997,7 +1997,7 @@ internal static class Program
             registrationTelemetry.Record("check_confirm", 1, checkedCode);
             if (!checkedCode.IsSuccess)
             {
-                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=check-confirm failure={checkedCode.Failure!.Kind}");
+                LogRegistrationFailure(app.Logger, "check-confirm", checkedCode.Failure!, checkedCode.Elapsed);
                 history.FailActive("Код подтверждения отклонён");
                 history.AddError(DescribeApiFailure(checkedCode.Failure));
                 await ui.ShowActionHistoryAsync(
@@ -2017,7 +2017,7 @@ internal static class Program
             registrationTelemetry.Record("get_token", 1, sessionResult);
             if (!sessionResult.IsSuccess)
             {
-                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
+                LogRegistrationFailure(app.Logger, "get-token", sessionResult.Failure!, sessionResult.Elapsed);
                 history.FailActive("Не удалось получить API-сессию");
                 history.AddError(DescribeApiFailure(sessionResult.Failure));
                 await ui.ShowActionHistoryAsync(
@@ -3189,6 +3189,18 @@ internal static class Program
         phone is { Length: 10 }
             ? $"+7 *** ***-{phone.Substring(6, 2)}-{phone.Substring(8, 2)}"
             : "-";
+
+    private static void LogRegistrationFailure(
+        DiagnosticLogger logger, string stage, Is74ApiFailure failure, TimeSpan? elapsed)
+    {
+        // Only enum values, fixed stage labels and numeric status/duration.
+        // Never include phone, confirmation code, authorization token or raw URLs.
+        logger.Write(DiagnosticLevel.Warn,
+            $"registration.failed stage={stage} failure={failure.Kind} " +
+            $"transport={failure.TransportFailure?.ToString() ?? "none"} " +
+            $"httpStatus={failure.StatusCode?.ToString() ?? "none"} " +
+            $"elapsedMs={(elapsed is null ? "none" : Math.Max(0, (long)Math.Round(elapsed.Value.TotalMilliseconds)).ToString())}");
+    }
 
     private static string DescribeApiFailure(Is74ApiFailure failure)
     {
