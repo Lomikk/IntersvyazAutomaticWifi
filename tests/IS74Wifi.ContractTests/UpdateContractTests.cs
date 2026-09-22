@@ -17,6 +17,7 @@ internal static class UpdateContractTests
         await TestReleaseChannelSelectionAsync();
         await TestDirectExecutableSelectionAndVerifiedDownloadAsync();
         await TestLegacyZipFallbackAsync();
+        await TestOversizedReleaseAndPackageAsync();
     }
 
     private static void TestSemanticVersions()
@@ -331,6 +332,46 @@ internal static class UpdateContractTests
         {
             GitHubUpdateClient.TryDeleteDirectory(prepared.WorkingDirectory);
         }
+    }
+
+    private static async Task TestOversizedReleaseAndPackageAsync()
+    {
+        using (var releasesClient = new HttpClient(new UpdateHandler(_ =>
+        {
+            var response = TextResponse("[]", "application/json");
+            response.Content.Headers.ContentLength = GitHubUpdateClient.MaximumReleaseJsonBytes + 1;
+            return response;
+        })))
+        {
+            try
+            {
+                await new GitHubUpdateClient(releasesClient).CheckForUpdateAsync("v0.1.0-alpha.1", true);
+                throw new InvalidOperationException("oversized release metadata was accepted");
+            }
+            catch (ResponseBodyTooLargeException) { }
+        }
+
+        var descriptor = new UpdateDescriptor(
+            "v0.1.0-alpha.21", "https://github.test/releases/alpha21",
+            "IS74Wifi-v0.1.0-alpha.21-win-x64.exe", new Uri("https://download.test/oversized.exe"),
+            "IS74Wifi-v0.1.0-alpha.21-win-x64.exe.sha256", new Uri("https://download.test/oversized.exe.sha256"),
+            false);
+        using var packageClient = new HttpClient(new UpdateHandler(_ =>
+        {
+            var response = BytesResponse(new byte[1], "application/octet-stream");
+            response.Content.Headers.ContentLength = GitHubUpdateClient.MaximumPackageBytes + 1;
+            return response;
+        }));
+        var workBefore = Directory.GetDirectories(Path.GetTempPath(), "IS74Wifi-update-*").ToHashSet(StringComparer.Ordinal);
+        try
+        {
+            await new GitHubUpdateClient(packageClient).DownloadAndVerifyAsync(descriptor);
+            throw new InvalidOperationException("oversized release package was accepted");
+        }
+        catch (InvalidDataException) { }
+        var leftBehind = Directory.GetDirectories(Path.GetTempPath(), "IS74Wifi-update-*")
+            .Where(path => !workBefore.Contains(path)).ToArray();
+        Assert(leftBehind.Length == 0, "oversized update left a temporary work directory");
     }
 
     private static byte[] CreateReleaseZip()

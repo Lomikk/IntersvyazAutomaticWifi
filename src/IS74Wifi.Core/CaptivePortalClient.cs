@@ -6,7 +6,8 @@ namespace IS74Wifi.Core;
 
 public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePortalClient
 {
-    private static readonly Uri PortalBase = new("http://w.is74.ru/");
+    // Phone and confirmation code must never leave this client over plaintext HTTP.
+    private static readonly Uri PortalBase = new("https://w.is74.ru/");
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
 
     public async Task<CaptivePortalResult<StepOneResponse>> SendStepOneAsync(
@@ -26,7 +27,8 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
             ["sendPush"] = "on"
         });
 
-        var call = await transport.SendAsync(request, timeout ?? DefaultTimeout, cancellationToken).ConfigureAwait(false);
+        var call = await transport.SendAsync(
+            request, timeout ?? DefaultTimeout, cancellationToken, readBodyOnRedirect: false).ConfigureAwait(false);
         if (!call.TransportSucceeded)
         {
             return CaptivePortalResult<StepOneResponse>.Fail(TransportFailure(operation, call));
@@ -93,9 +95,16 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
         {
             stepTwoUri = BuildDirectStepTwoUri(phone);
         }
-        else if (!PortalRedirectClassifier.TryResolveStepTwo(observedStepTwoLocation, out stepTwoUri))
+        else if (!PortalRedirectClassifier.TryResolveStepTwo(observedStepTwoLocation, out _))
         {
             throw new ArgumentException("Observed Location is not an allowed stepTwo route.", nameof(observedStepTwoLocation));
+        }
+        else
+        {
+            // The redirect is evidence of a valid stepTwo route, NOT a trusted POST
+            // destination. Construct the actual request from our known-good phone
+            // and HTTPS origin instead of reflecting arbitrary redirect queries.
+            stepTwoUri = BuildDirectStepTwoUri(phone);
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, stepTwoUri);
@@ -105,7 +114,8 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
             ["phone"] = phone
         });
 
-        var call = await transport.SendAsync(request, timeout ?? DefaultTimeout, cancellationToken).ConfigureAwait(false);
+        var call = await transport.SendAsync(
+            request, timeout ?? DefaultTimeout, cancellationToken, readBodyOnRedirect: false).ConfigureAwait(false);
         if (!call.TransportSucceeded)
         {
             return CaptivePortalResult<StepTwoResponse>.Fail(TransportFailure(operation, call));
@@ -145,7 +155,7 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
         CaptivePortalFailureKind.Transport,
         operation,
         call.FailureKind,
-        SideEffectMayHaveOccurred: call.FailureKind != TransportFailureKind.DnsUnavailable,
+        SideEffectMayHaveOccurred: call.FailureKind is not (TransportFailureKind.DnsUnavailable or TransportFailureKind.TlsFailure),
         Elapsed: call.Elapsed);
 
     private static CaptivePortalFailure HttpStatusFailure(string operation, HttpResponseData response) => new(
@@ -201,7 +211,7 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
 
 public static class PortalRedirectClassifier
 {
-    private static readonly Uri PortalBase = new("http://w.is74.ru/");
+    private static readonly Uri PortalBase = new("https://w.is74.ru/");
 
     public static bool TryResolveStepTwo(Uri location, out Uri stepTwoUri)
     {
@@ -217,7 +227,11 @@ public static class PortalRedirectClassifier
             return false;
         }
 
-        stepTwoUri = resolved;
+        // A server may report an absolute HTTP Location. It may be classified,
+        // but must not be used as an HTTP POST destination (no downgrade).
+        stepTwoUri = resolved.Scheme == Uri.UriSchemeHttps
+            ? resolved
+            : new UriBuilder(resolved) { Scheme = Uri.UriSchemeHttps, Port = -1, Fragment = string.Empty }.Uri;
         return true;
     }
 
@@ -263,7 +277,8 @@ public static class PortalRedirectClassifier
     private static bool TryResolvePortalLocation(Uri location, out Uri resolved)
     {
         resolved = location.IsAbsoluteUri ? location : new Uri(PortalBase, location);
-        return IsHost(resolved, "w.is74.ru") && IsHttpScheme(resolved);
+        return IsHost(resolved, "w.is74.ru") && IsHttpScheme(resolved) &&
+               resolved.IsDefaultPort && string.IsNullOrEmpty(resolved.UserInfo);
     }
 
     private static bool IsApplicationLandingPath(string value)

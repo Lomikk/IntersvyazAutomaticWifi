@@ -54,6 +54,13 @@ internal sealed record GitHubReleaseAssetDocument(
 public sealed class GitHubUpdateClient(HttpClient httpClient)
 {
     public const string Repository = "Lomikk/IntersvyazAutomaticWifi";
+    // Release JSON is normally <100 KiB, checksum ~100 bytes, and the current
+    // NativeAOT executable is ~11 MiB. These limits leave room for growth but
+    // bound untrusted downloads before they can exhaust memory or disk.
+    public const int MaximumReleaseJsonBytes = 2 * 1024 * 1024;
+    public const long MaximumPackageBytes = 128L * 1024 * 1024;
+    public const long MaximumChecksumBytes = 4096;
+    public const long MaximumExtractedExecutableBytes = 128L * 1024 * 1024;
     private static readonly Uri ReleasesUri = new($"https://api.github.com/repos/{Repository}/releases?per_page=30");
 
     public async Task<UpdateDescriptor?> CheckForUpdateAsync(
@@ -75,11 +82,12 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        var releases = await JsonSerializer.DeserializeAsync(
-            stream,
-            UpdateJsonContext.Default.GitHubReleaseDocumentArray,
-            cancellationToken).ConfigureAwait(false) ?? [];
+        var releaseBytes = await BoundedHttpContent.ReadBytesAsync(
+            response.Content, MaximumReleaseJsonBytes, cancellationToken).ConfigureAwait(false);
+        var releases = JsonSerializer.Deserialize(
+            releaseBytes,
+            UpdateJsonContext.Default.GitHubReleaseDocumentArray
+            ) ?? [];
         ReportProgress(progress, UpdateProgressStage.ReleasesLoaded);
 
         UpdateDescriptor? selected = null;
@@ -148,6 +156,7 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
                 descriptor.PackageDownloadUrl,
                 packagePath,
                 UpdateProgressStage.DownloadingPackage,
+                MaximumPackageBytes,
                 transferProgress,
                 cancellationToken).ConfigureAwait(false);
             ReportProgress(progress, UpdateProgressStage.PackageDownloaded);
@@ -156,6 +165,7 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
                 descriptor.ChecksumDownloadUrl,
                 checksumPath,
                 UpdateProgressStage.DownloadingChecksum,
+                MaximumChecksumBytes,
                 transferProgress,
                 cancellationToken).ConfigureAwait(false);
             ReportProgress(progress, UpdateProgressStage.ChecksumDownloaded);
@@ -205,6 +215,7 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
         Uri uri,
         string destination,
         UpdateProgressStage stage,
+        long maximumBytes,
         Action<UpdateTransferProgress>? transferProgress,
         CancellationToken cancellationToken)
     {
@@ -214,6 +225,10 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         var totalBytes = response.Content.Headers.ContentLength;
+        if (totalBytes > maximumBytes)
+        {
+            throw new InvalidDataException($"Размер файла обновления превышает лимит {maximumBytes} байт.");
+        }
         await using var input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
         var buffer = new byte[81920];
@@ -225,6 +240,10 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
         {
             var read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
             if (read == 0) break;
+            if (receivedBytes > maximumBytes - read)
+            {
+                throw new InvalidDataException($"Размер файла обновления превышает лимит {maximumBytes} байт.");
+            }
             await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
             receivedBytes += read;
 
@@ -286,8 +305,23 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
         var fileEntries = archive.Entries.Where(entry => !string.IsNullOrEmpty(entry.Name)).ToArray();
         if (fileEntries.Length != 1 || !string.Equals(fileEntries[0].FullName.Replace('\\', '/'), "IS74Wifi.exe", StringComparison.Ordinal))
             throw new InvalidDataException("Архив обновления должен содержать ровно один файл IS74Wifi.exe.");
+        if (fileEntries[0].Length > MaximumExtractedExecutableBytes)
+            throw new InvalidDataException("Распакованный EXE превышает допустимый размер.");
 
-        fileEntries[0].ExtractToFile(destination, overwrite: true);
+        // Do not trust ZIP metadata: also enforce the cap while decompressing.
+        using var entry = fileEntries[0].Open();
+        using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None);
+        var buffer = new byte[81920];
+        long extracted = 0;
+        while (true)
+        {
+            var read = entry.Read(buffer);
+            if (read == 0) break;
+            if (extracted > MaximumExtractedExecutableBytes - read)
+                throw new InvalidDataException("Распакованный EXE превышает допустимый размер.");
+            output.Write(buffer, 0, read);
+            extracted += read;
+        }
     }
 
     public static void TryDeleteDirectory(string path)

@@ -12,6 +12,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("windows-wlan", TestWindowsWlanAsync),
     ("named-mutex", TestMutexAsync),
     ("http-transport", TestHttpTransportAsync),
+    ("bounded-http-content", TestBoundedHttpContentAsync),
     ("is74-api", TestIs74ApiAsync),
     ("captive-portal", TestCaptivePortalAsync),
     ("authorization-flow", AuthorizationFlowContractTests.RunAsync),
@@ -173,6 +174,38 @@ static async Task TestHttpTransportAsync()
     using var dnsRequest = new HttpRequestMessage(HttpMethod.Get, "https://example.test/");
     var dns = await dnsTransport.SendAsync(dnsRequest, TimeSpan.FromSeconds(1));
     Assert(dns.FailureKind == TransportFailureKind.DnsUnavailable, "DNS failure was not mapped to DnsUnavailable");
+
+    using var oversizedClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[BoundedHttpContent.DefaultBodyLimitBytes + 1]) })));
+    using var oversizedRequest = new HttpRequestMessage(HttpMethod.Get, "https://example.test/");
+    var oversized = await new HttpTransport(oversizedClient).SendAsync(oversizedRequest, TimeSpan.FromSeconds(1));
+    Assert(oversized.FailureKind == TransportFailureKind.ResponseTooLarge, "oversized transport body was not rejected");
+}
+
+static async Task TestBoundedHttpContentAsync()
+{
+    using var exact = new ByteArrayContent(new byte[32]);
+    Assert((await BoundedHttpContent.ReadBytesAsync(exact, 32)).Length == 32, "exactly-limit body was rejected");
+
+    using var declaredOversized = new ByteArrayContent(new byte[1]);
+    declaredOversized.Headers.ContentLength = 33;
+    try
+    {
+        await BoundedHttpContent.ReadBytesAsync(declaredOversized, 32);
+        throw new InvalidOperationException("oversized declared Content-Length was accepted");
+    }
+    catch (ResponseBodyTooLargeException) { }
+
+    // Non-seekable StreamContent cannot advertise Content-Length; the real byte
+    // count must still be enforced even for streaming/chunked responses.
+    using var unknownLength = new StreamContent(new NonSeekableMemoryStream(new byte[33]));
+    Assert(unknownLength.Headers.ContentLength is null, "test body unexpectedly advertised Content-Length");
+    try
+    {
+        await BoundedHttpContent.ReadBytesAsync(unknownLength, 32);
+        throw new InvalidOperationException("oversized unknown-length body was accepted");
+    }
+    catch (ResponseBodyTooLargeException) { }
 }
 
 static async Task TestIs74ApiAsync()
@@ -322,7 +355,7 @@ static async Task TestCaptivePortalAsync()
 
     var stepOne = await portal.SendStepOneAsync("9123456789");
     Assert(stepOne.IsSuccess && stepOne.Value?.Disposition == StepOneDisposition.StepTwo, "stepOne redirect to stepTwo was rejected");
-    Assert(stepOne.Value?.StepTwoUri?.AbsoluteUri == "http://w.is74.ru/stepTwo?phone=9123456789&isMp=true", "relative stepTwo redirect was not resolved against w.is74.ru");
+    Assert(stepOne.Value?.StepTwoUri?.AbsoluteUri == "https://w.is74.ru/stepTwo?phone=9123456789&isMp=true", "relative stepTwo redirect was not resolved against w.is74.ru");
     Assert(seen.Any(x => x.PathAndQuery == "/stepOne" && x.Method == "POST" &&
                          x.Body.Contains("phone=89123456789", StringComparison.Ordinal) &&
                          x.Body.Contains("dial_code=7", StringComparison.Ordinal) &&
@@ -390,8 +423,49 @@ static async Task TestCaptivePortalAsync()
         "lost stepTwo response was not marked as potentially side-effectful");
 
     Assert(CaptivePortalClient.BuildDirectStepTwoUri("9123456789").AbsoluteUri ==
-           "http://w.is74.ru/stepTwo?phone=9123456789&isMp=true",
+           "https://w.is74.ru/stepTwo?phone=9123456789&isMp=true",
         "direct stepTwo URI contract changed");
+
+    var observedUris = new List<Uri>();
+    using var httpDowngradeClient = new HttpClient(new DelegateHandler((request, _) =>
+    {
+        observedUris.Add(request.RequestUri!);
+        return Task.FromResult(RedirectResponse(HttpStatusCode.Found,
+            request.RequestUri!.AbsolutePath == "/stepOne"
+                ? "http://w.is74.ru/stepTwo?phone=9123456789&isMp=true"
+                : "http://w.is74.ru/stepThree"));
+    }));
+    var protectedPortal = new CaptivePortalClient(new HttpTransport(httpDowngradeClient));
+    var httpLocation = await protectedPortal.SendStepOneAsync("9123456789");
+    Assert(httpLocation.IsSuccess && httpLocation.Value?.StepTwoUri?.Scheme == Uri.UriSchemeHttps,
+        "HTTP stepTwo Location was not canonicalized to HTTPS");
+    var postedCode = await protectedPortal.SendStepTwoAsync("9123456789", "4321", httpLocation.Value!.StepTwoUri);
+    Assert(postedCode.IsSuccess && observedUris.Count == 2 && observedUris.All(uri =>
+        uri.Scheme == Uri.UriSchemeHttps && uri.Host == "w.is74.ru"),
+        "phone or confirmation code was posted over HTTP after downgrade Location");
+
+    Assert(!PortalRedirectClassifier.TryResolveStepTwo(new Uri("http://evil.example/stepTwo?phone=9123456789"), out _),
+        "foreign stepTwo host was accepted");
+    Assert(!PortalRedirectClassifier.TryResolveStepTwo(new Uri("http://w.is74.ru:8080/stepTwo?phone=9123456789"), out _),
+        "non-default stepTwo port was accepted");
+    Assert(!PortalRedirectClassifier.TryResolveStepTwo(new Uri("https://user@w.is74.ru/stepTwo?phone=9123456789"), out _),
+        "stepTwo Location with user info was accepted");
+
+    using var tlsFailureClient = new HttpClient(new DelegateHandler((_, _) =>
+        throw new HttpRequestException(HttpRequestError.SecureConnectionError, "certificate rejected", null, null)));
+    var tlsFailure = await new CaptivePortalClient(new HttpTransport(tlsFailureClient)).SendStepOneAsync("9123456789");
+    Assert(tlsFailure.Failure?.TransportFailure == TransportFailureKind.TlsFailure &&
+           !tlsFailure.Failure.SideEffectMayHaveOccurred,
+        "TLS failure was not classified as pre-POST transport failure");
+
+    using var oversizedRedirectClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+        new HttpResponseMessage(HttpStatusCode.Found)
+        {
+            Headers = { Location = new Uri("stepTwo?phone=9123456789&isMp=true", UriKind.Relative) },
+            Content = new ByteArrayContent(new byte[BoundedHttpContent.DefaultBodyLimitBytes + 1])
+        })));
+    var skippedBody = await new CaptivePortalClient(new HttpTransport(oversizedRedirectClient)).SendStepOneAsync("9123456789");
+    Assert(skippedBody.IsSuccess, "stepOne redirect read an unnecessary oversized response body");
 }
 
 static HttpResponseMessage RedirectResponse(HttpStatusCode status, string location)
@@ -475,4 +549,9 @@ sealed class TempDirectory : IDisposable
     {
         try { Directory.Delete(Path, recursive: true); } catch { }
     }
+}
+
+sealed class NonSeekableMemoryStream(byte[] bytes) : MemoryStream(bytes)
+{
+    public override bool CanSeek => false;
 }

@@ -105,7 +105,8 @@ public static class TelemetryDiagnostics
                     request,
                     HttpCompletionOption.ResponseHeadersRead,
                     timeoutCts.Token).ConfigureAwait(false);
-                var responseBody = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+                var responseBody = await BoundedHttpContent.ReadAsStringAsync(
+                    response.Content, BoundedHttpContent.DiagnosticBodyLimitBytes, timeoutCts.Token).ConfigureAwait(false);
                 var location = ResolveLocation(uri, response.Headers.Location);
                 var isRedirect = IsRedirect(response.StatusCode);
                 var hopError = isRedirect && response.Headers.Location is null
@@ -146,6 +147,11 @@ public static class TelemetryDiagnostics
                 var error = cancellationToken.IsCancellationRequested ? "cancelled" : "timeout";
                 hops.Add(FailedHop(index, method, uri, stopwatch.Elapsed, error, ex));
                 return new TelemetryDiagnosticReport(false, error, hops);
+            }
+            catch (ResponseBodyTooLargeException ex)
+            {
+                hops.Add(FailedHop(index, method, uri, stopwatch.Elapsed, "response_too_large", ex));
+                return new TelemetryDiagnosticReport(false, "response_too_large", hops);
             }
             catch (HttpRequestException ex)
             {

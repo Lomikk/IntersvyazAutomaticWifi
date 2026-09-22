@@ -151,17 +151,21 @@ assert 'BannerMode.InitialSweep' in csharp_ui and 'BannerMode.AmbientSweep' in c
 assert 'glint' not in csharp_ui.lower(), 'per-letter glint animation must stay disabled'
 assert 'InterSvyaz Wi-Fi Auth' in csharp_ui
 assert 'IS74W_SKIP_REVEAL' in csharp_program, 'bootstrap must not replay the full reveal after installation'
-assert 'GetPrimaryItems(snapshot)' in csharp_ui, 'compact and rich menus must share the same state-aware action list'
-assert '"Wi-Fi сеть"' in csharp_ui and '"Авторизация"' in csharp_ui, 'status pane must separate the connected SSID from captive authorization state'
-assert 'пока неизвестно' in csharp_ui, 'unknown captive authorization state must not be presented as denied Wi-Fi access'
+# Both render paths must obtain items via the same state-aware router, rather
+# than checking one brittle direct GetPrimaryItems(...) call spelling.
+assert csharp_ui.count('GetCurrentItems()') >= 3, 'rich and compact menus must use the same action list router'
+assert 'var items = GetCurrentItems();' in csharp_ui and 'RunCompactSelection(GetCurrentItems())' in csharp_ui, 'rich/compact action list paths diverged'
+assert 'MenuPage.Settings => GetSettingsItems(status)' in csharp_ui and 'MenuPage.Maintenance => GetMaintenanceItems(status)' in csharp_ui and 'MenuPage.Updates => GetUpdateItems(status)' in csharp_ui and '_ => GetPrimaryItems(status)' in csharp_ui, 'state-aware action list router lost menu pages'
+assert 'DrawStatusLine(canvas, PaneY + 3, "Сеть"' in csharp_ui and 'DrawStatusLine(canvas, PaneY + 4, "Авторизация"' in csharp_ui, 'status pane must separate network from captive authorization state'
+assert '"ещё не выполнялась ○"' in csharp_ui, 'unknown captive authorization state must not be presented as denied Wi-Fi access'
 csharp_wifi = (root / 'src' / 'IS74Wifi.Core' / 'WindowsWifiService.cs').read_text(encoding='utf-8')
 assert 'WlanConnectionProfileDetails' in csharp_wifi and 'GetConnectedSsid()' in csharp_wifi, 'SSID detection must use the Windows profile API'
 assert 'WlanQueryInterface' not in csharp_wifi, 'C# client must not use the location-gated current_connection WLAN query'
 assert '"доступен ●"' in csharp_ui, 'status indicators must render after their status text'
-assert '"Отключить автоавторизацию" : "Включить автоавторизацию"' in csharp_ui
+assert 'automaticEnabled ? InteractiveMenuAction.DisableAutomaticAuthorization : InteractiveMenuAction.EnableAutomaticAuthorization' in csharp_ui, 'settings must expose the correct auto-authorization action'
 assert 'registered ? "Сбросить регистрацию" : "Зарегистрировать устройство"' in csharp_ui
-assert "new MenuItem('4', \"Открыть подробный отчёт\", InteractiveMenuAction.ShowDetailedStatus)" in csharp_ui
-assert "new MenuItem('9', \"Скорость и рейтинг\", InteractiveMenuAction.SpeedTools)" in csharp_ui, 'speed/leaderboard submenu entry missing'
+assert "new MenuItem('3', \"Состояние и подробный отчёт\", InteractiveMenuAction.ShowDetailedStatus)" in csharp_ui
+assert "new MenuItem('2', \"Скорость и рейтинг\", InteractiveMenuAction.SpeedTools)" in csharp_ui, 'speed/leaderboard submenu entry missing'
 assert 'TargetView' not in csharp_ui, 'rich UI must not reintroduce speculative submenu navigation'
 assert 'PromptDigitsAsync' in csharp_ui and 'ConsoleKey.Escape' in csharp_ui, 'interactive registration input must be cancellable in-pane'
 assert 'lastRenderedCanvas' in csharp_ui and 'cell.Equals(lastRenderedCanvas' in csharp_ui, 'terminal renderer must diff frames to avoid full-screen shimmer'

@@ -7,5 +7,7 @@ public enum TransportFailureKind
     Timeout,
     Cancelled,
     ConnectionFailure,
-    Unexpected
+    Unexpected,
+    TlsFailure,
+    ResponseTooLarge
 }
