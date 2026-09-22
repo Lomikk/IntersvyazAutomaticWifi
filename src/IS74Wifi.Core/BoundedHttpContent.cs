@@ -56,4 +56,4 @@ public static class BoundedHttpContent
 }
 
 public sealed class ResponseBodyTooLargeException(int maxBytes)
-    : InvalidDataException($"HTTP response body exceeds {maxBytes} bytes.");
+    : IOException($"HTTP response body exceeds {maxBytes} bytes.");
