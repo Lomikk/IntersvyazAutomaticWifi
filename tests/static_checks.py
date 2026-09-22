@@ -169,6 +169,14 @@ assert 'PrepareInteractiveConsole(clear: lastRenderedCanvas is null)' in csharp_
 assert 'private bool menuSelectionInitialized;' in csharp_ui and 'selected = hotkeyIndex;' in csharp_ui, 'menu selection must survive actions and direct numeric hotkeys'
 assert 'CanUseInteractiveSession' in csharp_ui and 'compactLayout' in csharp_ui, 'terminal UI must recover after temporary narrow resize'
 assert 'PrepareForAction(' not in csharp_program, 'menu actions must stay inside the terminal panes instead of reopening the legacy action screen'
+onboarding_start = csharp_program.index('private static async Task<bool> CompleteInteractiveOnboardingAsync')
+onboarding_end = csharp_program.index('private static async Task RegisterFromMenuAsync', onboarding_start)
+onboarding = csharp_program[onboarding_start:onboarding_end]
+assert onboarding.index('consent == AnonymousStatisticsConsent.Unknown') < onboarding.index('if (!registered)'), 'anonymous statistics consent must be requested before device registration during onboarding'
+register_start = csharp_program.index('private static async Task<int> RegisterAsync()')
+register_end = csharp_program.index('private static async Task<int> ConnectAsync()', register_start)
+register_flow = csharp_program[register_start:register_end]
+assert register_flow.index('PromptAnonymousStatisticsConsentConsole();') < register_flow.index('RequestConfirmationAsync'), 'console registration must request anonymous statistics consent before contacting the registration API'
 speed_tools_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.SpeedTools.cs').read_text(encoding='utf-8')
 assert 'RunSpeedToolsAsync' in speed_tools_ui and 'ЛИДЕРЫ КАМПУСА' in speed_tools_ui, 'speed tools UI missing'
 assert 'Jitter' in speed_tools_ui and 'Packet loss' in speed_tools_ui, 'speed measurement diagnostics missing'

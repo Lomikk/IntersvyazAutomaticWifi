@@ -236,6 +236,8 @@ internal static class Program
             return 0;
         }
 
+        PromptAnonymousStatisticsConsentConsole();
+
         Console.Write("Введите номер телефона: ");
         var phone = NormalizePhone(Console.ReadLine());
         var deviceId = app.DeviceIdentity.GetOrCreate();
@@ -311,7 +313,6 @@ internal static class Program
             Console.WriteLine($"Сессия API действует до: {session.AccessEnd}");
         }
         Console.WriteLine("Теперь можно авторизовать Wi-Fi один раз сейчас или включить автоматическую авторизацию.");
-        PromptAnonymousStatisticsConsentConsole();
         return 0;
     }
 
@@ -1881,6 +1882,15 @@ internal static class Program
                 consent = app.Settings.AnonymousStatisticsConsent;
             }
 
+            if (consent == AnonymousStatisticsConsent.Unknown)
+            {
+                _ = await PromptAnonymousStatisticsConsentAsync(
+                    ui,
+                    GetInteractiveStatusSnapshot(),
+                    forPublication: false).ConfigureAwait(false);
+                continue;
+            }
+
             if (!registered)
             {
                 var proceed = await ui.ConfirmRegistrationOrExitAsync().ConfigureAwait(false);
@@ -1890,15 +1900,6 @@ internal static class Program
                 }
 
                 await RegisterFromMenuAsync(ui, GetInteractiveStatusSnapshot()).ConfigureAwait(false);
-                continue;
-            }
-
-            if (consent == AnonymousStatisticsConsent.Unknown)
-            {
-                _ = await PromptAnonymousStatisticsConsentAsync(
-                    ui,
-                    GetInteractiveStatusSnapshot(),
-                    forPublication: false).ConfigureAwait(false);
                 continue;
             }
 
