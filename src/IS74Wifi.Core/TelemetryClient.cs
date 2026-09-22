@@ -109,27 +109,32 @@ public sealed class TelemetryClient(
             }
 
             var entries = new List<LeaderboardPublicEntry>();
+            var maximumEntries = Math.Clamp(limit, 1, LeaderboardDisplayPolicy.MaximumEntries);
             foreach (var item in entriesElement.EnumerateArray())
             {
-                if (item.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
+                if (entries.Count >= maximumEntries) break;
+                if (item.ValueKind != JsonValueKind.Object) continue;
 
-                var nickname = ReadString(item, "nickname");
-                if (string.IsNullOrWhiteSpace(nickname))
-                {
-                    continue;
-                }
+                // Never let remote strings or unbounded numerical values reach either
+                // the rich renderer or the compact Console.WriteLine path.
+                var nickname = LeaderboardDisplayPolicy.SanitizeNickname(ReadString(item, "nickname"));
+                if (nickname.Length == 0) continue;
+
+                var download = LeaderboardDisplayPolicy.SafeMetric(
+                    ReadDouble(item, "download_mbps"), LeaderboardDisplayPolicy.MaximumSpeedMbps);
+                var upload = LeaderboardDisplayPolicy.SafeMetric(
+                    ReadDouble(item, "upload_mbps"), LeaderboardDisplayPolicy.MaximumSpeedMbps);
+                var latency = LeaderboardDisplayPolicy.SafeMetric(
+                    ReadDouble(item, "latency_ms"), LeaderboardDisplayPolicy.MaximumLatencyMs);
+                var jitter = LeaderboardDisplayPolicy.SafeMetric(
+                    ReadDouble(item, "jitter_ms"), LeaderboardDisplayPolicy.MaximumLatencyMs);
+                var loss = LeaderboardDisplayPolicy.SafeMetric(
+                    ReadDouble(item, "packet_loss_pct"), LeaderboardDisplayPolicy.MaximumPacketLossPct);
+                if (download is null && upload is null && latency is null) continue;
 
                 entries.Add(new LeaderboardPublicEntry(
-                    ReadInt(item, "rank") ?? entries.Count + 1,
-                    nickname,
-                    ReadDouble(item, "download_mbps"),
-                    ReadDouble(item, "upload_mbps"),
-                    ReadDouble(item, "latency_ms"),
-                    ReadDouble(item, "jitter_ms"),
-                    ReadDouble(item, "packet_loss_pct")));
+                    LeaderboardDisplayPolicy.SafeRank(ReadInt(item, "rank"), entries.Count + 1),
+                    nickname, download, upload, latency, jitter, loss));
             }
 
             return new LeaderboardReadResult(true, null, entries);
@@ -305,7 +310,13 @@ public sealed class TelemetryClient(
         root.ValueKind == JsonValueKind.Object &&
         root.TryGetProperty("error", out var errorElement) &&
         errorElement.ValueKind == JsonValueKind.String
-            ? errorElement.GetString() ?? "rejected"
+            ? SafeBackendError(errorElement.GetString())
+            : "rejected";
+
+    private static string SafeBackendError(string? raw) =>
+        raw is { Length: > 0 and <= 64 } &&
+        raw.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '_')
+            ? raw
             : "rejected";
 
     internal static string ClassifyTransportError(HttpRequestException exception) =>
@@ -377,8 +388,26 @@ public sealed class TelemetryClient(
 
     private static string BodyPreview(string body)
     {
-        var compact = body.Replace('\r', ' ').Replace('\n', ' ').Trim();
-        return compact.Length <= 512 ? compact : compact[..512] + "…";
+        // A malformed/HTML backend response can contain literal control bytes.
+        // Never persist terminal escape codes in a diagnostic preview.
+        var preview = new StringBuilder(512);
+        foreach (var rune in body.EnumerateRunes())
+        {
+            if (preview.Length >= 512) break;
+            if (rune.Value is '\r' or '\n' or '\t')
+            {
+                preview.Append(' ');
+                continue;
+            }
+
+            if (Rune.GetUnicodeCategory(rune) is
+                UnicodeCategory.Control or UnicodeCategory.Format or UnicodeCategory.Surrogate)
+            {
+                continue;
+            }
+            preview.Append(rune.ToString());
+        }
+        return preview.ToString().Trim() + (body.Length > 512 ? "…" : string.Empty);
     }
 
     private static string? ReadString(JsonElement value, string name) =>

@@ -151,3 +151,32 @@ The public leaderboard response contains rank, nickname, and measurement values 
 While the spreadsheet contains test data only, `setupSheets()` is intentionally a destructive development reset for the telemetry sheets. It clears old test rows and schema remnants and writes the exact current headers.
 
 Once production telemetry starts, `setupSheets()` must no longer be run. Future schema changes must use explicit non-destructive migrations.
+
+## Public leaderboard input safety (#13)
+
+The public Google Apps Script leaderboard response is **untrusted input**: anyone can call
+its endpoint directly, even if our app validates nickname drafts. `TelemetryClient` now
+sanitizes every returned nickname and checks all numeric values **before** constructing
+`LeaderboardPublicEntry`, which is the shared model used by rich and compact terminal UI.
+The backend must perform the same checks both for newly submitted entries and when
+reading legacy/directly edited Google Sheets rows.
+
+The display policy is deliberately conservative: Unicode letters and decimal digits
+(including Cyrillic, Latin and CJK), ordinary spaces and `.` `_` `-` are retained.
+Other punctuation, emoji/symbols, combining marks, ANSI ESC, C0/C1 controls, carriage
+returns, line feeds, Unicode bidi overrides/isolates and zero-width formatting characters
+are removed. Consecutive spaces collapse; nicknames are limited to 32 Unicode scalar
+values and 256 inspected scalars. Empty sanitized names are excluded. Older nicknames
+containing unsupported symbols may be displayed without those symbols.
+
+Rank must be within 1–250 (otherwise a sequential rank is assigned). Down/up speeds
+must be 0–10,000 Mbps, ping/jitter 0–60,000 ms, packet loss 0–100%; an invalid
+number is displayed as missing. Entries without any valid download, upload or ping
+measurement are omitted, and the client never accepts more rows than requested.
+The backend must preserve private `install_id`/`test_id` exclusion from public reads.
+
+The Apps Script v4 update for #13 is a **non-destructive code-only update**: edit the
+**existing** deployed Web App to a new script version, retaining its `/exec` URL;
+**do not run `setupSheets()`**. Backend source is distributed separately on OneDrive,
+so it must be deployed and self-tested separately before closing #13. The client-side
+sanitizer is still required even when the server has been updated.

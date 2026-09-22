@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Text;
 
@@ -214,10 +215,25 @@ public static class TelemetryDiagnostics
 
     private static string Preview(string body)
     {
-        var compact = body.Replace('\r', ' ').Replace('\n', ' ').Trim();
-        return compact.Length <= BodyPreviewCharacters
-            ? compact
-            : compact[..BodyPreviewCharacters] + "…";
+        // `backend-diagnose` prints this to Console: never preserve raw terminal
+        // controls from an untrusted/HTML/compromised HTTP response.
+        var result = new StringBuilder();
+        foreach (var rune in body.EnumerateRunes())
+        {
+            if (result.Length >= BodyPreviewCharacters) break;
+            if (rune.Value is '\r' or '\n' or '\t')
+            {
+                result.Append(' ');
+                continue;
+            }
+            if (Rune.GetUnicodeCategory(rune) is
+                UnicodeCategory.Control or UnicodeCategory.Format or UnicodeCategory.Surrogate)
+            {
+                continue;
+            }
+            result.Append(rune.ToString());
+        }
+        return result.ToString().Trim() + (body.Length > BodyPreviewCharacters ? "…" : string.Empty);
     }
 
     private static string DescribeException(Exception exception)
@@ -225,7 +241,7 @@ public static class TelemetryDiagnostics
         var parts = new List<string>();
         for (var current = exception; current is not null; current = current.InnerException)
         {
-            parts.Add(current.GetType().Name + ": " + current.Message);
+            parts.Add(current.GetType().Name + ": " + Preview(current.Message));
         }
         return string.Join(" -> ", parts);
     }
