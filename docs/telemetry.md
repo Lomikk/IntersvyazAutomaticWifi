@@ -10,7 +10,7 @@ Telemetry exists to measure the real captive-authorization race without changing
 4. `POST /stepTwo` starts immediately after the fresh code, even when `/stepOne` has not completed.
 5. Internet is confirmed independently through the strict `online.susu.ru` probe.
 
-The telemetry implementation therefore records precise local timing first and performs no telemetry HTTP requests inside the authorization critical path. Collection and upload are opt-in: after registration the interactive client asks once for permission to send anonymous application statistics. Declining is remembered and is not asked again on ordinary startup; the preference remains available in Settings.
+The telemetry implementation therefore records precise local timing first and performs no telemetry HTTP requests inside the authorization critical path. Collection and upload are opt-in: before registration the interactive client asks once for permission to send anonymous application statistics. Declining is remembered and is not asked again on ordinary startup; the preference remains available in Settings.
 
 ## Identity and privacy
 
@@ -69,6 +69,12 @@ The attempt summary additionally records:
 
 `fast_path_success` requires that the early stepTwo path was actually used, the authorization outcome was successful, and the independent Internet probe confirmed connectivity.
 
+## Registration diagnostics
+
+Schema v4 adds one `registration_event` row for each registration API request that actually runs: `get_confirm`, `check_confirm`, `get_token`, and `device_metadata`. A single random `attempt_id` groups those stages for one registration flow. Each row contains only the stage, request index, success/error/cancelled result, request duration, HTTP status when available, a coarse error class, optional retry delay, and a bounded server header.
+
+Registration telemetry deliberately does not serialize the phone number, SMS code, `authId`, returned token, account identifiers, request/response bodies, device ID, OS/machine metadata, or headers that contain credentials. The API client exposes only transport metadata to the telemetry recorder. The trace is accumulated in memory and queued after the registration flow finishes; if consent is enabled, the app makes a best-effort normal telemetry flush afterward. Upload failure never changes the registration result.
+
 ## Local queue
 
 When anonymous statistics are allowed, after the network authorization work has finished the completed trace is serialized into a unique JSONL file under:
@@ -104,7 +110,7 @@ The first command performs DNS resolution, manually displays every GET redirect 
 
 ## Ingestion API contract
 
-The Apps Script source is intentionally kept outside this public repository. The updated schema-v3 receiver keeps the original generic POST contract for backward compatibility and adds explicit routes for user-triggered speed features:
+The Apps Script source is intentionally kept outside this public repository. The schema-v4 receiver keeps schemas 1–3 and the original generic POST contract for backward compatibility, adds registration diagnostics, and retains explicit routes for user-triggered speed features:
 
 ```text
 POST <web-app endpoint>                         # legacy/mixed queued batch
@@ -113,9 +119,9 @@ POST <web-app endpoint>?route=leaderboard       # one explicit leaderboard_entry
 GET  <web-app endpoint>?route=leaderboard&limit=100
 ```
 
-The payload `event_type` still selects the row schema (`attempt`, `mailbox_poll`, `internet_probe`, `portal_response`, `error`, `speed_test`, or `leaderboard_entry`). Authorization traces use a `{batch_id, events[]}` envelope. The receiver guards each request at 64 events / 64 KiB, which is why the local queue emits at most 64 events and targets roughly 60 KiB per transport batch.
+The payload `event_type` still selects the row schema (`attempt`, `mailbox_poll`, `internet_probe`, `portal_response`, `registration_event`, `error`, `speed_test`, or `leaderboard_entry`). Authorization traces use a `{batch_id, events[]}` envelope. The receiver guards each request at 64 events / 64 KiB, which is why the local queue emits at most 64 events and targets roughly 60 KiB per transport batch.
 
-The production `/exec` URL is a versioned Apps Script deployment. Saving editor code is not enough: after a receiver change, create a new script version and edit the existing deployment to use it. Keep execution as the deploying account and anonymous/public access enabled. A quick contract check is that the root GET reports schema 3 and `GET ?route=leaderboard&limit=3` returns an object with an `entries` array.
+The production `/exec` URL is a versioned Apps Script deployment. Saving editor code is not enough: after a receiver change, create a new script version and edit the existing deployment to use it. Keep execution as the deploying account and anonymous/public access enabled. A quick contract check is that the root GET reports schema 4 and `accepted_schemas` contains 1, 2, 3 and 4 and `GET ?route=leaderboard&limit=3` returns an object with an `entries` array.
 
 The public leaderboard is sorted by download speed, then upload speed, then lower latency, with newest rows as the final tie-breaker. Its response exposes only rank, nickname, download/upload, latency, jitter and optional packet loss. Private `install_id`, `test_id`, `event_id`, radio metadata and time bucket remain server-side.
 
@@ -130,6 +136,7 @@ Google Sheets is an append-only ingestion buffer, not the analytics engine. The 
 - `InternetProbes`
 - `PortalResponses`
 - `Errors`
+- `RegistrationEvents`
 - `SpeedTests`
 - `Leaderboard`
 

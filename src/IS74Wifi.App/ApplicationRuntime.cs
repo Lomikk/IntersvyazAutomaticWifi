@@ -5,7 +5,7 @@ namespace IS74Wifi.App;
 internal sealed class ApplicationRuntime : IDisposable
 {
     private const string DefaultTelemetryEndpoint =
-        "https://script.google.com/macros/s/AKfycbw9JLeOD1hhtQPf3zm91XdnntODEUBMYbJzmO-SMwzhPRbRy3kDcTXZP0bg97sKQl-0bA/exec";
+        "https://script.google.com/macros/s/AKfycbx0vUU3ypA1q_Mehd7e3r4Ker3XHOsYuc1stSucHecBqy6wzlsHBFA_48kJYmdntXwlKg/exec";
 
     private readonly HttpClient apiHttp;
     private readonly HttpClient portalHttp;
@@ -30,6 +30,7 @@ internal sealed class ApplicationRuntime : IDisposable
         WindowsAutostartService autostart,
         LocalStateMaintenance maintenance,
         TelemetryQueue telemetryQueue,
+        RegistrationTelemetryRecorder registrationTelemetry,
         TelemetryUploader telemetryUploader,
         CampusSpeedToolsService campusSpeedTools,
         HttpClient apiHttp,
@@ -54,6 +55,7 @@ internal sealed class ApplicationRuntime : IDisposable
         Autostart = autostart;
         Maintenance = maintenance;
         TelemetryQueue = telemetryQueue;
+        RegistrationTelemetry = registrationTelemetry;
         TelemetryUploader = telemetryUploader;
         CampusSpeedTools = campusSpeedTools;
         this.apiHttp = apiHttp;
@@ -79,6 +81,7 @@ internal sealed class ApplicationRuntime : IDisposable
     public WindowsAutostartService Autostart { get; }
     public LocalStateMaintenance Maintenance { get; }
     public TelemetryQueue TelemetryQueue { get; }
+    public RegistrationTelemetryRecorder RegistrationTelemetry { get; }
     public TelemetryUploader TelemetryUploader { get; }
     public CampusSpeedToolsService CampusSpeedTools { get; }
 
@@ -118,6 +121,11 @@ internal sealed class ApplicationRuntime : IDisposable
         var telemetryRecorder = settings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Allowed
             ? new AuthorizationTelemetryRecorder(telemetryInstallId, telemetryQueue, appVersion)
             : null;
+        var registrationTelemetry = new RegistrationTelemetryRecorder(
+            telemetryInstallId,
+            telemetryQueue,
+            appVersion,
+            AnonymousStatisticsAllowed);
 
         var telemetryEndpoint = ResolveTelemetryEndpoint(settings);
         HttpClient? telemetryHttp = null;
@@ -182,6 +190,7 @@ internal sealed class ApplicationRuntime : IDisposable
             new WindowsAutostartService(),
             new LocalStateMaintenance(paths),
             telemetryQueue,
+            registrationTelemetry,
             telemetryUploader,
             campusSpeedTools,
             apiHttp,

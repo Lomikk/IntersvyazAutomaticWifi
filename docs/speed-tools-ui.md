@@ -34,7 +34,7 @@ Hotkeys:
 
 ## Data flow
 
-A completed local measurement is converted into the schema-v3 `speed_test` event. If the telemetry endpoint is configured, the app attempts an immediate `route=speedtest` POST. Temporary transport failures are queued locally for the normal deferred telemetry uploader. If no endpoint is configured, measurement still succeeds and its research event stays in the local queue.
+A completed local measurement is converted into the schema-v4 `speed_test` event. If the telemetry endpoint is configured, the app attempts an immediate `route=speedtest` POST. Temporary transport failures are queued locally for the normal deferred telemetry uploader. If no endpoint is configured, measurement still succeeds and its research event stays in the local queue.
 
 Leaderboard publication is separate and opt-in. The user must press `[4]`; the app then creates a `leaderboard_entry` referencing the completed test and sends it through `route=leaderboard`. A temporary transport failure can be queued for retry, but no leaderboard row is created merely by running a speed test.
 

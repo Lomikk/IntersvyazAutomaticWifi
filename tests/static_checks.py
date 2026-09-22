@@ -231,12 +231,17 @@ assert 'File.' not in push_polling, 'push polling critical path must not write t
 assert 'TelemetryUploadIntervalHours' in (root / 'src' / 'IS74Wifi.Core' / 'AppSettings.cs').read_text(encoding='utf-8')
 assert 'TimeSpan.FromHours(6)' in telemetry_uploader, 'backlogged telemetry should respect the server upload window'
 assert 'MaxUploadEvents = 64' in telemetry_models and 'MaxUploadPayloadBytes = 60 * 1024' in telemetry_models, 'telemetry transport batch must fit the external Apps Script receiver guards'
+assert 'public const int Schema = 4;' in telemetry_models, 'telemetry client must emit the deployed schema-v4 contract'
+assert 'TelemetryRegistrationEvent' in telemetry_models and 'registration_event' in telemetry_models, 'registration telemetry DTO missing'
+registration_telemetry = (root / 'src' / 'IS74Wifi.Core' / 'RegistrationTelemetry.cs').read_text(encoding='utf-8')
+assert 'get_confirm' in csharp_program and 'check_confirm' in csharp_program and 'get_token' in csharp_program and 'device_metadata' in csharp_program, 'registration stages are not recorded by the application'
+assert 'anonymousStatisticsAllowed' in registration_telemetry and 'queue.Enqueue' in registration_telemetry, 'registration telemetry must remain consent-gated and local-first'
 for forbidden in ['BearerToken', 'Phone', 'ConfirmCode', 'AuthId', 'UserId', 'ProfileId', 'PushMessage', 'FullMessage']:
     assert forbidden not in telemetry_models, f'sensitive field leaked into telemetry DTO contract: {forbidden}'
 assert 'install-id.txt' in (root / 'src' / 'IS74Wifi.Core' / 'AppPaths.cs').read_text(encoding='utf-8'), 'stable telemetry install ID storage missing'
 assert 'Guid.NewGuid().ToString("N")' in telemetry_store, 'telemetry install ID must be random and app-generated'
 assert 'IS74W_TELEMETRY_URL' in csharp_runtime, 'telemetry endpoint override missing'
-assert 'AKfycbw9JLeOD1hhtQPf3zm91XdnntODEUBMYbJzmO-SMwzhPRbRy3kDcTXZP0bg97sKQl-0bA/exec' in csharp_runtime, 'production telemetry endpoint missing'
+assert 'AKfycbx0vUU3ypA1q_Mehd7e3r4Ker3XHOsYuc1stSucHecBqy6wzlsHBFA_48kJYmdntXwlKg/exec' in csharp_runtime, 'production telemetry endpoint missing'
 assert 'delay >= TimeSpan.FromMinutes(1)' in csharp_program and 'TryFlushIfDueAsync' in csharp_program, 'agent must upload telemetry only away from the near-expiry critical window'
 
 # Campus speed test: reproduce the provider's observed standalone LibreSpeed

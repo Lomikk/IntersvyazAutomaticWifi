@@ -139,7 +139,71 @@ internal static class TelemetryContractTests
         queue.Complete(batch);
         Assert(!queue.HasPending, "successful telemetry batch was not removed from local queue");
 
+        TestRegistrationTelemetry();
         await TestUploadConsentGateAsync();
+    }
+
+    private static void TestRegistrationTelemetry()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var queue = new TelemetryQueue(paths);
+        var installId = new TelemetryIdentityStore(paths).GetOrCreate();
+        var recorder = new RegistrationTelemetryRecorder(installId, queue, "0.0.0-test", () => true);
+        var trace = recorder.Begin();
+
+        var successCall = HttpCallResult.Success(new HttpResponseData(
+            HttpStatusCode.OK,
+            "{}",
+            null,
+            null,
+            TimeSpan.FromMilliseconds(241.7),
+            Server: "nginx"));
+        trace.Record(
+            "get_confirm",
+            1,
+            Is74ApiResult<ConfirmationRequested>.Success(new ConfirmationRequested(), successCall));
+
+        var timeoutCall = HttpCallResult.Failure(
+            TransportFailureKind.Timeout,
+            null,
+            TimeSpan.FromSeconds(15));
+        trace.Record(
+            "get_token",
+            1,
+            Is74ApiResult<Is74ApiSession>.Fail(
+                new Is74ApiFailure(
+                    Is74ApiFailureKind.Transport,
+                    "auth.get-token",
+                    TransportFailureKind.Timeout),
+                timeoutCall));
+        trace.Complete();
+
+        var batch = queue.ReadOldestBatch();
+        Assert(batch is not null && batch.EventJson.Count == 2, "registration telemetry batch was not queued");
+        using var first = JsonDocument.Parse(batch!.EventJson[0]);
+        using var second = JsonDocument.Parse(batch.EventJson[1]);
+        Assert(first.RootElement.GetProperty("schema").GetInt32() == 4, "registration telemetry schema changed");
+        Assert(first.RootElement.GetProperty("event_type").GetString() == "registration_event", "registration event type changed");
+        Assert(first.RootElement.GetProperty("http_status").GetInt32() == 200, "registration HTTP status was lost");
+        Assert(Math.Abs(first.RootElement.GetProperty("duration_ms").GetDouble() - 241.7) < 0.01, "registration duration was lost");
+        Assert(second.RootElement.GetProperty("error_class").GetString() == "timeout", "registration timeout was not classified");
+
+        var combined = string.Join("\n", batch.EventJson);
+        foreach (var forbidden in new[] { "phone", "confirmCode", "authId", "Bearer ", "USER_ID", "PROFILE_ID" })
+        {
+            Assert(!combined.Contains(forbidden, StringComparison.OrdinalIgnoreCase),
+                $"registration telemetry leaked sensitive field/value: {forbidden}");
+        }
+
+        var declined = new RegistrationTelemetryRecorder(installId, queue, "0.0.0-test", () => false).Begin();
+        declined.Record(
+            "get_confirm",
+            1,
+            Is74ApiResult<ConfirmationRequested>.Success(new ConfirmationRequested(), successCall));
+        declined.Complete();
+        queue.Complete(batch);
+        Assert(!queue.HasPending, "declined registration telemetry was queued");
     }
 
     private static async Task TestUploadConsentGateAsync()

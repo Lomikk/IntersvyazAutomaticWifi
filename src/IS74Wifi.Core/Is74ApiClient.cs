@@ -32,8 +32,8 @@ public sealed class Is74ApiClient : IIs74PushClient
         var call = await transport.SendAsync(request, DefaultTimeout, cancellationToken).ConfigureAwait(false);
         var failure = ClassifyFailure(call, operation);
         return failure is null
-            ? Is74ApiResult<ConfirmationRequested>.Success(new ConfirmationRequested())
-            : Is74ApiResult<ConfirmationRequested>.Fail(failure);
+            ? Is74ApiResult<ConfirmationRequested>.Success(new ConfirmationRequested(), call)
+            : Is74ApiResult<ConfirmationRequested>.Fail(failure, call);
     }
 
     public async Task<Is74ApiResult<ConfirmationChecked>> CheckConfirmationAsync(
@@ -56,7 +56,7 @@ public sealed class Is74ApiClient : IIs74PushClient
         var failure = ClassifyFailure(call, operation);
         if (failure is not null)
         {
-            return Is74ApiResult<ConfirmationChecked>.Fail(failure);
+            return Is74ApiResult<ConfirmationChecked>.Fail(failure, call);
         }
 
         JsonDocument document;
@@ -66,7 +66,7 @@ public sealed class Is74ApiClient : IIs74PushClient
         }
         catch (JsonException)
         {
-            return InvalidJson<ConfirmationChecked>(operation);
+            return InvalidJson<ConfirmationChecked>(operation, call);
         }
 
         using (document)
@@ -74,18 +74,18 @@ public sealed class Is74ApiClient : IIs74PushClient
             if (document.RootElement.ValueKind != JsonValueKind.Object ||
                 !document.RootElement.TryGetProperty("authId", out var authIdElement))
             {
-                return InvalidPayload<ConfirmationChecked>(operation);
+                return InvalidPayload<ConfirmationChecked>(operation, call);
             }
 
             var authId = ReadScalarString(authIdElement);
             if (string.IsNullOrWhiteSpace(authId))
             {
-                return InvalidPayload<ConfirmationChecked>(operation);
+                return InvalidPayload<ConfirmationChecked>(operation, call);
             }
 
             // Campus Wi-Fi registration is phone/device scoped. Account/address
             // metadata returned by the shared mobile backend is intentionally ignored.
-            return Is74ApiResult<ConfirmationChecked>.Success(new ConfirmationChecked(authId));
+            return Is74ApiResult<ConfirmationChecked>.Success(new ConfirmationChecked(authId), call);
         }
     }
 
@@ -108,7 +108,7 @@ public sealed class Is74ApiClient : IIs74PushClient
         var failure = ClassifyFailure(call, operation);
         if (failure is not null)
         {
-            return Is74ApiResult<Is74ApiSession>.Fail(failure);
+            return Is74ApiResult<Is74ApiSession>.Fail(failure, call);
         }
 
         JsonDocument document;
@@ -118,7 +118,7 @@ public sealed class Is74ApiClient : IIs74PushClient
         }
         catch (JsonException)
         {
-            return InvalidJson<Is74ApiSession>(operation);
+            return InvalidJson<Is74ApiSession>(operation, call);
         }
 
         using (document)
@@ -126,13 +126,13 @@ public sealed class Is74ApiClient : IIs74PushClient
             if (document.RootElement.ValueKind != JsonValueKind.Object ||
                 !document.RootElement.TryGetProperty("TOKEN", out var tokenElement))
             {
-                return InvalidPayload<Is74ApiSession>(operation);
+                return InvalidPayload<Is74ApiSession>(operation, call);
             }
 
             var token = ReadScalarString(tokenElement);
             if (string.IsNullOrWhiteSpace(token))
             {
-                return InvalidPayload<Is74ApiSession>(operation);
+                return InvalidPayload<Is74ApiSession>(operation, call);
             }
 
             return Is74ApiResult<Is74ApiSession>.Success(new Is74ApiSession(
@@ -140,7 +140,7 @@ public sealed class Is74ApiClient : IIs74PushClient
                 GetOptionalScalar(document.RootElement, "USER_ID"),
                 GetOptionalScalar(document.RootElement, "PROFILE_ID"),
                 GetOptionalScalar(document.RootElement, "ACCESS_BEGIN"),
-                GetOptionalScalar(document.RootElement, "ACCESS_END")));
+                GetOptionalScalar(document.RootElement, "ACCESS_END")), call);
         }
     }
 
@@ -166,8 +166,8 @@ public sealed class Is74ApiClient : IIs74PushClient
         var call = await transport.SendAsync(request, DefaultTimeout, cancellationToken).ConfigureAwait(false);
         var failure = ClassifyFailure(call, operation);
         return failure is null
-            ? Is74ApiResult<DeviceMetadataAccepted>.Success(new DeviceMetadataAccepted())
-            : Is74ApiResult<DeviceMetadataAccepted>.Fail(failure);
+            ? Is74ApiResult<DeviceMetadataAccepted>.Success(new DeviceMetadataAccepted(), call)
+            : Is74ApiResult<DeviceMetadataAccepted>.Fail(failure, call);
     }
 
     public async Task<Is74ApiResult<PushMessagePage>> GetPushMessagesAsync(
@@ -313,11 +313,17 @@ public sealed class Is74ApiClient : IIs74PushClient
         return null;
     }
 
-    private static Is74ApiResult<T> InvalidJson<T>(string operation) =>
-        Is74ApiResult<T>.Fail(new Is74ApiFailure(Is74ApiFailureKind.InvalidJson, operation));
+    private static Is74ApiResult<T> InvalidJson<T>(string operation, HttpCallResult? call = null)
+    {
+        var failure = new Is74ApiFailure(Is74ApiFailureKind.InvalidJson, operation);
+        return call is null ? Is74ApiResult<T>.Fail(failure) : Is74ApiResult<T>.Fail(failure, call);
+    }
 
-    private static Is74ApiResult<T> InvalidPayload<T>(string operation) =>
-        Is74ApiResult<T>.Fail(new Is74ApiFailure(Is74ApiFailureKind.InvalidPayload, operation));
+    private static Is74ApiResult<T> InvalidPayload<T>(string operation, HttpCallResult? call = null)
+    {
+        var failure = new Is74ApiFailure(Is74ApiFailureKind.InvalidPayload, operation);
+        return call is null ? Is74ApiResult<T>.Fail(failure) : Is74ApiResult<T>.Fail(failure, call);
+    }
 
 
     private static string NormalizeJsonName(string name) =>

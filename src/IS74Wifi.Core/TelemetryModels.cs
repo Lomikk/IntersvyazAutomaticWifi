@@ -4,7 +4,7 @@ namespace IS74Wifi.Core;
 
 public static class TelemetryContract
 {
-    public const int Schema = 3;
+    public const int Schema = 4;
     public const string PushScheduleVersion = "push-v1";
     // Keep transport batches within the currently deployed Apps Script receiver's
     // hard guards. Payload leaves a small envelope/headroom margin below 64 KiB.
@@ -123,6 +123,24 @@ public sealed record TelemetryPortalResponseEvent
     public string? BodySha256 { get; init; }
 }
 
+public sealed record TelemetryRegistrationEvent
+{
+    public string EventType { get; init; } = "registration_event";
+    public int Schema { get; init; } = TelemetryContract.Schema;
+    public required string AttemptId { get; init; }
+    public required string InstallId { get; init; }
+    public required string AppVersion { get; init; }
+    public required string EventId { get; init; }
+    public required string Stage { get; init; }
+    public required int RequestIndex { get; init; }
+    public required string Result { get; init; }
+    public double? DurationMs { get; init; }
+    public int? HttpStatus { get; init; }
+    public string? ErrorClass { get; init; }
+    public double? RetryAfterMs { get; init; }
+    public string? Server { get; init; }
+}
+
 public sealed record TelemetryErrorEvent
 {
     public string EventType { get; init; } = "error";
@@ -206,6 +224,7 @@ public sealed record TelemetryUploadState(
 [JsonSerializable(typeof(TelemetryMailboxPollEvent))]
 [JsonSerializable(typeof(TelemetryInternetProbeEvent))]
 [JsonSerializable(typeof(TelemetryPortalResponseEvent))]
+[JsonSerializable(typeof(TelemetryRegistrationEvent))]
 [JsonSerializable(typeof(TelemetryErrorEvent))]
 [JsonSerializable(typeof(TelemetrySpeedTestEvent))]
 [JsonSerializable(typeof(TelemetryLeaderboardEntry))]

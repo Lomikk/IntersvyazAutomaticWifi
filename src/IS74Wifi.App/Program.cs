@@ -237,83 +237,95 @@ internal static class Program
         }
 
         PromptAnonymousStatisticsConsentConsole();
+        var registrationTelemetry = app.RegistrationTelemetry.Begin();
 
-        Console.Write("Введите номер телефона: ");
-        var phone = NormalizePhone(Console.ReadLine());
-        var deviceId = app.DeviceIdentity.GetOrCreate();
-
-        Console.WriteLine("Запрашиваю код подтверждения...");
-        var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
-        if (!requested.IsSuccess)
+        try
         {
-            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-confirm failure={requested.Failure!.Kind}");
-            throw new InvalidOperationException(DescribeApiFailure(requested.Failure));
+            Console.Write("Введите номер телефона: ");
+            var phone = NormalizePhone(Console.ReadLine());
+            var deviceId = app.DeviceIdentity.GetOrCreate();
+
+            Console.WriteLine("Запрашиваю код подтверждения...");
+            var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
+            registrationTelemetry.Record("get_confirm", 1, requested);
+            if (!requested.IsSuccess)
+            {
+                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-confirm failure={requested.Failure!.Kind}");
+                throw new InvalidOperationException(DescribeApiFailure(requested.Failure));
+            }
+
+            Console.Write("Введите SMS-код: ");
+            var smsCode = (Console.ReadLine() ?? string.Empty).Trim();
+            if (smsCode.Length != 4 || smsCode.Any(c => c is < '0' or > '9'))
+            {
+                throw new InvalidOperationException("SMS-код должен состоять ровно из 4 цифр.");
+            }
+
+            var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
+            registrationTelemetry.Record("check_confirm", 1, checkedCode);
+            if (!checkedCode.IsSuccess)
+            {
+                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=check-confirm failure={checkedCode.Failure!.Kind}");
+                throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure));
+            }
+
+            var confirmation = checkedCode.Value!;
+            app.Logger.Write(DiagnosticLevel.Info, "registration.confirmed mode=phone-only");
+
+            var sessionResult = await app.Api.GetTokenAsync(
+                confirmation.AuthId,
+                deviceId).ConfigureAwait(false);
+            registrationTelemetry.Record("get_token", 1, sessionResult);
+            if (!sessionResult.IsSuccess)
+            {
+                app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
+                throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure));
+            }
+
+            var session = sessionResult.Value!;
+            app.Secrets.Save(new StoredSecrets(session.Token, phone));
+            app.Session.Save(new SessionMetadata
+            {
+                DeviceId = deviceId,
+                UserId = session.UserId,
+                ProfileId = session.ProfileId,
+                AccessBegin = session.AccessBegin,
+                AccessEnd = session.AccessEnd,
+                RegisteredAtUtc = DateTimeOffset.UtcNow
+            });
+
+            var osVersion = Environment.OSVersion.VersionString;
+            var deviceModel = Environment.MachineName;
+            var metadata = await app.Api.RegisterDeviceMetadataAsync(
+                session.Token,
+                new DeviceMetadataRegistration(deviceId, phone, osVersion, deviceModel)).ConfigureAwait(false);
+            registrationTelemetry.Record("device_metadata", 1, metadata);
+            if (metadata.IsSuccess)
+            {
+                app.Json.Write(
+                    app.Paths.DeviceMetadataFile,
+                    new DeviceMetadataSnapshot(deviceId, deviceModel, osVersion, DateTimeOffset.UtcNow),
+                    AppJsonContext.Default.DeviceMetadataSnapshot);
+            }
+            else
+            {
+                app.Logger.Write(DiagnosticLevel.Warn, $"device-metadata failure={metadata.Failure?.Kind}");
+            }
+
+            app.Logger.Write(DiagnosticLevel.Info,
+                $"registration.complete accessBegin={session.AccessBegin ?? ""} accessEnd={session.AccessEnd ?? ""}");
+            Console.WriteLine("Регистрация завершена. Данные авторизации сохранены для текущего пользователя Windows.");
+            if (!string.IsNullOrWhiteSpace(session.AccessEnd))
+            {
+                Console.WriteLine($"Сессия API действует до: {session.AccessEnd}");
+            }
+            Console.WriteLine("Теперь можно авторизовать Wi-Fi один раз сейчас или включить автоматическую авторизацию.");
+            return 0;
         }
-
-        Console.Write("Введите SMS-код: ");
-        var smsCode = (Console.ReadLine() ?? string.Empty).Trim();
-        if (smsCode.Length != 4 || smsCode.Any(c => c is < '0' or > '9'))
+        finally
         {
-            throw new InvalidOperationException("SMS-код должен состоять ровно из 4 цифр.");
+            await CompleteRegistrationTelemetryAsync(app, registrationTelemetry).ConfigureAwait(false);
         }
-
-        var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
-        if (!checkedCode.IsSuccess)
-        {
-            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=check-confirm failure={checkedCode.Failure!.Kind}");
-            throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure));
-        }
-
-        var confirmation = checkedCode.Value!;
-        app.Logger.Write(DiagnosticLevel.Info, "registration.confirmed mode=phone-only");
-
-        var sessionResult = await app.Api.GetTokenAsync(
-            confirmation.AuthId,
-            deviceId).ConfigureAwait(false);
-        if (!sessionResult.IsSuccess)
-        {
-            app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
-            throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure));
-        }
-
-        var session = sessionResult.Value!;
-        app.Secrets.Save(new StoredSecrets(session.Token, phone));
-        app.Session.Save(new SessionMetadata
-        {
-            DeviceId = deviceId,
-            UserId = session.UserId,
-            ProfileId = session.ProfileId,
-            AccessBegin = session.AccessBegin,
-            AccessEnd = session.AccessEnd,
-            RegisteredAtUtc = DateTimeOffset.UtcNow
-        });
-
-        var osVersion = Environment.OSVersion.VersionString;
-        var deviceModel = Environment.MachineName;
-        var metadata = await app.Api.RegisterDeviceMetadataAsync(
-            session.Token,
-            new DeviceMetadataRegistration(deviceId, phone, osVersion, deviceModel)).ConfigureAwait(false);
-        if (metadata.IsSuccess)
-        {
-            app.Json.Write(
-                app.Paths.DeviceMetadataFile,
-                new DeviceMetadataSnapshot(deviceId, deviceModel, osVersion, DateTimeOffset.UtcNow),
-                AppJsonContext.Default.DeviceMetadataSnapshot);
-        }
-        else
-        {
-            app.Logger.Write(DiagnosticLevel.Warn, $"device-metadata failure={metadata.Failure?.Kind}");
-        }
-
-        app.Logger.Write(DiagnosticLevel.Info,
-            $"registration.complete accessBegin={session.AccessBegin ?? ""} accessEnd={session.AccessEnd ?? ""}");
-        Console.WriteLine("Регистрация завершена. Данные авторизации сохранены для текущего пользователя Windows.");
-        if (!string.IsNullOrWhiteSpace(session.AccessEnd))
-        {
-            Console.WriteLine($"Сессия API действует до: {session.AccessEnd}");
-        }
-        Console.WriteLine("Теперь можно авторизовать Wi-Fi один раз сейчас или включить автоматическую авторизацию.");
-        return 0;
     }
 
     private static async Task<int> ConnectAsync()
@@ -1924,6 +1936,7 @@ internal static class Program
         }
 
         var history = new InteractiveActionHistory();
+        var registrationTelemetry = app.RegistrationTelemetry.Begin();
         try
         {
             var phoneInput = await ui.PromptDigitsAsync(
@@ -1946,6 +1959,7 @@ internal static class Program
             history.Start("Запрашиваю 4-значный SMS-код...");
             ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
             var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
+            registrationTelemetry.Record("get_confirm", 1, requested);
             if (!requested.IsSuccess)
             {
                 app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-confirm failure={requested.Failure!.Kind}");
@@ -1976,6 +1990,7 @@ internal static class Program
             history.Start("Проверяю код подтверждения...");
             ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
             var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
+            registrationTelemetry.Record("check_confirm", 1, checkedCode);
             if (!checkedCode.IsSuccess)
             {
                 app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=check-confirm failure={checkedCode.Failure!.Kind}");
@@ -1995,6 +2010,7 @@ internal static class Program
             history.Start("Получаю API-сессию...");
             ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
             var sessionResult = await app.Api.GetTokenAsync(confirmation.AuthId, deviceId).ConfigureAwait(false);
+            registrationTelemetry.Record("get_token", 1, sessionResult);
             if (!sessionResult.IsSuccess)
             {
                 app.Logger.Write(DiagnosticLevel.Warn, $"registration.failed stage=get-token failure={sessionResult.Failure!.Kind}");
@@ -2031,6 +2047,7 @@ internal static class Program
             var metadata = await app.Api.RegisterDeviceMetadataAsync(
                 session.Token,
                 new DeviceMetadataRegistration(deviceId, phone, osVersion, deviceModel)).ConfigureAwait(false);
+            registrationTelemetry.Record("device_metadata", 1, metadata);
             if (metadata.IsSuccess)
             {
                 app.Json.Write(
@@ -2064,6 +2081,10 @@ internal static class Program
                 "РЕГИСТРАЦИЯ",
                 history,
                 GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+        }
+        finally
+        {
+            await CompleteRegistrationTelemetryAsync(app, registrationTelemetry).ConfigureAwait(false);
         }
     }
 
@@ -2581,6 +2602,23 @@ internal static class Program
         "cancelled" => "отменено",
         _ => "ошибка авторизации"
     };
+
+    private static async Task CompleteRegistrationTelemetryAsync(
+        ApplicationRuntime app,
+        RegistrationTelemetryTrace trace)
+    {
+        try
+        {
+            trace.Complete();
+            await app.TelemetryUploader.TryFlushIfDueAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            app.Logger.Write(
+                DiagnosticLevel.Warn,
+                $"registration.telemetry failure type={ex.GetType().Name}");
+        }
+    }
 
     private static async Task<bool> PromptAnonymousStatisticsConsentAsync(
         InteractiveTerminalUi ui,

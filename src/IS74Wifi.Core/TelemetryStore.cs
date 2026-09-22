@@ -303,6 +303,9 @@ public static class TelemetrySerialization
     public static string Serialize(TelemetryPortalResponseEvent value) =>
         JsonSerializer.Serialize(value, TelemetryJsonContext.Default.TelemetryPortalResponseEvent);
 
+    public static string Serialize(TelemetryRegistrationEvent value) =>
+        JsonSerializer.Serialize(value, TelemetryJsonContext.Default.TelemetryRegistrationEvent);
+
     public static string Serialize(TelemetryErrorEvent value) =>
         JsonSerializer.Serialize(value, TelemetryJsonContext.Default.TelemetryErrorEvent);
 
