@@ -9,6 +9,7 @@ internal static class AgentContractTests
         TestSleepPolicy();
         TestTelemetryUploadSafety();
         TestBackgroundDueScheduling();
+        TestPowerResumeEvents();
         TestAutostartCommand();
         TestAutostartRegistrationState();
         TestAgentPidRecord();
@@ -17,7 +18,10 @@ internal static class AgentContractTests
         await TestNetworkCheckPolicyAsync();
         await TestPreExpiryNeedsTwoCaptiveResponsesAsync();
         await TestPreExpiryTransportFailureDoesNotAuthorizeAsync();
+        await TestAfterExpiryEdgeWatchConfirmsCaptiveAsync();
         await TestNotificationLifecycleAsync();
+        await TestFinalAttemptShowsSingleTerminalToastAsync();
+        await TestExhaustedCycleNotifiesWithoutTargetWifiAsync();
     }
 
     private static void TestSleepPolicy()
@@ -31,8 +35,12 @@ internal static class AgentContractTests
         var expiry = new DateTimeOffset(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
         var state = new RuntimeState { ExpectedExpiryUtc = expiry };
 
-        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddHours(-12)) == TimeSpan.FromMinutes(15),
-            "daytime agent should use a 15-minute idle heartbeat");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddHours(-12)) ==
+               TimeSpan.FromHours(11) + TimeSpan.FromMinutes(55),
+            "healthy daytime agent should sleep straight to the five-minute reminder");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddHours(-23)) ==
+               TimeSpan.FromHours(22) + TimeSpan.FromMinutes(55),
+            "healthy agent should not poll throughout its 23-hour idle period");
         Assert(AgentTiming.GetSleepDelay(new RuntimeState(), settings, expiry.AddHours(-12)) == TimeSpan.FromMinutes(15),
             "clean install without an expiry baseline must also stay idle");
         Assert(AgentTiming.GetSleepDelay(state with { UserActionRequired = true }, settings,
@@ -53,12 +61,21 @@ internal static class AgentContractTests
             "agent sleep crossed guard start");
         Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(-5)) == TimeSpan.FromMilliseconds(250),
             "agent guard cadence changed");
-        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(20)) == TimeSpan.FromSeconds(1),
-            "overdue agent did not wake promptly");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(20)) == TimeSpan.FromMinutes(1),
+            "overdue agent must not spin on one-second housekeeping checks");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(20), networkPolicySatisfied: false) ==
+               TimeSpan.FromMinutes(5),
+            "overdue agent on unrelated Wi-Fi must wait for a network event or sparse fallback");
 
         state = state with { NextAutomaticRetryUtc = expiry.AddSeconds(30) };
         Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(20)) == TimeSpan.FromSeconds(10),
             "agent did not wake at scheduled retry");
+        Assert(AgentTiming.GetSleepDelay(state with { NextAutomaticRetryUtc = expiry.AddHours(1) },
+                   settings, expiry.AddSeconds(20)) == TimeSpan.FromMinutes(59) + TimeSpan.FromSeconds(40),
+            "a scheduled retry must not be interrupted by an unnecessary 15-second poll");
+        Assert(AgentTiming.GetSleepDelay(state with { NextAutomaticRetryUtc = expiry.AddHours(1) },
+                   settings, expiry.AddSeconds(20), networkPolicySatisfied: false) == TimeSpan.FromMinutes(5),
+            "missed network changes still need a sparse fallback before a distant retry");
     }
 
     private static void TestTelemetryUploadSafety()
@@ -69,8 +86,9 @@ internal static class AgentContractTests
         // The old delay-based condition would never permit an upload: even
         // with expiry a day away, the idle tick is only 15 seconds.
         var healthy = new RuntimeState { ExpectedExpiryUtc = now.AddHours(12) };
-        Assert(AgentTiming.GetSleepDelay(healthy, settings, now) == TimeSpan.FromMinutes(15),
-            "default agent idle heartbeat must not poll every 15 seconds");
+        Assert(AgentTiming.GetSleepDelay(healthy, settings, now) ==
+               TimeSpan.FromHours(11) + TimeSpan.FromMinutes(55),
+            "default agent must wait until its next actual authorization deadline");
         Assert(AgentTiming.CanUploadTelemetry(healthy, settings, now),
             "background telemetry is still blocked by the default 15-second tick");
 
@@ -85,6 +103,9 @@ internal static class AgentContractTests
             "telemetry must stop at the one-minute safety boundary");
         Assert(!AgentTiming.CanUploadTelemetry(healthy with { ExpectedExpiryUtc = now.AddSeconds(10) }, settings, now),
             "telemetry must not compete with the approaching guard window");
+        Assert(!AgentTiming.CanUploadTelemetry(healthy with { ExpectedExpiryUtc = now.AddSeconds(10) },
+                    settings, now, networkPolicySatisfied: false),
+            "a changing SSID must not let telemetry delay the active guard");
         Assert(!AgentTiming.CanUploadTelemetry(healthy with { ExpectedExpiryUtc = now.AddSeconds(-10) }, settings, now),
             "an imminent automatic retry must block telemetry");
 
@@ -93,6 +114,8 @@ internal static class AgentContractTests
             "a safely deferred automatic retry should allow queued telemetry to flush");
         Assert(!AgentTiming.CanUploadTelemetry(expired with { NextAutomaticRetryUtc = now.AddSeconds(30) }, settings, now),
             "telemetry must not run when the scheduled retry is imminent");
+        Assert(AgentTiming.CanUploadTelemetry(expired, settings, now, networkPolicySatisfied: false),
+            "telemetry must resume away from the target Wi-Fi once the active guard has passed");
 
         var largerUpload = settings with
         {
@@ -128,6 +151,33 @@ internal static class AgentContractTests
         Assert(AgentTiming.BoundSleepByBackgroundWork(idle, now, null, now.AddMilliseconds(50)) ==
                TimeSpan.FromMilliseconds(100),
             "very near background deadlines must respect minimum sleep");
+        var dayIdle = AgentTiming.GetSleepDelay(
+            new RuntimeState { ExpectedExpiryUtc = now.AddHours(24) }, new AppSettings(), now);
+        Assert(AgentTiming.BoundSleepByBackgroundWork(dayIdle, now,
+                   now.AddHours(18), now.AddHours(12)) == TimeSpan.FromHours(12),
+            "12-hour telemetry maintenance must wake a day-long authorization sleep");
+    }
+
+    private static void TestPowerResumeEvents()
+    {
+        Assert(AgentPowerResumeMonitor.IsResumeEvent(0x12),
+            "automatic resume must wake the agent to recalculate its UTC deadlines");
+        Assert(AgentPowerResumeMonitor.IsResumeEvent(0x07),
+            "user-initiated resume must wake the agent");
+        Assert(!AgentPowerResumeMonitor.IsResumeEvent(0x04),
+            "suspend notification must not start an authorization");
+        if (OperatingSystem.IsWindows())
+        {
+            using var monitor = AgentPowerResumeMonitor.TryRegister(
+                () => { }, error => throw new InvalidOperationException(
+                    $"Windows power-resume registration failed: {error}"));
+            Assert(monitor is not null, "native Windows power-resume monitor is unavailable");
+        }
+        else
+        {
+            Assert(AgentPowerResumeMonitor.TryRegister(() => { }) is null,
+                "non-Windows test environments must not attempt native power registration");
+        }
     }
 
     private static void TestAutostartCommand()
@@ -291,6 +341,82 @@ internal static class AgentContractTests
         Assert(fixture.Authorization.Calls == 0, "DNS failure before expiry burned an authorization attempt");
     }
 
+    private static async Task TestAfterExpiryEdgeWatchConfirmsCaptiveAsync()
+    {
+        var expiry = new DateTimeOffset(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
+        using var fixture = AgentFixture.Create(
+            expiry.AddSeconds(5),
+            internet: new ScriptedInternetProbe(Probe(false, true), Probe(false, true)));
+        fixture.SaveState(new RuntimeState
+        {
+            ExpectedExpiryUtc = expiry,
+            AutomaticStepOneAttempts = 1,
+            LastAttemptUtc = expiry.AddSeconds(1),
+            EdgeWatchActive = true
+        });
+
+        await fixture.Agent.TickAsync();
+        Assert(fixture.Internet.Calls == 2,
+            "post-expiry edge watch should confirm captive state with two observations");
+        Assert(fixture.Authorization.Calls == 1,
+            "confirmed post-expiry captive state must trigger automatic authorization");
+    }
+
+    private static async Task TestFinalAttemptShowsSingleTerminalToastAsync()
+    {
+        var now = new DateTimeOffset(2026, 9, 18, 12, 0, 20, TimeSpan.Zero);
+        using var fixture = AgentFixture.Create(now);
+        fixture.SaveState(new RuntimeState
+        {
+            ExpectedExpiryUtc = now.AddMinutes(-1),
+            AutomaticStepOneAttempts = 3,
+            LastResult = "step-one-retryable-error"
+        });
+        fixture.Authorization.Outcome = new AuthorizationOutcome(
+            AuthorizationOutcomeKind.RetryableStepOne, null, null, null, null);
+        fixture.Authorization.StateEffect = _ => fixture.SaveState(fixture.StateStore.Load() with
+        {
+            AutomaticStepOneAttempts = 4,
+            UserActionRequired = true,
+            NextAutomaticRetryUtc = null,
+            LastResult = "automatic-step-one-limit"
+        });
+
+        await fixture.Agent.TickAsync();
+        Assert(fixture.Authorization.Calls == 1, "final available attempt was not executed");
+        Assert(fixture.Notifications.Items.Count(n => n.Severity == AgentNotificationSeverity.Error) == 1,
+            "the last retryable stepOne failure must emit one important terminal toast");
+        Assert(fixture.Notifications.Items.All(n => !n.Title.Contains("отложена", StringComparison.Ordinal)),
+            "terminal limit must not show a misleading deferred-retry notification");
+        var count = fixture.Notifications.Items.Count;
+        await fixture.Agent.TickAsync();
+        Assert(fixture.Authorization.Calls == 1 && fixture.Notifications.Items.Count == count,
+            "terminal state must neither retry nor show duplicate toasts");
+        Assert(fixture.Agent.GetSleepDelay() == TimeSpan.FromMinutes(15),
+            "exhausted attempts must stop the active wake-up loop");
+    }
+
+    private static async Task TestExhaustedCycleNotifiesWithoutTargetWifiAsync()
+    {
+        var now = new DateTimeOffset(2026, 9, 18, 12, 1, 0, TimeSpan.Zero);
+        using var fixture = AgentFixture.Create(now, wifi: new NonTargetWifi());
+        fixture.SaveState(new RuntimeState
+        {
+            ExpectedExpiryUtc = now.AddMinutes(-1),
+            AutomaticStepOneAttempts = 4,
+            NextAutomaticRetryUtc = now.AddHours(1)
+        });
+
+        await fixture.Agent.TickAsync();
+        Assert(fixture.StateStore.Load().UserActionRequired,
+            "an exhausted cycle must stop regardless of the current SSID or pending retry");
+        Assert(fixture.Authorization.Calls == 0, "an exhausted cycle must never start another attempt");
+        Assert(fixture.Notifications.Items.Count(n => n.Severity == AgentNotificationSeverity.Error) == 1,
+            "an exhausted cycle must show one terminal toast even away from the target network");
+        await fixture.Agent.TickAsync();
+        Assert(fixture.Notifications.Items.Count == 1, "terminal toast must not repeat on later ticks");
+    }
+
     private static async Task TestNotificationLifecycleAsync()
     {
         var reminderNow = new DateTimeOffset(2026, 9, 18, 11, 56, 0, TimeSpan.Zero);
@@ -417,6 +543,7 @@ internal static class AgentContractTests
     {
         public int Calls { get; private set; }
         public AuthorizationRequest? LastRequest { get; private set; }
+        public Action<AuthorizationRequest>? StateEffect { get; set; }
         public AuthorizationOutcome Outcome { get; set; } = new(
             AuthorizationOutcomeKind.Success,
             InternetConfirmed: true,
@@ -430,6 +557,7 @@ internal static class AgentContractTests
         {
             Calls++;
             LastRequest = request;
+            StateEffect?.Invoke(request);
             return Task.FromResult(Outcome);
         }
     }

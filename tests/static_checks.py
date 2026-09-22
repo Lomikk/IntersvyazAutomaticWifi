@@ -250,13 +250,15 @@ assert 'IS74W_TELEMETRY_URL' in csharp_runtime, 'telemetry endpoint override mis
 assert 'AKfycbx0vUU3ypA1q_Mehd7e3r4Ker3XHOsYuc1stSucHecBqy6wzlsHBFA_48kJYmdntXwlKg/exec' in csharp_runtime, 'production telemetry endpoint missing'
 agent_service = (root / 'src' / 'IS74Wifi.Core' / 'AgentService.cs').read_text(encoding='utf-8')
 assert 'app.Agent.CanUploadTelemetry()' in csharp_program and 'TryFlushIfDueAsync' in csharp_program, 'agent must check the actual authorization schedule before uploading'
-assert 'AgentTiming.CanUploadTelemetry(state.Load(), settings, clock.GetUtcNow())' in agent_service, 'telemetry safety must use persisted expiry/retry timestamps'
+assert 'AgentTiming.CanUploadTelemetry(' in agent_service and '!checkNetwork || IsNetworkPolicySatisfied()' in agent_service, 'telemetry safety must use persisted expiry/retry timestamps and the network policy'
 assert 'delay >= TimeSpan.FromMinutes(1)' not in csharp_program, 'do not gate telemetry on the normal 15-second agent sleep'
 assert 'Math.Clamp(settings.TelemetryHttpTimeoutMilliseconds, 10000, 30000)' in telemetry_uploader, 'persisted short telemetry timeouts must not strand existing users'
 assert 'TelemetryUploader.GetHttpTimeout(settings)' in agent_service and 'TelemetryMaxBatchesPerFlush' in agent_service, 'the pre-auth safety window must reserve the entire configured flush budget'
-assert 'LongIdleInterval = TimeSpan.FromMinutes(15)' in agent_service and 'ExpiryReminderWindow = TimeSpan.FromMinutes(5)' in agent_service, 'daytime agent must preserve energy-saving idle and reminder boundary'
+assert 'longIdleEnd - now' in agent_service and 'ExpiryReminderWindow = TimeSpan.FromMinutes(5)' in agent_service, 'healthy daytime agent must sleep to the next actual deadline'
 assert 'BoundSleepByBackgroundWork' in csharp_program and 'BoundSleepByBackgroundWork' in agent_service, 'idle sleep must respect update and telemetry deadlines'
 assert 'NetworkChange.NetworkAddressChanged +=' in csharp_program and 'NetworkChange.NetworkAvailabilityChanged +=' in csharp_program, 'long-idle agent must respond to network changes'
+assert 'AgentPowerResumeMonitor.TryRegister(' in csharp_program, 'long-idle agent must respond to Windows power resume'
+assert 'MissingNetworkFallbackInterval' in agent_service and 'PublishAutomaticLimitNotification()' in agent_service, 'overdue agent must use sparse fallback and notify on exhausted attempts'
 
 
 # Campus speed test: reproduce the provider's observed standalone LibreSpeed

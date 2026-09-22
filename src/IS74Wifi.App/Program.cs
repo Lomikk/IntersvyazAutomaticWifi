@@ -3112,6 +3112,9 @@ internal static class Program
         void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs __) => WakeForNetworkChange();
         NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
         NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+        using var resumeMonitor = AgentPowerResumeMonitor.TryRegister(
+            WakeForNetworkChange,
+            error => app.Logger.Write(DiagnosticLevel.Warn, $"agent.resume-monitor unavailable error={error}"));
         AgentProcessControl.RegisterCurrentAgentProcess();
         using var stopCts = new CancellationTokenSource();
         var stopRegistration = ThreadPool.RegisterWaitForSingleObject(
@@ -3182,6 +3185,13 @@ internal static class Program
                 }
 
                 var delay = app.Agent.GetSleepDelay();
+                if (resumeMonitor is null)
+                {
+                    // Power notifications are unavailable on this machine.
+                    // Retain a bounded heartbeat so Windows 8+ sleep-excluded
+                    // wait timeouts cannot strand an overdue authorization.
+                    delay = delay < TimeSpan.FromMinutes(15) ? delay : TimeSpan.FromMinutes(15);
+                }
                 try
                 {
                     var now = DateTimeOffset.UtcNow;
