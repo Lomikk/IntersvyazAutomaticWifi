@@ -6,14 +6,15 @@ This note records a source-level audit of the current C# authorization path. It 
 
 ## Current trigger model
 
-The long-running per-user agent subscribes to system network address/availability changes as an early wake signal; the persisted `ExpectedExpiryUtc` remains authoritative. Its wake-up policy is driven by the persisted `ExpectedExpiryUtc` produced by the last successful `stepTwo`:
+The long-running per-user agent subscribes to system network address/availability changes and Windows suspend/resume notifications as early wake signals; the persisted `ExpectedExpiryUtc` remains authoritative. Its wake-up policy is driven by the persisted `ExpectedExpiryUtc` produced by the last successful `stepTwo`:
 
-- far before the predicted 24-hour edge: sleep up to 15 minutes, waking earlier for the five-minute reminder boundary, due background maintenance, or a network change; no Internet/captive probe is performed;
+- far before the predicted 24-hour edge: sleep directly until the five-minute reminder boundary (or an earlier custom guard), due background maintenance, network change, or system resume; no Internet/captive probe is performed. If native resume notifications are unavailable, a 15-minute fallback bounds the wait;
 - during the last five minutes before the guard: retain the `AgentPollSeconds` approach cadence (15 s by default);
 - from `expiry - 10 s` through `expiry + 10 s`: wake every 250 ms by default;
 - before the exact expiry, two nearby local SUSU connectivity-probe responses are required before an early `stepOne` is allowed;
 - at/after the predicted expiry, the timer itself is authoritative and the agent does not wait for an Internet probe before entering the authorization flow;
-- once overdue and outside the guard, a machine that is not currently on `Campus Wi-Fi*` wakes roughly once per second, so joining the target SSID after expiry is noticed quickly.
+- once overdue and outside the guard, a machine that is not currently on `Campus Wi-Fi*` waits for a network-change notification with a five-minute fallback for missed events. With the SSID restriction disabled, an expired unscheduled agent uses a one-minute fallback, and scheduled retries sleep directly until due;
+- a terminal automatic `stepOne` attempt budget stops further attempts and sends one important toast; ordinary background update/telemetry maintenance continues.
 
 After the trigger, the critical path is structurally faithful to the validated experiments:
 
@@ -87,4 +88,4 @@ The automatic trigger enters `AuthorizationFlow` and must complete one baseline 
 
 ## Validation available in this workspace
 
-`python tests/static_checks.py` passes after the changes. A .NET SDK is not present in the Infra execution environment, so this audit did not rerun the C# build/contracts locally; the existing repository CI remains the compile/test gate.
+The September 2026 lifecycle changes have been built locally with .NET SDK 10.0.401 and the user-supplied Windows reference packs. Linux-safe contract groups and scheduling/resume-event policy tests pass. Actual power-resume callbacks, Windows contract tests, and the Windows NativeAOT executable still require a Windows run; `IS74Wifi-Windows-Tests.ps1 -NativeAot` is available for that validation.

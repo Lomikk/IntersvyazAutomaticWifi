@@ -3,15 +3,19 @@ namespace IS74Wifi.Core;
 public static class AgentTiming
 {
     private static readonly TimeSpan MinimumTelemetrySafetyWindow = TimeSpan.FromMinutes(1);
-    // Outside the five-minute reminder/edge approach there is no authorization
-    // work to perform. Keep a bounded housekeeping heartbeat rather than
-    // waking the process every AgentPollSeconds (15 s by default).
+    // Fallback heartbeat for a missing auth baseline, a terminal state or a
+    // missed network-change notification. A healthy 24-hour auth cycle sleeps
+    // straight to its next scheduled deadline instead.
     private static readonly TimeSpan LongIdleInterval = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan MissingNetworkFallbackInterval = TimeSpan.FromMinutes(5);
+    // WaitHandle's timeout must fit in a signed 32-bit millisecond count.
+    private static readonly TimeSpan MaximumWaitInterval = TimeSpan.FromDays(24);
     public static readonly TimeSpan ExpiryReminderWindow = TimeSpan.FromMinutes(5);
 
-    // This must not depend on GetSleepDelay: the normal 15-second agent tick
-    // says nothing about how far away the next authorization actually is.
-    public static bool CanUploadTelemetry(RuntimeState state, AppSettings settings, DateTimeOffset now)
+    // Upload safety depends on the authorization deadline, never the current
+    // idle/guard wake interval.
+    public static bool CanUploadTelemetry(
+        RuntimeState state, AppSettings settings, DateTimeOffset now, bool networkPolicySatisfied = true)
     {
         // A raised batch cap/timeout can extend the upload well beyond a minute.
         // Reserve enough time for the entire flush plus a small scheduling margin.
@@ -29,6 +33,16 @@ public static class AgentTiming
             return true;
         }
 
+        // With network checking enabled, no automatic authorization can start
+        // until the target Wi-Fi returns. Outside the active guard, telemetry
+        // can use another connection rather than being stranded indefinitely.
+        // Still protect the entire guard: the target network could reappear
+        // while an Apps Script request is in flight.
+        if (!networkPolicySatisfied && now > expiry.AddSeconds(Math.Max(1, settings.GuardWindowSeconds)))
+        {
+            return true;
+        }
+
         if (expiry - now > safetyWindow)
         {
             return true;
@@ -40,7 +54,8 @@ public static class AgentTiming
                retryAt - now > safetyWindow;
     }
 
-    public static TimeSpan GetSleepDelay(RuntimeState state, AppSettings settings, DateTimeOffset now)
+    public static TimeSpan GetSleepDelay(
+        RuntimeState state, AppSettings settings, DateTimeOffset now, bool networkPolicySatisfied = true)
     {
         var approachInterval = TimeSpan.FromSeconds(Math.Max(1, settings.AgentPollSeconds));
         if (state.UserActionRequired || state.ExpectedExpiryUtc is not { } expiry)
@@ -61,9 +76,10 @@ public static class AgentTiming
             var longIdleEnd = reminderStart < guardStart ? reminderStart : guardStart;
             if (now < longIdleEnd)
             {
-                // Wake precisely at the five-minute reminder boundary even if
-                // a long idle sleep would otherwise overshoot it.
-                return ClampMinimum(Min(LongIdleInterval, longIdleEnd - now));
+                // The authorization schedule is known: no need for a 15-minute
+                // heartbeat all day. Background update/telemetry deadlines can
+                // still shorten this wait in the host.
+                return ClampMinimum(Min(MaximumWaitInterval, longIdleEnd - now));
             }
 
             // Retain the existing cadence near expiry and never cross the
@@ -79,16 +95,19 @@ public static class AgentTiming
         if (state.NextAutomaticRetryUtc is { } retryAt && now < retryAt)
         {
             var untilRetry = retryAt - now;
-            return ClampMinimum(Min(untilRetry, approachInterval));
+            var fallback = networkPolicySatisfied ? MaximumWaitInterval : MissingNetworkFallbackInterval;
+            return ClampMinimum(Min(untilRetry, fallback));
         }
 
-        var overdue = TimeSpan.FromSeconds(1);
-        return Min(approachInterval, overdue);
+        // After the active window, never spin on a one-second local poll.
+        // Network change notifications wake the host immediately; the fallback
+        // also covers SSID changes which do not produce an address event.
+        return networkPolicySatisfied ? TimeSpan.FromMinutes(1) : MissingNetworkFallbackInterval;
     }
 
     // The authorization clock is independent of update checks and queued
     // telemetry. A shorter due time must still wake the agent while it is
-    // otherwise waiting in the 15-minute long-idle mode.
+    // otherwise sleeping directly until its next authorization deadline.
     public static TimeSpan BoundSleepByBackgroundWork(
         TimeSpan authorizationDelay,
         DateTimeOffset now,
@@ -135,9 +154,28 @@ public sealed class AgentService(
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private DateTimeOffset? notifiedExpiryUtc;
-    public TimeSpan GetSleepDelay() => AgentTiming.GetSleepDelay(state.Load(), settings, clock.GetUtcNow());
+    public TimeSpan GetSleepDelay()
+    {
+        var runtime = state.Load();
+        var now = clock.GetUtcNow();
+        // Avoid enumerating adapters throughout the ordinary 24-hour idle.
+        var checkNetwork = !runtime.UserActionRequired &&
+                           runtime.ExpectedExpiryUtc is { } expiry &&
+                           now > expiry.AddSeconds(Math.Max(1, settings.GuardWindowSeconds));
+        return AgentTiming.GetSleepDelay(
+            runtime, settings, now, !checkNetwork || IsNetworkPolicySatisfied());
+    }
 
-    public bool CanUploadTelemetry() => AgentTiming.CanUploadTelemetry(state.Load(), settings, clock.GetUtcNow());
+    public bool CanUploadTelemetry()
+    {
+        var runtime = state.Load();
+        var now = clock.GetUtcNow();
+        var checkNetwork = !runtime.UserActionRequired &&
+                           runtime.ExpectedExpiryUtc is { } expiry &&
+                           expiry - now <= TimeSpan.FromMinutes(5);
+        return AgentTiming.CanUploadTelemetry(
+            runtime, settings, now, !checkNetwork || IsNetworkPolicySatisfied());
+    }
 
     public async Task TickAsync(CancellationToken cancellationToken = default)
     {
@@ -167,12 +205,7 @@ public sealed class AgentService(
             return;
         }
 
-        if (runtime.UserActionRequired || !IsNetworkPolicySatisfied())
-        {
-            return;
-        }
-
-        if (runtime.NextAutomaticRetryUtc is { } retryAt && now < retryAt)
+        if (runtime.UserActionRequired)
         {
             return;
         }
@@ -182,11 +215,13 @@ public sealed class AgentService(
             state.MarkUserActionRequired("automatic-step-one-limit", AuthorizationAttemptReason.Retry);
             logger.Write(DiagnosticLevel.Error,
                 $"Automatic stepOne limit reached attempts={runtime.AutomaticStepOneAttempts}/{settings.MaxAutomaticStepOneAttempts}");
-            PublishNotification(new AgentNotification(
-                "Автоавторизация остановлена",
-                "Достигнут лимит автоматических попыток. Откройте IS74Wifi для подробностей.",
-                AgentNotificationImportance.Important,
-                AgentNotificationSeverity.Error));
+            PublishAutomaticLimitNotification();
+            return;
+        }
+
+        if (!IsNetworkPolicySatisfied() ||
+            runtime.NextAutomaticRetryUtc is { } retryAt && now < retryAt)
+        {
             return;
         }
 
@@ -262,7 +297,20 @@ public sealed class AgentService(
                 Force: true),
             cancellationToken).ConfigureAwait(false);
 
-        NotifyAuthorizationOutcome(outcome);
+        // The authorization flow can consume the final stepOne reservation and
+        // mark the state terminal before returning a RetryableStepOne outcome.
+        // Without inspecting persisted state here, the agent would only show a
+        // routine retry toast and then silently stop on the next tick.
+        var updated = state.Load();
+        if (updated.UserActionRequired &&
+            string.Equals(updated.LastResult, "automatic-step-one-limit", StringComparison.Ordinal))
+        {
+            PublishAutomaticLimitNotification();
+        }
+        else
+        {
+            NotifyAuthorizationOutcome(outcome);
+        }
 
         if (outcome.Kind == AuthorizationOutcomeKind.AlreadyAuthorized && clock.GetUtcNow() > guardEnd)
         {
@@ -274,6 +322,13 @@ public sealed class AgentService(
             state.ScheduleAutomaticRetry(TimeSpan.FromSeconds(delaySeconds));
         }
     }
+
+    private void PublishAutomaticLimitNotification() =>
+        PublishNotification(new AgentNotification(
+            "Автоавторизация остановлена",
+            "Достигнут лимит автоматических попыток. Откройте IS74Wifi для подробностей.",
+            AgentNotificationImportance.Important,
+            AgentNotificationSeverity.Error));
 
 
     private void MaybeNotifyUpcomingExpiry(RuntimeState runtime, DateTimeOffset expiry, DateTimeOffset now)
