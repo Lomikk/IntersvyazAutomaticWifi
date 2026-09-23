@@ -83,8 +83,8 @@ internal static class AgentContractTests
         var now = new DateTimeOffset(2026, 9, 23, 10, 0, 0, TimeSpan.Zero);
         var settings = new AppSettings();
 
-        // The old delay-based condition would never permit an upload: even
-        // with expiry a day away, the idle tick is only 15 seconds.
+        // Upload permission must be based on the authorization deadline, not
+        // on whichever short or long sleep cadence the agent currently uses.
         var healthy = new RuntimeState { ExpectedExpiryUtc = now.AddHours(12) };
         Assert(AgentTiming.GetSleepDelay(healthy, settings, now) ==
                TimeSpan.FromHours(11) + TimeSpan.FromMinutes(55),
@@ -261,8 +261,8 @@ internal static class AgentContractTests
             "daytime tick must not probe Internet before the active guard");
         Assert(fixture.Authorization.Calls == 0,
             "daytime tick must not attempt authorization before the active guard");
-        Assert(fixture.Agent.GetSleepDelay() == TimeSpan.FromMinutes(15),
-            "daytime tick must return to the energy-saving idle heartbeat");
+        Assert(fixture.Agent.GetSleepDelay() == TimeSpan.FromHours(11) + TimeSpan.FromMinutes(55),
+            "daytime tick must wait until the five-minute expiry reminder, not poll every 15 minutes");
     }
 
     private static async Task TestExpiryIsAuthoritativeAsync()

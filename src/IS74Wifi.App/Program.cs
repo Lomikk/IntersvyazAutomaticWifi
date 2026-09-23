@@ -3165,8 +3165,8 @@ internal static class Program
                         $"update.maintenance error={ex.GetType().Name}");
                 }
 
-                // Only the actual time until authorization/retry matters here:
-                // the normal idle tick is 15 seconds even when expiry is hours away.
+                // Upload safety follows the persisted authorization/retry deadline,
+                // independently of the agent's daytime and active-guard wake cadence.
                 if (app.Agent.CanUploadTelemetry())
                 {
                     try
