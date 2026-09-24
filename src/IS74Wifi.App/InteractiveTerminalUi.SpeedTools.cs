@@ -150,14 +150,16 @@ internal sealed partial class InteractiveTerminalUi
         InteractiveStatusSnapshot currentStatus,
         CampusSpeedToolsService speedTools,
         Func<CancellationToken, Task<bool>> ensureAnonymousStatisticsConsent,
+        LeaderboardNicknamePreferences nicknamePreferences,
         CancellationToken cancellationToken = default)
     {
+        speedNicknameDraft = nicknamePreferences.Load();
         status = currentStatus;
         var mainMenuSelection = selected;
 
         if (!CanUseInteractiveSession)
         {
-            await RunSpeedToolsCompactAsync(speedTools, ensureAnonymousStatisticsConsent, cancellationToken).ConfigureAwait(false);
+            await RunSpeedToolsCompactAsync(speedTools, ensureAnonymousStatisticsConsent, nicknamePreferences, cancellationToken).ConfigureAwait(false);
             selected = mainMenuSelection;
             return;
         }
@@ -223,7 +225,14 @@ internal sealed partial class InteractiveTerminalUi
                     var nickname = await PromptSpeedNicknameAsync(speedNicknameDraft, cancellationToken).ConfigureAwait(false);
                     if (nickname is not null)
                     {
-                        speedNicknameDraft = nickname;
+                        if (nicknamePreferences.TrySave(nickname, out var savedNickname))
+                        {
+                            speedNicknameDraft = savedNickname;
+                        }
+                        else
+                        {
+                            speedStatusText = "Ник не сохранён: используйте буквы или цифры";
+                        }
                     }
                 }
                 else if (key.KeyChar == '4')
@@ -869,6 +878,7 @@ internal sealed partial class InteractiveTerminalUi
     private async Task RunSpeedToolsCompactAsync(
         CampusSpeedToolsService speedTools,
         Func<CancellationToken, Task<bool>> ensureAnonymousStatisticsConsent,
+        LeaderboardNicknamePreferences nicknamePreferences,
         CancellationToken cancellationToken)
     {
         while (true)
@@ -940,7 +950,14 @@ internal sealed partial class InteractiveTerminalUi
                 var nickname = Console.ReadLine()?.Trim();
                 if (!string.IsNullOrWhiteSpace(nickname))
                 {
-                    speedNicknameDraft = nickname[..Math.Min(nickname.Length, SpeedNicknameMaximumLength)];
+                    if (nicknamePreferences.TrySave(nickname, out var savedNickname))
+                    {
+                        speedNicknameDraft = savedNickname;
+                    }
+                    else
+                    {
+                        speedStatusText = "Ник не сохранён: используйте буквы или цифры";
+                    }
                 }
             }
             else if (key.KeyChar == '4')

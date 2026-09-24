@@ -125,7 +125,11 @@ The payload `event_type` still selects the row schema (`attempt`, `mailbox_poll`
 
 The production `/exec` URL is a versioned Apps Script deployment. Saving editor code is not enough: after a receiver change, create a new script version and edit the existing deployment to use it. Keep execution as the deploying account and anonymous/public access enabled. A quick contract check is that the root GET reports schema 4 and `accepted_schemas` contains 1, 2, 3 and 4 and `GET ?route=leaderboard&limit=3` returns an object with an `entries` array.
 
-The public leaderboard is sorted by download speed, then upload speed, then lower latency, with newest rows as the final tie-breaker. Its response exposes only rank, nickname, download/upload, latency, jitter and optional packet loss. Private `install_id`, `test_id`, `event_id`, radio metadata and time bucket remain server-side.
+The public leaderboard shows **at most one row per valid private `install_id`**, selecting that installation's best published speed result (download, then upload, then lower latency, then recency). All metrics in the displayed row come from that single best measurement; the visible nickname is from the installation's **latest valid published leaderboard entry**, even if its best speed was recorded under an older nickname. Different installations can use identical nicknames and appear independently. Existing rows without a usable `install_id` stay separate, since their identities cannot safely be guessed. The response exposes only rank, nickname, download/upload, latency, jitter and optional packet loss; private `install_id`, `test_id`, `event_id`, radio metadata and time bucket remain server-side.
+
+The terminal's optional nickname is a **local `settings.json` preference** (default: `Гость`), reused on later launches and editable from both rich and compact speed menus. It is not a user account or analytical identity; `install_id` remains unchanged when the nickname changes. Publication still requires the existing explicit action and anonymous-statistics consent.
+
+**Server rollout:** the corresponding standalone schema-v4 Apps Script must be published as a **new version of the existing `/exec` deployment**. It groups historical entries at GET time; both `Leaderboard` and `SpeedTests` remain append-only, the wire schema/POST routes are unchanged, and no migration or sheet reset is required. **Do not run `setupSheets()`** on existing data.
 
 No route-specific rate limits, accepted-tests-per-day limit, or ingestion kill switch are enforced yet. Those remain possible backend hardening work. Because the client is open source, future anti-abuse controls should be treated as operational guards rather than an identity/security boundary.
 
@@ -144,7 +148,7 @@ Google Sheets is an append-only ingestion buffer, not the analytics engine. The 
 
 The intended analysis path is export/import into SQL, Python, or Parquet. `event_id` is the durable row-level deduplication key; `attempt_id` joins authorization events; `install_id` groups behavior by installation without revealing an InterSvyaz account.
 
-For the network-quality study, `SpeedTests` is the canonical research source. `Leaderboard` is only a recreational presentation dataset and may contain many nicknames/entries for one installation. Its private `install_id`/`test_id` are retained for attribution and joins but must never be exposed by `GET leaderboard`.
+For the network-quality study, `SpeedTests` is the canonical research source. `Leaderboard` retains **every explicitly published entry** as an append-only presentation history, including repeat measurements and nickname changes from one installation. Public `GET leaderboard` collapses those rows by valid `install_id`, without mutating the underlying sheet. Its private `install_id`/`test_id` are retained for attribution and joins but never exposed by the public view.
 
 The public leaderboard response contains rank, nickname, and measurement values only.
 

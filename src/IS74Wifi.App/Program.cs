@@ -1869,7 +1869,8 @@ internal static class Program
                         await ui.RunSpeedToolsAsync(
                             GetInteractiveStatusSnapshot(),
                             speedRuntime.CampusSpeedTools,
-                            cancellationToken => EnsureAnonymousStatisticsConsentForPublicationAsync(ui, cancellationToken)).ConfigureAwait(false);
+                            cancellationToken => EnsureAnonymousStatisticsConsentForPublicationAsync(ui, cancellationToken),
+                            new LeaderboardNicknamePreferences(new SettingsStore(speedRuntime.Paths, speedRuntime.Json))).ConfigureAwait(false);
                         break;
                     }
 

@@ -283,5 +283,8 @@ assert '"=+-@".Contains(trimmed[0])' in speed_tools_service, 'leaderboard nickna
 speed_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.SpeedTools.cs').read_text(encoding='utf-8')
 assert 'CampusSpeedToolsService' in speed_ui and 'RunSpeedMeasurementAsync' in speed_ui, 'speed-tools UI is not connected to measurement core'
 assert 'PublishLastSpeedResultAsync' in speed_ui and 'GetLeaderboardAsync' in speed_ui, 'speed-tools UI is not connected to leaderboard backend'
+assert 'nicknamePreferences.Load()' in speed_ui and speed_ui.count('nicknamePreferences.TrySave(') == 2, 'rich and compact menus must persist the nickname'
+assert 'new LeaderboardNicknamePreferences(new SettingsStore(speedRuntime.Paths, speedRuntime.Json))' in (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8'), 'nickname preferences must be wired into speed menu'
+assert 'LeaderboardNickname' in (root / 'src' / 'IS74Wifi.Core' / 'AppSettings.cs').read_text(encoding='utf-8'), 'nickname preference missing from settings'
 
 print('static checks: OK')

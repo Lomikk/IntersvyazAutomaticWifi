@@ -54,6 +54,24 @@ static Task TestStorageAsync()
     Assert(settingsStore.Load().AnonymousStatisticsConsent == AnonymousStatisticsConsent.Declined,
         "anonymous statistics consent did not persist");
 
+    var installId = new TelemetryIdentityStore(paths).GetOrCreate();
+    var nickPreferences = new LeaderboardNicknamePreferences(new SettingsStore(paths, json));
+    Assert(nickPreferences.Load() == "Гость", "fresh installation must display the default nickname");
+    Assert(nickPreferences.TrySave(" WiFi King ", out var storedNickname) && storedNickname == "WiFi King",
+        "valid nickname must save in its sanitized display form");
+    Assert(new LeaderboardNicknamePreferences(new SettingsStore(paths, new JsonFileStore())).Load() == "WiFi King",
+        "nickname must survive a new application/settings-store instance");
+    Assert(!nickPreferences.TrySave("😊", out _) && nickPreferences.Load() == "WiFi King",
+        "unsupported nickname must not erase a saved preference");
+    Assert(!nickPreferences.TrySave("-unsafe", out _),
+        "a nickname that the publication protocol would reject cannot be persisted");
+    Assert(new TelemetryIdentityStore(paths).GetOrCreate() == installId,
+        "changing nickname must never rotate or derive install_id");
+    Assert(LeaderboardNicknamePreferences.Normalize(new string('A', 40))?.Length == 18,
+        "nickname length must match the terminal editor");
+    Assert(new SettingsStore(paths, json).Load().AnonymousStatisticsConsent == AnonymousStatisticsConsent.Declined,
+        "saving a nickname must preserve telemetry consent");
+
     var stateStore = new RuntimeStateStore(paths, json);
     var expectedExpiry = DateTimeOffset.UtcNow.AddHours(24);
     var state = new RuntimeState
