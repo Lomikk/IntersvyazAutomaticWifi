@@ -63,8 +63,18 @@ static Task TestStorageAsync()
         "nickname must survive a new application/settings-store instance");
     Assert(!nickPreferences.TrySave("😊", out _) && nickPreferences.Load() == "WiFi King",
         "unsupported nickname must not erase a saved preference");
-    Assert(!nickPreferences.TrySave("-unsafe", out _),
-        "a nickname that the publication protocol would reject cannot be persisted");
+    Assert(!nickPreferences.TrySave("-unsafe", out _) &&
+           !nickPreferences.TrySave("@unsafe", out _) &&
+           !nickPreferences.TrySave("=unsafe", out _),
+        "formula-like nicknames must be rejected before sanitization");
+    Assert(!nickPreferences.TrySave("  ", out _) && nickPreferences.Load() == "WiFi King",
+        "an empty rename must preserve the existing nickname");
+    Assert(nickPreferences.TrySave(" Алекс ", out var renamed) && renamed == "Алекс",
+        "a user may rename the same installation without resetting it");
+    Assert(new LeaderboardNicknamePreferences(new SettingsStore(paths, new JsonFileStore())).Load() == "Алекс",
+        "renamed nickname must survive another application instance");
+    Assert(nickPreferences.TrySave("WiFi King", out _) && nickPreferences.Load() == "WiFi King",
+        "returning to an older nickname must restore that name");
     Assert(new TelemetryIdentityStore(paths).GetOrCreate() == installId,
         "changing nickname must never rotate or derive install_id");
     Assert(LeaderboardNicknamePreferences.Normalize(new string('A', 40))?.Length == 18,

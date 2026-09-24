@@ -35,8 +35,12 @@ public sealed class LeaderboardNicknamePreferences(SettingsStore settings)
     public static string? Normalize(string? proposed)
     {
         if (string.IsNullOrWhiteSpace(proposed)) return null;
-        var safe = LeaderboardDisplayPolicy.SanitizeNickname(proposed);
-        if (safe.Length == 0 || safe[0] == '-') return null;
+        var trimmed = proposed.Trim();
+        // Reject formula-like names *before* sanitizing: stripping their first
+        // character would silently turn an invalid user input into a new nick.
+        if ("=+-@".Contains(trimmed[0])) return null;
+        var safe = LeaderboardDisplayPolicy.SanitizeNickname(trimmed);
+        if (safe.Length == 0) return null;
 
         // The terminal editor uses 18 UTF-16 characters; keep persisted values
         // within the same bound without splitting surrogate pairs.

@@ -8,7 +8,7 @@ namespace IS74Wifi.App;
 // wired here while authorization remains isolated from high-bandwidth traffic.
 internal sealed partial class InteractiveTerminalUi
 {
-    private const int SpeedNicknameMaximumLength = 18;
+    private const int SpeedNicknameMaximumLength = LeaderboardNicknamePreferences.MaximumNicknameLength;
 
     private static readonly IReadOnlyDictionary<char, string[]> SpeedMetricGlyphs =
         new Dictionary<char, string[]>
@@ -228,6 +228,7 @@ internal sealed partial class InteractiveTerminalUi
                         if (nicknamePreferences.TrySave(nickname, out var savedNickname))
                         {
                             speedNicknameDraft = savedNickname;
+                            speedStatusText = "Ник сохранён";
                         }
                         else
                         {
@@ -469,13 +470,9 @@ internal sealed partial class InteractiveTerminalUi
 
             if (key.Key == ConsoleKey.Enter)
             {
-                var nickname = value.ToString().Trim();
-                if (nickname.Length > 0)
-                {
-                    return nickname;
-                }
-                keyTask = ReadKeyAsync();
-                continue;
+                // Empty input is reported by the shared validator. It never
+                // clears the previously saved preference.
+                return value.ToString().Trim();
             }
 
             if (!char.IsControl(key.KeyChar) && value.Length < SpeedNicknameMaximumLength)
@@ -948,16 +945,14 @@ internal sealed partial class InteractiveTerminalUi
                 Console.Clear();
                 Console.Write("Никнейм: ");
                 var nickname = Console.ReadLine()?.Trim();
-                if (!string.IsNullOrWhiteSpace(nickname))
+                if (nicknamePreferences.TrySave(nickname, out var savedNickname))
                 {
-                    if (nicknamePreferences.TrySave(nickname, out var savedNickname))
-                    {
-                        speedNicknameDraft = savedNickname;
-                    }
-                    else
-                    {
-                        speedStatusText = "Ник не сохранён: используйте буквы или цифры";
-                    }
+                    speedNicknameDraft = savedNickname;
+                    speedStatusText = "Ник сохранён";
+                }
+                else
+                {
+                    speedStatusText = "Ник не сохранён: используйте буквы или цифры";
                 }
             }
             else if (key.KeyChar == '4')
