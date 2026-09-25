@@ -21,11 +21,16 @@ var tests = new (string Name, Func<Task> Run)[]
     ("speedtest-is74-librespeed", SpeedTestContractTests.RunAsync),
     ("agent-policy", AgentContractTests.RunAsync),
     ("cached-dns", DnsContractTests.RunAsync),
+    ("direct-network-adapter", DirectNetworkContractTests.RunAsync),
     ("internet-probe", TestInternetProbeAsync),
     ("self-update", UpdateContractTests.RunAsync)
 };
 
-foreach (var test in tests)
+// The Windows-only DPAPI/WLAN contracts cannot run on Linux; permit selecting
+// the pure direct-network contracts there without weakening the Windows suite.
+var filter = args.FirstOrDefault(arg => arg.StartsWith("--filter=", StringComparison.Ordinal))?
+    ["--filter=".Length..];
+foreach (var test in tests.Where(test => filter is null || test.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)))
 {
     await test.Run();
     Console.WriteLine($"PASS {test.Name}");
@@ -50,9 +55,12 @@ static Task TestStorageAsync()
     Assert(File.Exists(paths.SettingsFile), "default settings were not persisted");
 
     var settingsStore = new SettingsStore(paths, json);
-    settingsStore.Save(settings with { AnonymousStatisticsConsent = AnonymousStatisticsConsent.Declined });
+    settingsStore.Save(settings with { AnonymousStatisticsConsent = AnonymousStatisticsConsent.Declined,
+        DirectNetworkAdapterId = "{cf1dd631-b056-43fd-9dd6-2ba9e86d7f04}" });
     Assert(settingsStore.Load().AnonymousStatisticsConsent == AnonymousStatisticsConsent.Declined,
         "anonymous statistics consent did not persist");
+    Assert(settingsStore.Load().DirectNetworkAdapterId == "{cf1dd631-b056-43fd-9dd6-2ba9e86d7f04}",
+        "manual adapter identity did not persist across settings reload");
 
     var installId = new TelemetryIdentityStore(paths).GetOrCreate();
     var nickPreferences = new LeaderboardNicknamePreferences(new SettingsStore(paths, json));
@@ -205,6 +213,15 @@ static async Task TestHttpTransportAsync()
     using var dnsRequest = new HttpRequestMessage(HttpMethod.Get, "https://example.test/");
     var dns = await dnsTransport.SendAsync(dnsRequest, TimeSpan.FromSeconds(1));
     Assert(dns.FailureKind == TransportFailureKind.DnsUnavailable, "DNS failure was not mapped to DnsUnavailable");
+
+    using var directClient = new HttpClient(new DelegateHandler((_, _) =>
+        throw new DirectNetworkUnavailableException("simulated VPN kill switch")));
+    using var directRequest = new HttpRequestMessage(HttpMethod.Get, "https://api.is74.ru/mobile/pushmessages");
+    var direct = await new HttpTransport(directClient).SendAsync(directRequest, TimeSpan.FromSeconds(1));
+    Assert(direct.FailureKind == TransportFailureKind.DirectRouteUnavailable,
+        "a blocked direct adapter must be classified separately from API authentication errors");
+    Assert(direct.ErrorMessage is not null && !direct.ErrorMessage.Contains("kill switch", StringComparison.Ordinal),
+        "routing diagnostics must not echo arbitrary exception contents");
 
     using var oversizedClient = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
         new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[BoundedHttpContent.DefaultBodyLimitBytes + 1]) })));

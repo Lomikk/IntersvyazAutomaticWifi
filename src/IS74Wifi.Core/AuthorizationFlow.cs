@@ -12,7 +12,8 @@ public sealed class AuthorizationFlow(
     DiagnosticLogger logger,
     AuthorizationFlowOptions? options = null,
     AuthorizationTelemetryRecorder? telemetry = null,
-    bool ignoreNetworkCheck = false) : IAuthorizationRunner
+    bool ignoreNetworkCheck = false,
+    Func<CancellationToken, Task<bool>>? preStepNetworkCheck = null) : IAuthorizationRunner
 {
     private readonly AuthorizationFlowOptions options = options ?? new AuthorizationFlowOptions();
 
@@ -109,6 +110,23 @@ public sealed class AuthorizationFlow(
             return HandleBaselineFailure(baseline.Failure!, request.Reason);
         }
         ReportProgress(request, AuthorizationProgressStage.BaselineLoaded);
+
+        // Verify direct access to the captive portal before consuming a
+        // crash-safe stepOne reservation; VPN kill switches are not auth errors.
+        if (preStepNetworkCheck is not null &&
+            !await preStepNetworkCheck(cancellationToken).ConfigureAwait(false))
+        {
+            logger.Write(DiagnosticLevel.Warn,
+                "authorization.direct-route portal-unreachable before stepOne; budget=unchanged");
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Cancel(request.Reason);
+            }
+            var next = state.MarkPreStepFailure(request.Reason);
+            return new AuthorizationOutcome(
+                AuthorizationOutcomeKind.RetryableBeforeStepOne,
+                InternetConfirmed: null, AuthorizedAtUtc: null, RetryAfter: next, Timing: null);
+        }
 
         var budget = state.RegisterStepOneSend(request.Reason);
         trace?.SetStepOneAttempt(budget.Attempt);

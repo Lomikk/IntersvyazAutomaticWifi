@@ -127,12 +127,22 @@ assert 'Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContin
 assert 'Wait-IS74ScheduledTaskStopped' in module, 'autostart replacement must wait for the old agent to stop'
 assert 'tests\\critical_path_contract.ps1' not in module  # sanity: tests stay outside runtime
 
-# C# production networking policy: use ordinary system DNS and the validated local SUSU probe.
+# C# direct-interface authorization policy and the validated local SUSU probe.
 csharp_runtime = (root / 'src' / 'IS74Wifi.App' / 'ApplicationRuntime.cs').read_text(encoding='utf-8')
 csharp_http_profiles = (root / 'src' / 'IS74Wifi.Core' / 'HttpClientProfiles.cs').read_text(encoding='utf-8')
 csharp_internet_probe = (root / 'src' / 'IS74Wifi.Core' / 'InternetConnectivityProbe.cs').read_text(encoding='utf-8')
 assert 'new CachedDnsConnector' not in csharp_runtime and 'HostAddressCache' not in csharp_runtime, 'production runtime must not wire cached-IP/direct-connect'
-assert 'ConnectCallback' not in csharp_http_profiles, 'production HttpClient profiles must use ordinary system DNS'
+assert csharp_http_profiles.count('handler.ConnectCallback = direct.ConnectAsync;') == 3, 'API, portal and SUSU must share direct-interface connector'
+assert 'PhysicalAdapterSelection.Enumerate' in csharp_runtime and 'CanReachPortalAsync' in csharp_runtime, 'runtime direct adapter selection/pre-step handshake missing'
+assert 'UseProxy = false' in csharp_http_profiles, 'direct auth transports must bypass system proxy'
+csharp_direct = (root / 'src' / 'IS74Wifi.Core' / 'DirectNetworkConnector.cs').read_text(encoding='utf-8')
+assert 'IpUnicastIf = 31' in csharp_direct and 'socket.Bind(' in csharp_direct, 'route must bind both interface and source IPv4'
+assert 'AllowedHosts' in csharp_direct and 'api.is74.ru' in csharp_direct and 'w.is74.ru' in csharp_direct and 'online.susu.ru' in csharp_direct
+csharp_dns = (root / 'src' / 'IS74Wifi.Core' / 'InterfaceDnsResolver.cs').read_text(encoding='utf-8')
+assert 'BindSocket(socket, adapter)' in csharp_dns and 'SystemFallback' in csharp_dns, 'adapter DNS and address-only fallback required'
+assert 'CanReachPortalAsync' in csharp_direct and 'ConnectHostAsync("w.is74.ru", 80' in csharp_direct, 'portal preflight must use HTTP port 80'
+csharp_diagnostic_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8')
+assert 'http://w.is74.ru/' in csharp_diagnostic_program and 'https://w.is74.ru/' not in csharp_diagnostic_program, 'portal diagnostic must use real HTTP endpoint'
 assert 'http://online.susu.ru/' in csharp_internet_probe and 'https://online.susu.ru/' in csharp_internet_probe, 'local SUSU connectivity probe contract missing'
 assert 'readBody: false' in csharp_internet_probe, 'SUSU success probe must be headers-only'
 assert 'www.msftconnecttest.com' not in csharp_internet_probe, 'Microsoft Connect Test must not remain the primary C# probe'

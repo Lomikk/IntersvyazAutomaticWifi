@@ -4,7 +4,7 @@ namespace IS74Wifi.Core;
 
 public static class HttpClientProfiles
 {
-    public static HttpClient CreateApiClient()
+    public static HttpClient CreateApiClient(DirectNetworkConnector? direct = null)
     {
         var handler = new SocketsHttpHandler
         {
@@ -12,6 +12,11 @@ public static class HttpClientProfiles
             MaxConnectionsPerServer = 16,
             UseProxy = false
         };
+        if (direct is not null)
+        {
+            handler.ConnectCallback = direct.ConnectAsync;
+            handler.PooledConnectionLifetime = TimeSpan.FromSeconds(10);
+        }
         handler.SslOptions.CertificateRevocationCheckMode = X509RevocationMode.NoCheck;
         return new HttpClient(handler, disposeHandler: true)
         {
@@ -19,7 +24,7 @@ public static class HttpClientProfiles
         };
     }
 
-    public static HttpClient CreatePortalClient()
+    public static HttpClient CreatePortalClient(DirectNetworkConnector? direct = null)
     {
         var handler = new SocketsHttpHandler
         {
@@ -27,6 +32,11 @@ public static class HttpClientProfiles
             MaxConnectionsPerServer = 16,
             UseProxy = false
         };
+        if (direct is not null)
+        {
+            handler.ConnectCallback = direct.ConnectAsync;
+            handler.PooledConnectionLifetime = TimeSpan.FromSeconds(10);
+        }
         handler.SslOptions.CertificateRevocationCheckMode = X509RevocationMode.NoCheck;
         return new HttpClient(handler, disposeHandler: true)
         {
@@ -83,7 +93,7 @@ public static class HttpClientProfiles
         };
     }
 
-    public static HttpClient CreateInternetProbeClient()
+    public static HttpClient CreateInternetProbeClient(DirectNetworkConnector? direct = null)
     {
         var handler = new SocketsHttpHandler
         {
@@ -91,6 +101,11 @@ public static class HttpClientProfiles
             UseProxy = false,
             MaxConnectionsPerServer = 2
         };
+        if (direct is not null)
+        {
+            handler.ConnectCallback = direct.ConnectAsync;
+            handler.PooledConnectionLifetime = TimeSpan.FromSeconds(10);
+        }
         return new HttpClient(handler, disposeHandler: true)
         {
             Timeout = Timeout.InfiniteTimeSpan

@@ -105,6 +105,7 @@ public sealed class RegistrationTelemetryTrace
             Is74ApiFailureKind.Transport => failure.TransportFailure switch
             {
                 TransportFailureKind.DnsUnavailable => "dns",
+                TransportFailureKind.DirectRouteUnavailable => "direct_route",
                 TransportFailureKind.ConnectionFailure => "tcp_connect",
                 TransportFailureKind.TlsFailure => "tls",
                 TransportFailureKind.ResponseTooLarge => "parse_error",

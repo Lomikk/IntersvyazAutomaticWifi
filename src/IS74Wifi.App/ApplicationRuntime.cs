@@ -98,11 +98,15 @@ internal sealed class ApplicationRuntime : IDisposable
         var runtimeState = new RuntimeStateStore(paths, json);
         var authorizationState = new AuthorizationStateManager(runtimeState, settings);
 
-        // Production uses the ordinary system resolver directly. Cached/direct-IP
-        // connection experiments must not add hidden latency before DNS.
-        var apiHttp = HttpClientProfiles.CreateApiClient();
-        var portalHttp = HttpClientProfiles.CreatePortalClient();
-        var internetHttp = HttpClientProfiles.CreateInternetProbeClient();
+        // Direct authorization never uses the system VPN route or VPN DNS. The
+        // legacy route remains an explicit choice in network settings.
+        var direct = string.Equals(settings.DirectNetworkAdapterId,
+            PhysicalAdapterSelection.SystemRoute, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : new DirectNetworkConnector(PhysicalAdapterSelection.Enumerate, settings.DirectNetworkAdapterId);
+        var apiHttp = HttpClientProfiles.CreateApiClient(direct);
+        var portalHttp = HttpClientProfiles.CreatePortalClient(direct);
+        var internetHttp = HttpClientProfiles.CreateInternetProbeClient(direct);
         var speedTestHttp = HttpClientProfiles.CreateSpeedTestClient();
         var api = new Is74ApiClient(new HttpTransport(apiHttp, logger));
         var portal = new CaptivePortalClient(new HttpTransport(portalHttp, logger));
@@ -160,7 +164,15 @@ internal sealed class ApplicationRuntime : IDisposable
             authorizationState,
             logger,
             telemetry: telemetryRecorder,
-            ignoreNetworkCheck: settings.IgnoreNetworkCheck);
+            // Raw interface DNS can time out under VPN before the address-only
+            // system fallback succeeds. No stepOne budget is spent at baseline.
+            options: new AuthorizationFlowOptions
+            {
+                BaselineTimeout = direct is null ? TimeSpan.FromSeconds(3) : TimeSpan.FromSeconds(5)
+            },
+            ignoreNetworkCheck: settings.IgnoreNetworkCheck,
+            preStepNetworkCheck: direct is null ? null :
+                token => direct.CanReachPortalAsync(TimeSpan.FromSeconds(4), token));
         var notifications = new WindowsNotificationService(settingsStore, logger);
         var agent = new AgentService(
             secrets,
