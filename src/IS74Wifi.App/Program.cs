@@ -2893,12 +2893,29 @@ internal static class Program
             }
         }
 
+        async Task<bool> DiagnoseTcpAsync(string host, int port)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+            try
+            {
+                await using var connection = await direct.ConnectHostAsync(host, port, cts.Token)
+                    .ConfigureAwait(false);
+                result.Add($"{host}:{port} / TCP: доступен через выбранный адаптер");
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or OperationCanceledException)
+            {
+                var reason = ex is OperationCanceledException ? "timeout" :
+                    ex is CachedDnsUnavailableException ? "DnsUnavailable" : "маршрут/TCP (возможно VPN kill switch)";
+                result.Add($"{host}:{port} / TCP: недоступен ({reason})");
+                return false;
+            }
+        }
+
         if (await DiagnoseDnsAsync("w.is74.ru").ConfigureAwait(false))
         {
             // A TCP/80 handshake does not touch stepOne, stepTwo or auth budgets.
-            var portalTcp = await direct.CanReachPortalAsync(TimeSpan.FromSeconds(4), CancellationToken.None)
-                .ConfigureAwait(false);
-            result.Add($"w.is74.ru:80 / прямой TCP: {(portalTcp ? "доступен" : "недоступен (маршрут или VPN kill switch)")}");
+            var portalTcp = await DiagnoseTcpAsync("w.is74.ru", 80).ConfigureAwait(false);
             if (portalTcp)
             {
                 using var http = HttpClientProfiles.CreatePortalClient(direct);
@@ -2912,15 +2929,24 @@ internal static class Program
         }
         if (await DiagnoseDnsAsync("api.is74.ru").ConfigureAwait(false))
         {
-            using var http = HttpClientProfiles.CreateApiClient(direct);
-            var transport = new HttpTransport(http);
-            using var request = new HttpRequestMessage(HttpMethod.Get,
-                "https://api.is74.ru/mobile/pushmessages?page=1&pageSize=1");
-            var response = await transport.SendAsync(request, TimeSpan.FromSeconds(5),
-                readBody: false).ConfigureAwait(false);
-            result.Add(response.TransportSucceeded
-                ? $"api.is74.ru / TCP + TLS + HTTP: {(int)response.Response!.StatusCode} (401 без токена — ожидаемо)"
-                : $"api.is74.ru / TCP или TLS: {response.FailureKind}");
+            if (await DiagnoseTcpAsync("api.is74.ru", 443).ConfigureAwait(false))
+            {
+                using var http = HttpClientProfiles.CreateApiClient(direct);
+                var transport = new HttpTransport(http);
+                using var request = new HttpRequestMessage(HttpMethod.Get,
+                    "https://api.is74.ru/mobile/pushmessages?page=1&pageSize=1");
+                var response = await transport.SendAsync(request, TimeSpan.FromSeconds(5),
+                    readBody: false).ConfigureAwait(false);
+                if (response.TransportSucceeded)
+                {
+                    result.Add("api.is74.ru / TLS: проверка сертификата успешна");
+                    result.Add($"api.is74.ru / HTTP: {(int)response.Response!.StatusCode} (401 без токена — ожидаемо)");
+                }
+                else
+                {
+                    result.Add($"api.is74.ru / TLS/HTTP: {response.FailureKind}");
+                }
+            }
         }
         if (await DiagnoseDnsAsync("online.susu.ru").ConfigureAwait(false))
         {

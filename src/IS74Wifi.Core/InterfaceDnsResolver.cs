@@ -18,7 +18,7 @@ public sealed class InterfaceDnsResolver
     private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan FallbackCacheLifetime = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan DnsServerTimeout = TimeSpan.FromMilliseconds(900);
-    private static readonly TimeSpan SystemDnsTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan SystemDnsTimeout = TimeSpan.FromMilliseconds(1700);
     private readonly ConcurrentDictionary<string, (DateTimeOffset Expires, DnsResolution Resolution)> cache = new();
     private readonly Func<string, PhysicalAdapter, CancellationToken, Task<IPAddress[]>> adapterLookup;
     private readonly Func<string, CancellationToken, Task<IPAddress[]>> systemLookup;

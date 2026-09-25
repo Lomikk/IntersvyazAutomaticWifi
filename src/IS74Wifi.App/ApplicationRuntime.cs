@@ -164,6 +164,12 @@ internal sealed class ApplicationRuntime : IDisposable
             authorizationState,
             logger,
             telemetry: telemetryRecorder,
+            // Raw interface DNS can time out under VPN before the address-only
+            // system fallback succeeds. No stepOne budget is spent at baseline.
+            options: new AuthorizationFlowOptions
+            {
+                BaselineTimeout = direct is null ? TimeSpan.FromSeconds(3) : TimeSpan.FromSeconds(5)
+            },
             ignoreNetworkCheck: settings.IgnoreNetworkCheck,
             preStepNetworkCheck: direct is null ? null :
                 token => direct.CanReachPortalAsync(TimeSpan.FromSeconds(4), token));

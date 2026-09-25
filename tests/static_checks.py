@@ -141,7 +141,8 @@ assert 'AllowedHosts' in csharp_direct and 'api.is74.ru' in csharp_direct and 'w
 csharp_dns = (root / 'src' / 'IS74Wifi.Core' / 'InterfaceDnsResolver.cs').read_text(encoding='utf-8')
 assert 'BindSocket(socket, adapter)' in csharp_dns and 'SystemFallback' in csharp_dns, 'adapter DNS and address-only fallback required'
 assert 'CanReachPortalAsync' in csharp_direct and 'ConnectHostAsync("w.is74.ru", 80' in csharp_direct, 'portal preflight must use HTTP port 80'
-assert 'http://w.is74.ru/' in csharp_program and 'https://w.is74.ru/' not in csharp_program, 'portal diagnostic must use real HTTP endpoint'
+csharp_diagnostic_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8')
+assert 'http://w.is74.ru/' in csharp_diagnostic_program and 'https://w.is74.ru/' not in csharp_diagnostic_program, 'portal diagnostic must use real HTTP endpoint'
 assert 'http://online.susu.ru/' in csharp_internet_probe and 'https://online.susu.ru/' in csharp_internet_probe, 'local SUSU connectivity probe contract missing'
 assert 'readBody: false' in csharp_internet_probe, 'SUSU success probe must be headers-only'
 assert 'www.msftconnecttest.com' not in csharp_internet_probe, 'Microsoft Connect Test must not remain the primary C# probe'
