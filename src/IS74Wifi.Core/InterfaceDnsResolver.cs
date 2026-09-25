@@ -12,7 +12,8 @@ public enum DnsAddressSource { AdapterDns, SystemFallback }
 /// authorization TCP sockets are still bound to the selected physical interface.</summary>
 public sealed record DnsResolution(IPAddress[] Addresses, DnsAddressSource Source, bool FromCache);
 
-/// <summary>DNS queries sent over the selected physical interface, not the system/VPN resolver.</summary>
+/// <summary>Prefer DNS on the physical interface, falling back to system DNS
+/// only for addresses when raw interface UDP/53 is unavailable.</summary>
 public sealed class InterfaceDnsResolver
 {
     private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(30);

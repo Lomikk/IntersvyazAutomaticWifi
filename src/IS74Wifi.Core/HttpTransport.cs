@@ -82,7 +82,7 @@ public sealed class HttpTransport(HttpClient client, DiagnosticLogger? logger = 
         {
             return Fail(TransportFailureKind.ResponseTooLarge);
         }
-        catch (DirectNetworkUnavailableException exception)
+        catch (DirectNetworkUnavailableException)
         {
             return Fail(TransportFailureKind.DirectRouteUnavailable, "Прямой маршрут через выбранный адаптер недоступен.");
         }
