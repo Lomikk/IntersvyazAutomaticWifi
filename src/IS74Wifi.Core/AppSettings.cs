@@ -14,6 +14,9 @@ public sealed record AppSettings
     // is not representative of the route used by captive-portal traffic
     // (USB tethering, VPN/proxy software, multiple adapters, etc.).
     public bool IgnoreNetworkCheck { get; init; }
+    // null = automatic physical adapter, "system" = explicitly opt out of direct routing,
+    // otherwise a persistent Windows network interface GUID. Never fall back to VPN silently.
+    public string? DirectNetworkAdapterId { get; init; }
     public AnonymousStatisticsConsent AnonymousStatisticsConsent { get; init; } = global::IS74Wifi.Core.AnonymousStatisticsConsent.Unknown;
     // Local-only display preference. Nicknames never identify telemetry installations.
     public string? LeaderboardNickname { get; init; }

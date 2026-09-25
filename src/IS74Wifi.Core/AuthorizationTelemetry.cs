@@ -650,6 +650,7 @@ public sealed class AuthorizationTelemetryTrace
     private static string MapTransportFailure(TransportFailureKind failure) => failure switch
     {
         TransportFailureKind.DnsUnavailable => "dns",
+        TransportFailureKind.DirectRouteUnavailable => "direct_route",
         TransportFailureKind.ConnectionFailure => "tcp_connect",
         TransportFailureKind.TlsFailure => "tls",
         TransportFailureKind.ResponseTooLarge => "parse_error",

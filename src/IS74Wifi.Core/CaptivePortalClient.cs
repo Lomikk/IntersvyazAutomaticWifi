@@ -155,7 +155,7 @@ public sealed class CaptivePortalClient(HttpTransport transport) : ICaptivePorta
         CaptivePortalFailureKind.Transport,
         operation,
         call.FailureKind,
-        SideEffectMayHaveOccurred: call.FailureKind is not (TransportFailureKind.DnsUnavailable or TransportFailureKind.TlsFailure),
+        SideEffectMayHaveOccurred: call.FailureKind is not (TransportFailureKind.DnsUnavailable or TransportFailureKind.DirectRouteUnavailable or TransportFailureKind.TlsFailure),
         Elapsed: call.Elapsed);
 
     private static CaptivePortalFailure HttpStatusFailure(string operation, HttpResponseData response) => new(

@@ -80,6 +80,7 @@ internal static class Program
                 "update-check" => await CheckForUpdatesAsync().ConfigureAwait(false),
                 "update" => await UpdateCommandAsync().ConfigureAwait(false),
                 "backend-diagnose" => await RunBackendDiagnosticsAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
+                "network-diagnose" => await PrintDirectNetworkDiagnosticsAsync().ConfigureAwait(false),
                 "menu" => await RunMenuAsync(args.Skip(1).Any(arg => string.Equals(arg, "updates", StringComparison.OrdinalIgnoreCase))).ConfigureAwait(false),
                 _ => UnknownCommand(command)
             };
@@ -108,7 +109,8 @@ internal static class Program
         Console.WriteLine("status             Показать состояние");
         Console.WriteLine("update-check       Проверить обновления");
         Console.WriteLine("update             Установить доступное обновление");
-        Console.WriteLine("backend-diagnose  Проверить DNS, redirects и ответ telemetry backend");
+        Console.WriteLine("backend-diagnose   Проверить DNS, redirects и ответ telemetry backend");
+        Console.WriteLine("network-diagnose   Проверить прямой Wi-Fi маршрут без авторизации");
         Console.WriteLine("uninstall          Удалить программу и локальные данные");
         return 0;
     }
@@ -1749,6 +1751,44 @@ internal static class Program
                         break;
                     }
 
+                    case InteractiveMenuAction.ChooseDirectNetworkAdapter:
+                    {
+                        var adapters = PhysicalAdapterSelection.Enumerate();
+                        var current = new SettingsStore(new AppPaths(), new JsonFileStore()).Load().DirectNetworkAdapterId;
+                        if (ui.TryChooseNetworkAdapter(adapters, current, out var chosen))
+                        {
+                            await RunMenuBatchActionAsync(
+                                ui,
+                                "СЕТЕВОЙ АДАПТЕР",
+                                initialStatus,
+                                "Применяю сетевой маршрут...",
+                                progress => SetDirectNetworkAdapter(chosen, progress),
+                                "Сетевой маршрут сохранён").ConfigureAwait(false);
+                        }
+                        break;
+                    }
+
+                    case InteractiveMenuAction.DiagnoseDirectNetwork:
+                    {
+                        var history = new InteractiveActionHistory();
+                        history.Start("Проверяю прямой маршрут без авторизации...");
+                        ui.ShowActionProgress("ДИАГНОСТИКА СЕТИ", history, initialStatus);
+                        try
+                        {
+                            var report = await CollectDirectNetworkDiagnosticsAsync().ConfigureAwait(false);
+                            history.FinishActiveAsInfo();
+                            foreach (var line in report) history.AddInfo(line);
+                        }
+                        catch (Exception ex)
+                        {
+                            history.FailActive("Проверка прервана");
+                            history.AddError(ex.Message);
+                        }
+                        await ui.ShowActionHistoryAsync("ДИАГНОСТИКА СЕТИ", history,
+                            GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                        break;
+                    }
+
                     case InteractiveMenuAction.ToggleAnonymousStatistics:
                     {
                         if (initialStatus.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Allowed)
@@ -2576,6 +2616,12 @@ internal static class Program
             AuthorizationExpectedExpiryUtc: runtime.ExpectedExpiryUtc,
             AuthorizationAlreadyActive: string.Equals(runtime.LastResult, "already-authorized", StringComparison.Ordinal),
             NetworkCheckIgnored: settings.IgnoreNetworkCheck,
+            DirectNetworkMode: settings.DirectNetworkAdapterId switch
+            {
+                null => "автоматически",
+                PhysicalAdapterSelection.SystemRoute => "системный",
+                _ => "вручную"
+            },
             AnonymousStatisticsConsent: settings.AnonymousStatisticsConsent,
             AutomaticUpdates: settings.AutomaticUpdates,
             IncludePrereleaseUpdates: updateMaintenance.IncludePrereleases(settings),
@@ -2795,6 +2841,94 @@ internal static class Program
 
         new SettingsStore(app.Paths, app.Json).Save(app.Settings with { NotificationMode = next });
         app.Logger.Write(DiagnosticLevel.Info, $"notifications.mode value={next}");
+    }
+
+    // Diagnostic mode never sends stepOne, stepTwo, SMS, bearer or a Wi-Fi code.
+    private static async Task<int> PrintDirectNetworkDiagnosticsAsync()
+    {
+        foreach (var line in await CollectDirectNetworkDiagnosticsAsync().ConfigureAwait(false))
+        {
+            Console.WriteLine(line);
+        }
+        return 0;
+    }
+
+    private static async Task<IReadOnlyList<string>> CollectDirectNetworkDiagnosticsAsync()
+    {
+        var settings = new SettingsStore(new AppPaths(), new JsonFileStore()).Load();
+        if (string.Equals(settings.DirectNetworkAdapterId, PhysicalAdapterSelection.SystemRoute,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return ["Выбран системный маршрут: прямой обход VPN отключён. Измените адаптер в настройках."];
+        }
+        var adapter = PhysicalAdapterSelection.Select(
+            PhysicalAdapterSelection.Enumerate(), settings.DirectNetworkAdapterId);
+        if (adapter is null)
+        {
+            return ["Физический адаптер недоступен. Выберите работающий адаптер в настройках.",
+                "Никаких попыток авторизации не отправлено."];
+        }
+        var result = new List<string>
+        {
+            $"Адаптер: {adapter.Name} ({adapter.Ssid ?? "SSID неизвестен"})",
+            $"IPv4: {(adapter.SourceIPv4 is null ? "нет" : "назначен")}; DNS: {adapter.DnsServers.Count} серверов"
+        };
+        var direct = new DirectNetworkConnector(PhysicalAdapterSelection.Enumerate,
+            settings.DirectNetworkAdapterId);
+        var portalTcp = await direct.CanReachPortalAsync(TimeSpan.FromSeconds(4), CancellationToken.None)
+            .ConfigureAwait(false);
+        result.Add($"w.is74.ru:443 / прямой TCP: {(portalTcp ? "доступен" : "недоступен (маршрут, DNS или VPN kill switch)")}");
+        using (var http = HttpClientProfiles.CreatePortalClient(direct))
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://w.is74.ru/");
+            var response = await new HttpTransport(http).SendAsync(request,
+                TimeSpan.FromSeconds(4), readBody: false).ConfigureAwait(false);
+            result.Add(response.TransportSucceeded
+                ? $"w.is74.ru / HTTPS TLS: HTTP {(int)response.Response!.StatusCode}"
+                : $"w.is74.ru / HTTPS TLS: {response.FailureKind}");
+        }
+        using (var http = HttpClientProfiles.CreateApiClient(direct))
+        {
+            var transport = new HttpTransport(http);
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                "https://api.is74.ru/mobile/pushmessages?page=1&pageSize=1");
+            var response = await transport.SendAsync(request, TimeSpan.FromSeconds(5),
+                readBody: false).ConfigureAwait(false);
+            result.Add(response.TransportSucceeded
+                ? $"api.is74.ru / HTTPS: HTTP {(int)response.Response!.StatusCode} (401 без токена — ожидаемо)"
+                : $"api.is74.ru / HTTPS: {response.FailureKind}");
+        }
+        using (var http = HttpClientProfiles.CreateInternetProbeClient(direct))
+        {
+            var probe = new InternetConnectivityProbe(new HttpTransport(http));
+            var answer = await probe.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+            result.Add(answer.Online
+                ? "online.susu.ru: Интернет через выбранный адаптер доступен"
+                : answer.HttpResponseReceived
+                    ? $"online.susu.ru: HTTP {(int)answer.StatusCode!.Value} (возможен captive portal)"
+                    : $"online.susu.ru: {answer.FailureKind} (доступность не подтверждена)");
+        }
+        result.Add("Диагностика не расходует попытки stepOne и не отключает VPN.");
+        return result;
+    }
+
+    private static void SetDirectNetworkAdapter(string? adapterId, Action<string>? progress = null)
+    {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        var installation = new ProgramInstallation();
+        var restartAgent = AgentProcessControl.IsAgentRunning() && installation.IsInstalled;
+        var settingsStore = new SettingsStore(app.Paths, app.Json);
+        settingsStore.Save(app.Settings with { DirectNetworkAdapterId = adapterId });
+        // Do not log interface GUIDs, host IPs or DNS settings.
+        app.Logger.Write(DiagnosticLevel.Info, "authorization.direct-network setting-updated");
+        ReportMenuBatchProgress(progress, "Настройка сохранена");
+        if (restartAgent)
+        {
+            AgentProcessControl.StopAgentOrThrow();
+            ReportMenuBatchProgress(progress, "Фоновый режим остановлен для применения настройки");
+            StartInstalledAgent(installation.ExecutablePath);
+            ReportMenuBatchProgress(progress, "Фоновый режим запущен с новой настройкой");
+        }
     }
 
     private static void SetIgnoreNetworkCheck(bool enabled, Action<string>? progress = null)

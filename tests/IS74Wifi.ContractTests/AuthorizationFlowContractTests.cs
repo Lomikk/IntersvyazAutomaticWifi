@@ -14,6 +14,7 @@ internal static class AuthorizationFlowContractTests
         await TestCancellationAfterStepTwoRemainsAmbiguousAsync();
         await TestAutomaticStepOneBudgetAsync();
         await TestPreStepFailureDoesNotSpendBudgetAsync();
+        await TestDirectNetworkBlockedDoesNotSpendBudgetAsync();
         await TestWrongWifiStopsBeforeNetworkAsync();
         await TestIgnoredNetworkCheckAllowsAuthorizationAsync();
         await TestAlreadyAuthorizedStopsPollingAsync();
@@ -325,6 +326,30 @@ internal static class AuthorizationFlowContractTests
             "pre-step retry backoff changed");
     }
 
+    private static async Task TestDirectNetworkBlockedDoesNotSpendBudgetAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var api = CodeImmediatelyApi();
+        var portal = new ImmediatePortal();
+        var checkedBeforePost = false;
+        var flow = CreateFlow(
+            temp, api, portal, new SequenceInternetProbe(false), new AlwaysTargetWifi(),
+            pollOffsets: [1],
+            preStepNetworkCheck: _ =>
+            {
+                checkedBeforePost = true;
+                return Task.FromResult(false);
+            });
+        var outcome = await flow.RunAsync(Request(AuthorizationAttemptReason.Automatic));
+        var runtime = LoadState(temp);
+        Assert(checkedBeforePost && api.BaselineCalls == 1,
+            "direct network preflight was not run after baseline");
+        Assert(outcome.Kind == AuthorizationOutcomeKind.RetryableBeforeStepOne,
+            "VPN block was not classified as pre-step retryable");
+        Assert(runtime.AutomaticStepOneAttempts == 0 && portal.StepOneCalls == 0,
+            "VPN block must not spend the stepOne attempt budget or post to captive portal");
+    }
+
     private static async Task TestWrongWifiStopsBeforeNetworkAsync()
     {
         using var temp = TestDirectory.Create();
@@ -455,7 +480,8 @@ internal static class AuthorizationFlowContractTests
         IWifiEnvironment wifi,
         IEnumerable<int> pollOffsets,
         AuthorizationFlowOptions? options = null,
-        bool ignoreNetworkCheck = false)
+        bool ignoreNetworkCheck = false,
+        Func<CancellationToken, Task<bool>>? preStepNetworkCheck = null)
     {
         var paths = new AppPaths(temp.Path);
         var json = new JsonFileStore();
@@ -465,7 +491,8 @@ internal static class AuthorizationFlowContractTests
         var logger = new DiagnosticLogger(paths);
         return new AuthorizationFlow(
             api, portal, internet, wifi, polling, state, logger, options ?? FastOptions(),
-            ignoreNetworkCheck: ignoreNetworkCheck);
+            ignoreNetworkCheck: ignoreNetworkCheck,
+            preStepNetworkCheck: preStepNetworkCheck);
     }
 
     private static AuthorizationFlowOptions FastOptions(int[]? lostStepTwo = null) => new()

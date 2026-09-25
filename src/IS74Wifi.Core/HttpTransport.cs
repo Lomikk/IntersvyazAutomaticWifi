@@ -82,6 +82,10 @@ public sealed class HttpTransport(HttpClient client, DiagnosticLogger? logger = 
         {
             return Fail(TransportFailureKind.ResponseTooLarge);
         }
+        catch (DirectNetworkUnavailableException exception)
+        {
+            return Fail(TransportFailureKind.DirectRouteUnavailable, "Прямой маршрут через выбранный адаптер недоступен.");
+        }
         catch (CachedDnsUnavailableException exception)
         {
             return Fail(TransportFailureKind.DnsUnavailable, exception.Message);
@@ -91,6 +95,10 @@ public sealed class HttpTransport(HttpClient client, DiagnosticLogger? logger = 
             ContainsCachedDnsUnavailable(exception))
         {
             return Fail(TransportFailureKind.DnsUnavailable, exception.Message);
+        }
+        catch (HttpRequestException exception) when (ContainsDirectNetworkUnavailable(exception))
+        {
+            return Fail(TransportFailureKind.DirectRouteUnavailable, "Прямой маршрут через выбранный адаптер недоступен.");
         }
         catch (HttpRequestException exception) when (exception.HttpRequestError == HttpRequestError.ConnectionError)
         {
@@ -183,6 +191,15 @@ public sealed class HttpTransport(HttpClient client, DiagnosticLogger? logger = 
             return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
         }
         return null;
+    }
+
+    private static bool ContainsDirectNetworkUnavailable(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is DirectNetworkUnavailableException) return true;
+        }
+        return false;
     }
 
     private static bool ContainsCachedDnsUnavailable(Exception exception)

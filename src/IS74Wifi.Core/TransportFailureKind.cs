@@ -4,6 +4,7 @@ public enum TransportFailureKind
 {
     None,
     DnsUnavailable,
+    DirectRouteUnavailable,
     Timeout,
     Cancelled,
     ConnectionFailure,

@@ -395,6 +395,47 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
+    // A short, explicit adapter picker works in both rich and compact layouts.
+    // Selecting the system route is an opt-out, never a silent VPN fallback.
+    public bool TryChooseNetworkAdapter(IReadOnlyList<PhysicalAdapter> adapters, string? currentId,
+        out string? selectedId)
+    {
+        selectedId = currentId;
+        InvalidateRenderedFrame();
+        Console.Clear();
+        Console.CursorVisible = true;
+        Console.WriteLine("IS74W — прямое подключение для авторизации");
+        Console.WriteLine();
+        Console.WriteLine($"[0] Автоматически {(currentId is null ? "●" : "")}");
+        Console.WriteLine($"[S] Системный маршрут (без обхода VPN) {(currentId == PhysicalAdapterSelection.SystemRoute ? "●" : "")}");
+        for (var i = 0; i < adapters.Count; i++)
+        {
+            var item = adapters[i];
+            var active = item.CanConnect ? "доступен" : "не подключён";
+            var wifi = item.Ssid is null ? "" : $" / {item.Ssid}";
+            var virtualMark = item.LooksVirtual ? " / возможный виртуальный интерфейс" : "";
+            var selected = string.Equals(item.Id, currentId, StringComparison.OrdinalIgnoreCase) ? " ●" : "";
+            Console.WriteLine($"[{i + 1}] {item.Name}{wifi}{virtualMark} ({active}){selected}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("Пустой ввод — отмена. Для VPN с kill switch прямой доступ может быть запрещён.");
+        Console.Write("Выбор: ");
+        var input = Console.ReadLine()?.Trim();
+        if (string.IsNullOrEmpty(input)) return false;
+        if (input == "0") { selectedId = null; return true; }
+        if (string.Equals(input, "s", StringComparison.OrdinalIgnoreCase))
+        {
+            selectedId = PhysicalAdapterSelection.SystemRoute;
+            return true;
+        }
+        if (int.TryParse(input, out var number) && number >= 1 && number <= adapters.Count)
+        {
+            selectedId = adapters[number - 1].Id;
+            return true;
+        }
+        return false;
+    }
+
     private static bool ConfirmRegistrationCompact()
     {
         Console.Clear();
@@ -1516,6 +1557,9 @@ internal sealed partial class InteractiveTerminalUi
                 $"Анонимная статистика: {FormatStatisticsConsent(snapshot?.AnonymousStatisticsConsent ?? AnonymousStatisticsConsent.Unknown)}",
                 InteractiveMenuAction.ToggleAnonymousStatistics),
             new MenuItem('5', "Обновления", InteractiveMenuAction.OpenUpdates),
+            new MenuItem('6', $"Адаптер для авторизации: {snapshot?.DirectNetworkMode ?? "автоматически"}",
+                InteractiveMenuAction.ChooseDirectNetworkAdapter),
+            new MenuItem('7', "Проверить прямое подключение", InteractiveMenuAction.DiagnoseDirectNetwork),
             new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
     }

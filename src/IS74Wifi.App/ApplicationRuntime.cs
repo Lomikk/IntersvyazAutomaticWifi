@@ -98,11 +98,15 @@ internal sealed class ApplicationRuntime : IDisposable
         var runtimeState = new RuntimeStateStore(paths, json);
         var authorizationState = new AuthorizationStateManager(runtimeState, settings);
 
-        // Production uses the ordinary system resolver directly. Cached/direct-IP
-        // connection experiments must not add hidden latency before DNS.
-        var apiHttp = HttpClientProfiles.CreateApiClient();
-        var portalHttp = HttpClientProfiles.CreatePortalClient();
-        var internetHttp = HttpClientProfiles.CreateInternetProbeClient();
+        // Direct authorization never uses the system VPN route or VPN DNS. The
+        // legacy route remains an explicit choice in network settings.
+        var direct = string.Equals(settings.DirectNetworkAdapterId,
+            PhysicalAdapterSelection.SystemRoute, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : new DirectNetworkConnector(PhysicalAdapterSelection.Enumerate, settings.DirectNetworkAdapterId);
+        var apiHttp = HttpClientProfiles.CreateApiClient(direct);
+        var portalHttp = HttpClientProfiles.CreatePortalClient(direct);
+        var internetHttp = HttpClientProfiles.CreateInternetProbeClient(direct);
         var speedTestHttp = HttpClientProfiles.CreateSpeedTestClient();
         var api = new Is74ApiClient(new HttpTransport(apiHttp, logger));
         var portal = new CaptivePortalClient(new HttpTransport(portalHttp, logger));
@@ -160,7 +164,9 @@ internal sealed class ApplicationRuntime : IDisposable
             authorizationState,
             logger,
             telemetry: telemetryRecorder,
-            ignoreNetworkCheck: settings.IgnoreNetworkCheck);
+            ignoreNetworkCheck: settings.IgnoreNetworkCheck,
+            preStepNetworkCheck: direct is null ? null :
+                token => direct.CanReachPortalAsync(TimeSpan.FromSeconds(4), token));
         var notifications = new WindowsNotificationService(settingsStore, logger);
         var agent = new AgentService(
             secrets,
