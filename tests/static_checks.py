@@ -223,6 +223,7 @@ assert 'Truncate(line.Text' not in csharp_ui, 'action history must wrap instead 
 csharp_update = (root / 'src' / 'IS74Wifi.Core' / 'GitHubUpdateClient.cs').read_text(encoding='utf-8')
 assert 'UpdateTransferProgress' in csharp_update and 'BytesReceived' in csharp_update and 'TotalBytes' in csharp_update, 'update download byte progress missing'
 assert 'ConsoleSession.EnsureInteractiveConsole();' in csharp_program and 'command == "update-apply"' in csharp_program, 'update helper must keep the terminal console attached'
+assert 'command != "network-diagnose"' in csharp_program, 'network diagnostic must not be forwarded to an older installed build'
 assert 'File.Copy(prepared.ExecutablePath, helperPath, overwrite: true);' in csharp_program, 'verified new binary must drive the apply phase'
 assert 'ReplaceInstalledExecutableWithRetry' in csharp_program and 'attempts: 24' in csharp_program, 'update apply must retry transient executable locks'
 assert 'Func<Task<bool>>? confirmApply = null' in csharp_program and 'ОБНОВЛЕНИЕ ГОТОВО' in csharp_program, 'interactive update must confirm handoff before launching the apply helper'
