@@ -6,7 +6,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.23";
+    private const string ProductVersion = "v0.1.0-alpha.24";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации, а также позволяет участвовать в анонимном рейтинге скорости интернета.";
     private const string AnonymousStatisticsPublishMessage =
@@ -57,7 +57,10 @@ internal static class Program
                 return bootstrapExit;
             }
 
-            if (TryForwardToInstalledCopy(args, command, waitForExit: true, out var forwardedExit))
+            // Read-only network diagnostics must run from the explicitly invoked
+            // build, even when an older version is already installed.
+            if (command != "network-diagnose" &&
+                TryForwardToInstalledCopy(args, command, waitForExit: true, out var forwardedExit))
             {
                 return forwardedExit;
             }
