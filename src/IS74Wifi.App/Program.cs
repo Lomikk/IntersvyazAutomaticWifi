@@ -2875,31 +2875,56 @@ internal static class Program
         };
         var direct = new DirectNetworkConnector(PhysicalAdapterSelection.Enumerate,
             settings.DirectNetworkAdapterId);
-        var portalTcp = await direct.CanReachPortalAsync(TimeSpan.FromSeconds(4), CancellationToken.None)
-            .ConfigureAwait(false);
-        result.Add($"w.is74.ru:443 / прямой TCP: {(portalTcp ? "доступен" : "недоступен (маршрут, DNS или VPN kill switch)")}");
-        using (var http = HttpClientProfiles.CreatePortalClient(direct))
+        async Task<bool> DiagnoseDnsAsync(string host)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, "https://w.is74.ru/");
-            var response = await new HttpTransport(http).SendAsync(request,
-                TimeSpan.FromSeconds(4), readBody: false).ConfigureAwait(false);
-            result.Add(response.TransportSucceeded
-                ? $"w.is74.ru / HTTPS TLS: HTTP {(int)response.Response!.StatusCode}"
-                : $"w.is74.ru / HTTPS TLS: {response.FailureKind}");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                var resolved = await direct.ResolveHostForDiagnosticsAsync(host, cts.Token).ConfigureAwait(false);
+                var source = resolved.Source == DnsAddressSource.AdapterDns
+                    ? "DNS физического адаптера" : "резервный системный DNS (только адрес)";
+                result.Add($"{host} / DNS: {source}{(resolved.FromCache ? ", кэш" : "")}");
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException)
+            {
+                result.Add($"{host} / DNS: недоступен ({(ex is OperationCanceledException ? "timeout" : "DnsUnavailable")})");
+                return false;
+            }
         }
-        using (var http = HttpClientProfiles.CreateApiClient(direct))
+
+        if (await DiagnoseDnsAsync("w.is74.ru").ConfigureAwait(false))
         {
+            // A TCP/80 handshake does not touch stepOne, stepTwo or auth budgets.
+            var portalTcp = await direct.CanReachPortalAsync(TimeSpan.FromSeconds(4), CancellationToken.None)
+                .ConfigureAwait(false);
+            result.Add($"w.is74.ru:80 / прямой TCP: {(portalTcp ? "доступен" : "недоступен (маршрут или VPN kill switch)")}");
+            if (portalTcp)
+            {
+                using var http = HttpClientProfiles.CreatePortalClient(direct);
+                using var request = new HttpRequestMessage(HttpMethod.Get, "http://w.is74.ru/");
+                var response = await new HttpTransport(http).SendAsync(request,
+                    TimeSpan.FromSeconds(4), readBody: false).ConfigureAwait(false);
+                result.Add(response.TransportSucceeded
+                    ? $"w.is74.ru / HTTP: {(int)response.Response!.StatusCode}"
+                    : $"w.is74.ru / HTTP: {response.FailureKind}");
+            }
+        }
+        if (await DiagnoseDnsAsync("api.is74.ru").ConfigureAwait(false))
+        {
+            using var http = HttpClientProfiles.CreateApiClient(direct);
             var transport = new HttpTransport(http);
             using var request = new HttpRequestMessage(HttpMethod.Get,
                 "https://api.is74.ru/mobile/pushmessages?page=1&pageSize=1");
             var response = await transport.SendAsync(request, TimeSpan.FromSeconds(5),
                 readBody: false).ConfigureAwait(false);
             result.Add(response.TransportSucceeded
-                ? $"api.is74.ru / HTTPS: HTTP {(int)response.Response!.StatusCode} (401 без токена — ожидаемо)"
-                : $"api.is74.ru / HTTPS: {response.FailureKind}");
+                ? $"api.is74.ru / TCP + TLS + HTTP: {(int)response.Response!.StatusCode} (401 без токена — ожидаемо)"
+                : $"api.is74.ru / TCP или TLS: {response.FailureKind}");
         }
-        using (var http = HttpClientProfiles.CreateInternetProbeClient(direct))
+        if (await DiagnoseDnsAsync("online.susu.ru").ConfigureAwait(false))
         {
+            using var http = HttpClientProfiles.CreateInternetProbeClient(direct);
             var probe = new InternetConnectivityProbe(new HttpTransport(http));
             var answer = await probe.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
             result.Add(answer.Online

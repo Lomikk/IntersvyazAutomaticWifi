@@ -6,24 +6,83 @@ using System.Text;
 
 namespace IS74Wifi.Core;
 
+public enum DnsAddressSource { AdapterDns, SystemFallback }
+
+/// <summary>Only the address lookup may fall back to the system resolver;
+/// authorization TCP sockets are still bound to the selected physical interface.</summary>
+public sealed record DnsResolution(IPAddress[] Addresses, DnsAddressSource Source, bool FromCache);
+
 /// <summary>DNS queries sent over the selected physical interface, not the system/VPN resolver.</summary>
 public sealed class InterfaceDnsResolver
 {
     private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan FallbackCacheLifetime = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan DnsServerTimeout = TimeSpan.FromMilliseconds(900);
-    private readonly ConcurrentDictionary<string, (DateTimeOffset Expires, IPAddress[] Addresses)> cache = new();
+    private static readonly TimeSpan SystemDnsTimeout = TimeSpan.FromSeconds(2);
+    private readonly ConcurrentDictionary<string, (DateTimeOffset Expires, DnsResolution Resolution)> cache = new();
+    private readonly Func<string, PhysicalAdapter, CancellationToken, Task<IPAddress[]>> adapterLookup;
+    private readonly Func<string, CancellationToken, Task<IPAddress[]>> systemLookup;
+
+    public InterfaceDnsResolver(
+        Func<string, PhysicalAdapter, CancellationToken, Task<IPAddress[]>>? adapterLookup = null,
+        Func<string, CancellationToken, Task<IPAddress[]>>? systemLookup = null)
+    {
+        this.adapterLookup = adapterLookup ?? ResolveViaAdapterAsync;
+        this.systemLookup = systemLookup ?? Dns.GetHostAddressesAsync;
+    }
 
     public async Task<IPAddress[]> ResolveAsync(string hostname, PhysicalAdapter adapter, CancellationToken token)
+        => (await ResolveWithSourceAsync(hostname, adapter, token).ConfigureAwait(false)).Addresses;
+
+    public async Task<DnsResolution> ResolveWithSourceAsync(string hostname, PhysicalAdapter adapter, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         var cacheKey = $"{adapter.Id}|{adapter.SourceIPv4}|{adapter.Ssid}|{string.Join(",", adapter.DnsServers.Select(ip => ip.ToString()))}|{hostname}";
         if (cache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTimeOffset.UtcNow)
         {
-            return cached.Addresses;
+            return cached.Resolution with { FromCache = true };
         }
-        if (adapter.DnsServers.Count == 0)
+
+        Exception? directFailure = null;
+        try
         {
-            throw new DirectNetworkUnavailableException("У выбранного адаптера отсутствует IPv4 DNS-сервер.");
+            var directAddresses = IPv4Addresses(await adapterLookup(hostname, adapter, token).ConfigureAwait(false));
+            if (directAddresses.Length == 0) throw new IOException("Adapter DNS returned no IPv4 addresses.");
+            var direct = new DnsResolution(directAddresses, DnsAddressSource.AdapterDns, FromCache: false);
+            cache[cacheKey] = (DateTimeOffset.UtcNow + CacheLifetime, direct);
+            return direct;
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is SocketException or IOException or FormatException or OperationCanceledException)
+        { directFailure = ex; }
+
+        // A VPN or WFP rule may reject raw UDP/53 although the Windows resolver
+        // works. Use the system resolver ONLY to learn an IPv4 address. No HTTP
+        // request and no TCP connection may use this fallback's network route.
+        using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+        fallbackCts.CancelAfter(SystemDnsTimeout);
+        try
+        {
+            var fallbackAddresses = IPv4Addresses(await systemLookup(hostname, fallbackCts.Token).ConfigureAwait(false));
+            if (fallbackAddresses.Length == 0) throw new IOException("System DNS returned no IPv4 addresses.");
+            var fallback = new DnsResolution(fallbackAddresses, DnsAddressSource.SystemFallback, FromCache: false);
+            cache[cacheKey] = (DateTimeOffset.UtcNow + FallbackCacheLifetime, fallback);
+            return fallback;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is SocketException or IOException or FormatException or OperationCanceledException)
+        { throw new CachedDnsUnavailableException(hostname, new AggregateException(directFailure ?? ex, ex)); }
+    }
+
+    private static IPAddress[] IPv4Addresses(IEnumerable<IPAddress> addresses) =>
+        addresses.Where(ip => ip.AddressFamily == AddressFamily.InterNetwork &&
+                              !IPAddress.IsLoopback(ip) && !ip.Equals(IPAddress.Any))
+            .Distinct().ToArray();
+
+    private static async Task<IPAddress[]> ResolveViaAdapterAsync(
+        string hostname, PhysicalAdapter adapter, CancellationToken token)
+    {
+        if (adapter.DnsServers.Count == 0) throw new IOException("No IPv4 DNS server for adapter.");
 
         Exception? lastFailure = null;
         foreach (var dns in adapter.DnsServers.Take(3))
@@ -47,7 +106,6 @@ public sealed class InterfaceDnsResolver
                 {
                     throw new IOException("DNS returned no IPv4 addresses.");
                 }
-                cache[cacheKey] = (DateTimeOffset.UtcNow + CacheLifetime, addresses);
                 return addresses;
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)

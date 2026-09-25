@@ -14,7 +14,8 @@ public sealed class DirectNetworkUnavailableException(string message, Exception?
 public sealed class DirectNetworkConnector(
     Func<IReadOnlyList<PhysicalAdapter>> enumerate,
     string? preferredAdapterId,
-    InterfaceDnsResolver? resolver = null)
+    InterfaceDnsResolver? resolver = null,
+    Func<PhysicalAdapter, IPAddress, int, CancellationToken, ValueTask<Stream>>? testDialer = null)
 {
     // Winsock IP_UNICAST_IF takes an IPv4 interface index in network byte order.
     private const int IpUnicastIf = 31;
@@ -26,6 +27,17 @@ public sealed class DirectNetworkConnector(
 
     public PhysicalAdapter? SelectedAdapter => PhysicalAdapterSelection.Select(enumerate(), preferredAdapterId);
 
+    public Task<DnsResolution> ResolveHostForDiagnosticsAsync(string host, CancellationToken token)
+    {
+        if (!AllowedHosts.Contains(host)) throw new DirectNetworkUnavailableException("Недопустимый сервер прямого маршрута.");
+        return dns.ResolveWithSourceAsync(host, GetAdapter(), token);
+    }
+
+    private PhysicalAdapter GetAdapter() => SelectedAdapter ?? throw new DirectNetworkUnavailableException(
+        string.IsNullOrWhiteSpace(preferredAdapterId)
+            ? "Нет активного физического сетевого адаптера с IPv4. Выберите адаптер в настройках."
+            : "Выбранный адаптер недоступен. Измените выбор в настройках.");
+
     public async ValueTask<Stream> ConnectAsync(SocketsHttpConnectionContext context, CancellationToken token) =>
         await ConnectHostAsync(context.DnsEndPoint.Host, context.DnsEndPoint.Port, token).ConfigureAwait(false);
 
@@ -35,10 +47,7 @@ public sealed class DirectNetworkConnector(
         {
             throw new DirectNetworkUnavailableException("Прямой маршрут разрешён только для серверов авторизации и проверки Интернета.");
         }
-        var adapter = SelectedAdapter ?? throw new DirectNetworkUnavailableException(
-            string.IsNullOrWhiteSpace(preferredAdapterId)
-                ? "Нет активного физического сетевого адаптера с IPv4. Выберите адаптер в настройках."
-                : "Выбранный адаптер недоступен. Измените выбор в настройках.");
+        var adapter = GetAdapter();
         var addresses = await dns.ResolveAsync(host, adapter, token).ConfigureAwait(false);
         Exception? lastError = null;
         foreach (var address in addresses)
@@ -47,6 +56,11 @@ public sealed class DirectNetworkConnector(
             Socket? socket = null;
             try
             {
+                if (testDialer is not null)
+                {
+                    // Test seam: production always uses the real bound Winsock socket below.
+                    return await testDialer(adapter, address, port, token).ConfigureAwait(false);
+                }
                 socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                 BindSocket(socket, adapter);
                 await socket.ConnectAsync(new IPEndPoint(address, port), token).ConfigureAwait(false);
@@ -78,8 +92,8 @@ public sealed class DirectNetworkConnector(
         cts.CancelAfter(timeout);
         try
         {
-            // The production portal uses HTTPS; no HTTP request or credentials are sent.
-            await using var stream = await ConnectHostAsync("w.is74.ru", 443, cts.Token).ConfigureAwait(false);
+            // Captive portal is HTTP/80; this handshake sends no HTTP request or code.
+            await using var stream = await ConnectHostAsync("w.is74.ru", 80, cts.Token).ConfigureAwait(false);
             return true;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
