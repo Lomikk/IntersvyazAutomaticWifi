@@ -6,6 +6,8 @@ internal static class AgentContractTests
 {
     public static async Task RunAsync()
     {
+        TestSettingsMigration();
+        TestAlreadyAuthorizedRetryBackoff();
         TestSleepPolicy();
         TestTelemetryUploadSafety();
         TestBackgroundDueScheduling();
@@ -19,9 +21,75 @@ internal static class AgentContractTests
         await TestPreExpiryNeedsTwoCaptiveResponsesAsync();
         await TestPreExpiryTransportFailureDoesNotAuthorizeAsync();
         await TestAfterExpiryEdgeWatchConfirmsCaptiveAsync();
+        await TestAlreadyAuthorizedSwitchesToPersistentWatchAsync();
+        await TestEdgeWatchIgnoresTimerAndTransportFailuresAsync();
+        await TestEdgeWatchCaptiveAfterGuardAsync();
         await TestNotificationLifecycleAsync();
         await TestFinalAttemptShowsSingleTerminalToastAsync();
         await TestExhaustedCycleNotifiesWithoutTargetWifiAsync();
+    }
+
+    private static void TestSettingsMigration()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "IS74Wifi-watch-settings-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new SettingsStore(new AppPaths(root), new JsonFileStore());
+            var fresh = store.Load();
+            Assert(fresh.GuardWindowSeconds == 30 && fresh.GuardProbeIntervalMilliseconds == 500 &&
+                   fresh.ExpiryWatchPolicyVersion == 1, "new installs must use the adaptive 30 s guard");
+
+            store.Save(new AppSettings { GuardWindowSeconds = 10, GuardProbeIntervalMilliseconds = 250 });
+            var upgraded = store.Load();
+            Assert(upgraded.GuardWindowSeconds == 30 && upgraded.GuardProbeIntervalMilliseconds == 500 &&
+                   upgraded.ExpiryWatchPolicyVersion == 1, "existing installed defaults must migrate once");
+
+            store.Save(upgraded with { GuardWindowSeconds = 10, GuardProbeIntervalMilliseconds = 250 });
+            Assert(store.Load().GuardWindowSeconds == 10 && store.Load().GuardProbeIntervalMilliseconds == 250,
+                "explicit user settings must survive after the policy migration");
+
+            store.Save(new AppSettings { GuardWindowSeconds = 45, GuardProbeIntervalMilliseconds = 750 });
+            var customized = store.Load();
+            Assert(customized.GuardWindowSeconds == 45 && customized.GuardProbeIntervalMilliseconds == 750,
+                "legacy custom guard settings must be preserved");
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    private static void TestAlreadyAuthorizedRetryBackoff()
+    {
+        var now = new DateTimeOffset(2026, 9, 18, 12, 0, 15, TimeSpan.Zero);
+        var root = Path.Combine(Path.GetTempPath(), "IS74Wifi-watch-retries-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new RuntimeStateStore(new AppPaths(root), new JsonFileStore());
+            var manager = new AuthorizationStateManager(store, new AppSettings(), new FixedTimeProvider(now));
+            store.Save(new RuntimeState { AutomaticStepOneAttempts = 1 });
+            manager.MarkAlreadyAuthorized(AuthorizationAttemptReason.Automatic);
+            var first = manager.Load();
+            Assert(first.EdgeWatchActive && first.NextAutomaticRetryUtc is null,
+                "the initial AlreadyAuthorized response must start immediate edge-watch without a retry timer");
+
+            // If SUSU twice reported captive but the portal still reports
+            // AlreadyAuthorized, throttle retries to protect the four-send budget.
+            store.Save(first with { AutomaticStepOneAttempts = 2 });
+            manager.MarkAlreadyAuthorized(AuthorizationAttemptReason.Retry);
+            var conflicting = manager.Load();
+            Assert(conflicting.EdgeWatchActive && conflicting.NextAutomaticRetryUtc == now.AddSeconds(15),
+                "contradictory captive/AlreadyAuthorized signals must defer another portal send");
+
+            store.Save(conflicting with { AutomaticStepOneAttempts = 3 });
+            manager.MarkAlreadyAuthorized(AuthorizationAttemptReason.Retry);
+            Assert(manager.Load().NextAutomaticRetryUtc == now.AddSeconds(30),
+                "a repeated contradictory portal response must extend backoff");
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
     }
 
     private static void TestSleepPolicy()
@@ -29,8 +97,8 @@ internal static class AgentContractTests
         var settings = new AppSettings
         {
             AgentPollSeconds = 15,
-            GuardWindowSeconds = 10,
-            GuardProbeIntervalMilliseconds = 250
+            GuardWindowSeconds = 30,
+            GuardProbeIntervalMilliseconds = 500
         };
         var expiry = new DateTimeOffset(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
         var state = new RuntimeState { ExpectedExpiryUtc = expiry };
@@ -57,24 +125,43 @@ internal static class AgentContractTests
             "five-minute approach should retain the old lightweight tick");
         Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddMinutes(-1)) == TimeSpan.FromSeconds(15),
             "pre-guard approach cadence changed");
-        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(-20)) == TimeSpan.FromSeconds(10),
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(-40)) == TimeSpan.FromSeconds(10),
             "agent sleep crossed guard start");
-        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(-5)) == TimeSpan.FromMilliseconds(250),
-            "agent guard cadence changed");
-        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(20)) == TimeSpan.FromMinutes(1),
-            "overdue agent must not spin on one-second housekeeping checks");
-        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(20), networkPolicySatisfied: false) ==
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(-25)) == TimeSpan.FromSeconds(2),
+            "outer pre-expiry guard should probe every two seconds");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(-5)) == TimeSpan.FromMilliseconds(500),
+            "central guard should probe every 500 ms");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddMilliseconds(-100)) == TimeSpan.FromMilliseconds(100),
+            "pre-expiry cadence must wake exactly on the predicted 24-hour boundary");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(5)) == TimeSpan.FromMilliseconds(500),
+            "early post-expiry housekeeping should retain the central cadence");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(20)) == TimeSpan.FromSeconds(2),
+            "outer post-expiry guard should use the tapered cadence");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(40)) == TimeSpan.FromMinutes(1),
+            "overdue non-watching agent must not spin after the guard");
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(40), networkPolicySatisfied: false) ==
                TimeSpan.FromMinutes(5),
             "overdue agent on unrelated Wi-Fi must wait for a network event or sparse fallback");
 
-        state = state with { NextAutomaticRetryUtc = expiry.AddSeconds(30) };
-        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(20)) == TimeSpan.FromSeconds(10),
+        var watching = state with { EdgeWatchActive = true, AutomaticStepOneAttempts = 1 };
+        Assert(AgentTiming.GetSleepDelay(watching, settings, expiry.AddSeconds(20)) == TimeSpan.FromSeconds(2),
+            "edge-watch must use tapered outer guard probes");
+        Assert(AgentTiming.GetSleepDelay(watching, settings, expiry.AddSeconds(45)) == TimeSpan.FromSeconds(5),
+            "edge-watch must continue after the 30-second guard, without fast perpetual probes");
+        Assert(AgentTiming.GetSleepDelay(watching, settings, expiry.AddMinutes(6)) == TimeSpan.FromMinutes(1),
+            "an anomalously late portal edge must use sparse one-minute probes");
+        Assert(AgentTiming.GetSleepDelay(watching, settings, expiry.AddMinutes(6), networkPolicySatisfied: false) ==
+               TimeSpan.FromMinutes(5),
+            "edge-watch must not probe SUSU on an unrelated network");
+
+        state = state with { NextAutomaticRetryUtc = expiry.AddSeconds(60) };
+        Assert(AgentTiming.GetSleepDelay(state, settings, expiry.AddSeconds(40)) == TimeSpan.FromSeconds(20),
             "agent did not wake at scheduled retry");
         Assert(AgentTiming.GetSleepDelay(state with { NextAutomaticRetryUtc = expiry.AddHours(1) },
-                   settings, expiry.AddSeconds(20)) == TimeSpan.FromMinutes(59) + TimeSpan.FromSeconds(40),
+                   settings, expiry.AddSeconds(40)) == TimeSpan.FromMinutes(59) + TimeSpan.FromSeconds(20),
             "a scheduled retry must not be interrupted by an unnecessary 15-second poll");
         Assert(AgentTiming.GetSleepDelay(state with { NextAutomaticRetryUtc = expiry.AddHours(1) },
-                   settings, expiry.AddSeconds(20), networkPolicySatisfied: false) == TimeSpan.FromMinutes(5),
+                   settings, expiry.AddSeconds(40), networkPolicySatisfied: false) == TimeSpan.FromMinutes(5),
             "missed network changes still need a sparse fallback before a distant retry");
     }
 
@@ -116,6 +203,12 @@ internal static class AgentContractTests
             "telemetry must not run when the scheduled retry is imminent");
         Assert(AgentTiming.CanUploadTelemetry(expired, settings, now, networkPolicySatisfied: false),
             "telemetry must resume away from the target Wi-Fi once the active guard has passed");
+        var lateWatch = expired with { EdgeWatchActive = true, NextAutomaticRetryUtc = null,
+            ExpectedExpiryUtc = now.AddMinutes(-6) };
+        Assert(AgentTiming.CanUploadTelemetry(lateWatch, settings, now),
+            "an unusually late edge-watch must not strand pending telemetry indefinitely");
+        Assert(!AgentTiming.CanUploadTelemetry(lateWatch with { ExpectedExpiryUtc = now.AddMinutes(-4) }, settings, now),
+            "telemetry must remain out of the first five minutes of edge-watch");
 
         var largerUpload = settings with
         {
@@ -360,6 +453,89 @@ internal static class AgentContractTests
             "post-expiry edge watch should confirm captive state with two observations");
         Assert(fixture.Authorization.Calls == 1,
             "confirmed post-expiry captive state must trigger automatic authorization");
+    }
+
+    private static async Task TestAlreadyAuthorizedSwitchesToPersistentWatchAsync()
+    {
+        var expiry = new DateTimeOffset(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
+        using var fixture = AgentFixture.Create(expiry.AddSeconds(45), internet:
+            new ScriptedInternetProbe(Probe(true, true), Probe(true, true)));
+        fixture.SaveState(new RuntimeState { ExpectedExpiryUtc = expiry });
+        fixture.Authorization.Outcome = new AuthorizationOutcome(
+            AuthorizationOutcomeKind.AlreadyAuthorized, null, null, null, null);
+        fixture.Authorization.StateEffect = request => fixture.SaveState(fixture.StateStore.Load() with
+        {
+            AutomaticStepOneAttempts = 1,
+            LastAttemptReason = request.Reason.ToString(),
+            LastResult = "already-authorized",
+            EdgeWatchActive = true,
+            NextAutomaticRetryUtc = null
+        });
+
+        await fixture.Agent.TickAsync();
+        Assert(fixture.Authorization.Calls == 1 && fixture.Internet.Calls == 0,
+            "first overdue tick must send immediately without preliminary SUSU checks");
+        Assert(fixture.StateStore.Load().EdgeWatchActive &&
+               fixture.StateStore.Load().NextAutomaticRetryUtc is null,
+            "AlreadyAuthorized must persist edge-watch without scheduling blind retries");
+
+        await fixture.Agent.TickAsync();
+        Assert(fixture.Authorization.Calls == 1 && fixture.Internet.Calls == 1,
+            "subsequent overdue tick must check Internet rather than sending another stepOne");
+    }
+
+    private static async Task TestEdgeWatchIgnoresTimerAndTransportFailuresAsync()
+    {
+        var expiry = new DateTimeOffset(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
+        foreach (var delta in new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(40), TimeSpan.FromMinutes(6) })
+        {
+            using var fixture = AgentFixture.Create(expiry.Add(delta), internet:
+                new ScriptedInternetProbe(Probe(true, true)));
+            fixture.SaveState(new RuntimeState
+            {
+                ExpectedExpiryUtc = expiry,
+                LastAttemptUtc = expiry.AddSeconds(-3),
+                AutomaticStepOneAttempts = 1,
+                EdgeWatchActive = true,
+                LastResult = "already-authorized"
+            });
+
+            await fixture.Agent.TickAsync();
+            Assert(fixture.Authorization.Calls == 0 && fixture.Internet.Calls == 1,
+                $"online edge-watch unexpectedly re-sent stepOne at T+{delta}");
+        }
+
+        using var failedProbe = AgentFixture.Create(expiry.AddSeconds(45), internet:
+            new ScriptedInternetProbe(Probe(false, false, TransportFailureKind.DnsUnavailable)));
+        failedProbe.SaveState(new RuntimeState
+        {
+            ExpectedExpiryUtc = expiry, AutomaticStepOneAttempts = 1, EdgeWatchActive = true
+        });
+        await failedProbe.Agent.TickAsync();
+        Assert(failedProbe.Authorization.Calls == 0 && failedProbe.Internet.Calls == 1,
+            "SUSU transport failure must not masquerade as a captive redirect");
+    }
+
+    private static async Task TestEdgeWatchCaptiveAfterGuardAsync()
+    {
+        var expiry = new DateTimeOffset(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
+        foreach (var delta in new[] { TimeSpan.FromSeconds(45), TimeSpan.FromMinutes(6) })
+        {
+            using var fixture = AgentFixture.Create(expiry.Add(delta), internet:
+                new ScriptedInternetProbe(Probe(false, true), Probe(false, true)));
+            fixture.SaveState(new RuntimeState
+            {
+                ExpectedExpiryUtc = expiry,
+                AutomaticStepOneAttempts = 1,
+                LastResult = "already-authorized",
+                EdgeWatchActive = true
+            });
+
+            await fixture.Agent.TickAsync();
+            Assert(fixture.Internet.Calls == 2 && fixture.Authorization.Calls == 1 &&
+                   fixture.Authorization.LastRequest?.Reason == AuthorizationAttemptReason.Retry,
+                $"confirmed captive edge must authorize immediately even at T+{delta}");
+        }
     }
 
     private static async Task TestFinalAttemptShowsSingleTerminalToastAsync()

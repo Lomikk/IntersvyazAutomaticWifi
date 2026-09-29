@@ -10,10 +10,13 @@ The long-running per-user agent subscribes to system network address/availabilit
 
 - far before the predicted 24-hour edge: sleep directly until the five-minute reminder boundary (or an earlier custom guard), due background maintenance, network change, or system resume; no Internet/captive probe is performed. If native resume notifications are unavailable, a 15-minute fallback bounds the wait;
 - during the last five minutes before the guard: retain the `AgentPollSeconds` approach cadence (15 s by default);
-- from `expiry - 10 s` through `expiry + 10 s`: wake every 250 ms by default;
+- from `expiry - 30 s` to `expiry - 10 s`: probe SUSU every 2 s by default;
+- from `expiry - 10 s` to the exact boundary: probe every 500 ms and wake exactly at the expected boundary;
 - before the exact expiry, two nearby local SUSU connectivity-probe responses are required before an early `stepOne` is allowed;
-- at/after the predicted expiry, the timer itself is authoritative and the agent does not wait for an Internet probe before entering the authorization flow;
-- once overdue and outside the guard, a machine that is not currently on `Campus Wi-Fi*` waits for a network-change notification with a five-minute fallback for missed events. With the SSID restriction disabled, an expired unscheduled agent uses a one-minute fallback, and scheduled retries sleep directly until due;
+- on the first tick at/after predicted expiry, the timer itself is authoritative: send one `stepOne` immediately without a preliminary Internet probe (including after suspend/resume);
+- when `stepOne` returns `AlreadyAuthorized`, persist an edge-watch instead of sending timer-driven retries: probe SUSU every 500 ms from `T+0` to `T+10 s`, every 2 s through `T+30 s`, every 5 s through `T+5 min`, and every minute beyond that. Two captive HTTP responses permit an immediate retry; online responses and transport-only errors do not consume a portal send;
+- if a confirmed captive response is contradicted by another `AlreadyAuthorized`, retain edge-watch but throttle the next eligible retry by the configured backoff to avoid spending the four-send budget on contradictory signals;
+- when not on `Campus Wi-Fi*` after expiry, pause probes and wait for network changes (five-minute fallback). With the SSID restriction disabled, the policy follows the explicitly selected network path;
 - a terminal automatic `stepOne` attempt budget stops further attempts and sends one important toast; ordinary background update/telemetry maintenance continues.
 
 After the trigger, the critical path is structurally faithful to the validated experiments:
@@ -70,17 +73,17 @@ Each non-final probe is now capped by the time remaining until the next absolute
 
 ## Remaining timing risks / design decisions
 
-### Early captive loss outside the 10-second guard
+### Early captive loss outside the 30-second guard
 
-The largest remaining latency condition is intentional in the current architecture: **before `expiry - 10 s`, the agent does not test Internet and does not react to a captive state**. Therefore, if the portal invalidates the client substantially earlier than the predicted 24-hour boundary — for example because of a backend reset, a changed/randomized MAC, or another network-side event — the agent can remain offline until the predicted edge unless the user runs a manual connect.
+The largest remaining latency condition is intentional in the current architecture: **before `expiry - 30 s`, the agent does not test Internet and does not react to a captive state**. Therefore, if the portal invalidates the client substantially earlier than the predicted 24-hour boundary — for example because of a backend reset, a changed/randomized MAC, or another network-side event — the agent can remain offline until the predicted edge unless the user runs a manual connect.
 
 This is not a C# migration regression; the PowerShell reference has the same policy. It is nevertheless a real field-risk because the observed ~24-hour lifetime is a scheduling prediction, not a formal SLA. Fixing it cleanly should be a separate product decision: preferably wake on a real WLAN/network-change event and perform a conservative two-probe captive confirmation on that edge, rather than polling the Internet continuously all day.
 
 ### Predicted expiry later/earlier than the real portal edge
 
-The 10-second guard handles small skew well. Larger skew is not fully covered. If the portal remains authorized much longer than the predicted edge, repeated explicit `AlreadyAuthorized` responses eventually consume the configured automatic-send budget. Conversely, if the portal expires minutes early, the previous section applies.
+The 30-second adaptive guard covers a wider range of small clock offsets. A first timer-driven `AlreadyAuthorized` now enables persistent, tapered Internet probes; elapsed time by itself can no longer exhaust the remaining portal-send budget. A contradictory confirmed-captive/`AlreadyAuthorized` cycle is rate-limited. Exceptionally late expiry is still observable at the one-minute fallback cadence, not every 500 ms forever. Conversely, if the portal expires minutes before prediction, the preceding limitation applies.
 
-A future hardening pass should make the predicted 24-hour timer one signal among two: the timer plus a low-cost network-edge signal. That avoids constant Internet polling while still recovering promptly from an unexpectedly early captive transition.
+The legacy PowerShell reference intentionally retains its historical 10-second/250-ms policy; these adaptive changes apply to the C# agent only. Existing persisted C# defaults migrate once on load, preserving separately customized guard settings.
 
 ### Baseline latency is unavoidable but visible
 

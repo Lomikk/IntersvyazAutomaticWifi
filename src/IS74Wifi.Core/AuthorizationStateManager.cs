@@ -171,19 +171,34 @@ public sealed class AuthorizationStateManager(
 
     public void MarkAlreadyAuthorized(AuthorizationAttemptReason reason)
     {
+        var now = clock.GetUtcNow();
         var state = store.Load() with
         {
-            LastAttemptUtc = clock.GetUtcNow(),
+            LastAttemptUtc = now,
             LastAttemptReason = ReasonText(reason),
             LastResult = "already-authorized"
         };
 
         if (reason != AuthorizationAttemptReason.Manual)
         {
+            // Normally we make one timer-driven shot and then watch SUSU until
+            // it actually becomes captive. If SUSU said "captive" but a retry
+            // still received AlreadyAuthorized, the signals contradict. Throttle
+            // subsequent confirmed-captive sends instead of burning all four
+            // portal attempts against a broken/incorrect probe endpoint.
+            DateTimeOffset? retryAt = null;
+            if (reason == AuthorizationAttemptReason.Retry)
+            {
+                var delays = settings.AutomaticRetryDelaysSeconds;
+                var seconds = delays.Length == 0
+                    ? 60
+                    : delays[Math.Clamp(state.AutomaticStepOneAttempts - 2, 0, delays.Length - 1)];
+                retryAt = now.AddSeconds(Math.Max(1, seconds));
+            }
             state = state with
             {
                 EdgeWatchActive = true,
-                NextAutomaticRetryUtc = null
+                NextAutomaticRetryUtc = retryAt
             };
         }
         store.Save(state);

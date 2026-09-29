@@ -11,6 +11,31 @@ public static class AgentTiming
     // WaitHandle's timeout must fit in a signed 32-bit millisecond count.
     private static readonly TimeSpan MaximumWaitInterval = TimeSpan.FromDays(24);
     public static readonly TimeSpan ExpiryReminderWindow = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan FastEdgeWindow = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan LongEdgeWatchThreshold = TimeSpan.FromMinutes(5);
+
+    // Near the predicted server edge we favor reconnection latency. Once the
+    // portal reports AlreadyAuthorized, taper SUSU requests rather than sending
+    // more speculative stepOne requests or probing every 500 ms indefinitely.
+    public static TimeSpan GetEdgeProbeInterval(
+        AppSettings settings, DateTimeOffset expiry, DateTimeOffset now)
+    {
+        var offset = now - expiry;
+        var guard = TimeSpan.FromSeconds(Math.Max(1, settings.GuardWindowSeconds));
+        if (offset >= -FastEdgeWindow && offset <= FastEdgeWindow)
+        {
+            return TimeSpan.FromMilliseconds(Math.Max(100, settings.GuardProbeIntervalMilliseconds));
+        }
+        if (offset >= -guard && offset <= guard)
+        {
+            return TimeSpan.FromSeconds(2);
+        }
+        if (offset > guard && offset <= LongEdgeWatchThreshold)
+        {
+            return TimeSpan.FromSeconds(5);
+        }
+        return TimeSpan.FromMinutes(1);
+    }
 
     // Upload safety depends on the authorization deadline, never the current
     // idle/guard wake interval.
@@ -48,6 +73,14 @@ public static class AgentTiming
             return true;
         }
 
+        // An exceptionally late portal edge must not strand telemetry forever.
+        // Outside the first five minutes, edge-watch has a one-minute cadence.
+        if (state.EdgeWatchActive && now >= expiry.Add(LongEdgeWatchThreshold) &&
+            state.NextAutomaticRetryUtc is null)
+        {
+            return true;
+        }
+
         // Once expiry has been reached, a distant explicit retry leaves a safe
         // idle window in which queued diagnostics can still be delivered.
         return state.NextAutomaticRetryUtc is { } retryAt &&
@@ -68,7 +101,6 @@ public static class AgentTiming
         var guardSeconds = Math.Max(1, settings.GuardWindowSeconds);
         var guardStart = expiry.AddSeconds(-guardSeconds);
         var guardEnd = expiry.AddSeconds(guardSeconds);
-        var guardDelay = TimeSpan.FromMilliseconds(Math.Max(100, settings.GuardProbeIntervalMilliseconds));
 
         if (now < guardStart)
         {
@@ -82,14 +114,15 @@ public static class AgentTiming
                 return ClampMinimum(Min(MaximumWaitInterval, longIdleEnd - now));
             }
 
-            // Retain the existing cadence near expiry and never cross the
-            // 10-second guard boundary in a single sleep.
+            // Retain the existing cadence near expiry without crossing guard start.
             return ClampMinimum(Min(approachInterval, guardStart - now));
         }
 
-        if (now <= guardEnd)
+        if (now < expiry)
         {
-            return guardDelay;
+            // Wake on the exact predicted edge for the single timer-triggered
+            // stepOne even when the last Internet probe happened just before it.
+            return ClampMinimum(Min(GetEdgeProbeInterval(settings, expiry, now), expiry - now));
         }
 
         if (state.NextAutomaticRetryUtc is { } retryAt && now < retryAt)
@@ -97,6 +130,19 @@ public static class AgentTiming
             var untilRetry = retryAt - now;
             var fallback = networkPolicySatisfied ? MaximumWaitInterval : MissingNetworkFallbackInterval;
             return ClampMinimum(Min(untilRetry, fallback));
+        }
+
+        if (state.EdgeWatchActive)
+        {
+            // Persisted AlreadyAuthorized mode is not limited by guardEnd.
+            return networkPolicySatisfied
+                ? GetEdgeProbeInterval(settings, expiry, now)
+                : MissingNetworkFallbackInterval;
+        }
+
+        if (now <= guardEnd)
+        {
+            return GetEdgeProbeInterval(settings, expiry, now);
         }
 
         // After the active window, never spin on a one-second local poll.
@@ -161,7 +207,8 @@ public sealed class AgentService(
         // Avoid enumerating adapters throughout the ordinary 24-hour idle.
         var checkNetwork = !runtime.UserActionRequired &&
                            runtime.ExpectedExpiryUtc is { } expiry &&
-                           now > expiry.AddSeconds(Math.Max(1, settings.GuardWindowSeconds));
+                           (now > expiry.AddSeconds(Math.Max(1, settings.GuardWindowSeconds)) ||
+                            runtime.EdgeWatchActive && now >= expiry);
         return AgentTiming.GetSleepDelay(
             runtime, settings, now, !checkNetwork || IsNetworkPolicySatisfied());
     }
@@ -196,7 +243,6 @@ public sealed class AgentService(
         var now = clock.GetUtcNow();
         var guardSeconds = Math.Max(1, settings.GuardWindowSeconds);
         var guardStart = expiry.AddSeconds(-guardSeconds);
-        var guardEnd = expiry.AddSeconds(guardSeconds);
 
         MaybeNotifyUpcomingExpiry(runtime, expiry, now);
 
@@ -247,19 +293,19 @@ public sealed class AgentService(
                                                     runtime.LastAttemptUtc is { } lastAttempt &&
                                                     lastAttempt < expiry;
 
-            if (runtime.AutomaticStepOneAttempts == 0 || lastAutomaticSendWasBeforeExpiry)
+            if (runtime.EdgeWatchActive)
             {
-                shouldAuthorize = true;
-            }
-            else if (runtime.EdgeWatchActive && now <= guardEnd)
-            {
+                // An explicit AlreadyAuthorized means the predicted clock ran
+                // ahead of the portal. Never re-send on elapsed time alone.
                 shouldAuthorize = await ConfirmCaptiveBeforeExpiryAsync(
                     TimeSpan.FromMilliseconds(Math.Max(100, settings.GuardProbeIntervalMilliseconds)),
                     TimeSpan.FromMilliseconds(Math.Max(100, settings.GuardProbeTimeoutMilliseconds)),
                     cancellationToken).ConfigureAwait(false);
             }
-            else if (runtime.EdgeWatchActive && now > guardEnd)
+            else if (runtime.AutomaticStepOneAttempts == 0 || lastAutomaticSendWasBeforeExpiry)
             {
+                // The first automatic shot stays timer-triggered, including
+                // after sleep/resume when the machine missed the predicted edge.
                 shouldAuthorize = true;
             }
             else if (string.Equals(runtime.LastResult, "step-one-retryable-error", StringComparison.Ordinal) ||
@@ -312,14 +358,10 @@ public sealed class AgentService(
             NotifyAuthorizationOutcome(outcome);
         }
 
-        if (outcome.Kind == AuthorizationOutcomeKind.AlreadyAuthorized && clock.GetUtcNow() > guardEnd)
+        if (outcome.Kind == AuthorizationOutcomeKind.AlreadyAuthorized)
         {
-            var current = state.Load();
-            var delays = settings.AutomaticRetryDelaysSeconds;
-            var delaySeconds = delays.Length == 0
-                ? 60
-                : delays[Math.Clamp(current.AutomaticStepOneAttempts - 1, 0, delays.Length - 1)];
-            state.ScheduleAutomaticRetry(TimeSpan.FromSeconds(delaySeconds));
+            logger.Write(DiagnosticLevel.Info,
+                $"agent.edge-watch reason=already-authorized offsetMs={(clock.GetUtcNow() - expiry).TotalMilliseconds:F0}");
         }
     }
 

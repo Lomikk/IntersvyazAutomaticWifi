@@ -51,7 +51,7 @@ These are requirements, not suggestions for the rewrite:
 14. HTTP 401 from the API is terminal (`bearer-invalid`) and requires re-registration rather than retrying forever.
 15. If the `stepTwo` response is lost, never resend the code blindly. Confirm the possible side effect with Internet probes at the existing delayed recovery offsets before declaring the result ambiguous.
 16. Successful authorization stores the predicted expiry based on the accepted `stepTwo` server date (with local fallback) plus the observed 24-hour window. Treat it as a scheduling prediction, not a formally guaranteed server SLA.
-17. Preserve the 10-second expiry guard behavior and the rule that, at/after predicted expiry, the timer is authoritative once the default `Campus Wi-Fi` gate is satisfied or the user has explicitly disabled that gate with `IgnoreNetworkCheck`.
+17. The C# agent uses a 30-second adaptive expiry guard: two captive observations permit early authorization, the first timer-driven `stepOne` at/after predicted expiry needs no preliminary probe, and an `AlreadyAuthorized` result switches to persistent, tapered Internet edge-watch rather than timer-driven retries. Preserve the four-send budget and the default `Campus Wi-Fi` gate (or explicit `IgnoreNetworkCheck`). The legacy PowerShell reference keeps its historical 10-second guard.
 18. Bearer, full phone number, SMS code, and Wi-Fi confirmation code must not be written to diagnostic logs.
 
 ## Error model

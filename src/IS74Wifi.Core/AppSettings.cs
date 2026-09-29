@@ -28,9 +28,13 @@ public sealed record AppSettings
     // Cadence during the five-minute approach to expiry; distant daytime
     // checks use AgentTiming's 15-minute heartbeat instead.
     public int AgentPollSeconds { get; init; } = 15;
-    public int GuardWindowSeconds { get; init; } = 10;
-    public int GuardProbeIntervalMilliseconds { get; init; } = 250;
+    // Probe from T-30 s; once a timed stepOne returns AlreadyAuthorized, keep
+    // watching after T+30 s instead of spending the remaining portal sends.
+    public int GuardWindowSeconds { get; init; } = 30;
+    public int GuardProbeIntervalMilliseconds { get; init; } = 500;
     public int GuardProbeTimeoutMilliseconds { get; init; } = 300;
+    // Missing/zero in existing settings.json: migrate the historical 10 s / 250 ms defaults once.
+    public int ExpiryWatchPolicyVersion { get; init; }
     public int InternetProbeConfirmDelaySeconds { get; init; } = 2;
     public int MaxAutomaticStepOneAttempts { get; init; } = ProtocolContract.MaxAutomaticStepOneAttempts;
     public int[] AutomaticRetryDelaysSeconds { get; init; } = [15, 30, 60];
