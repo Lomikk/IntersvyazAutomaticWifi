@@ -290,12 +290,15 @@ assert 'IProgress<SpeedTestProgress>' in speedtest_models and 'CancellationToken
 assert 'BuildRouteUri("speedtest")' in telemetry_client and 'BuildRouteUri("leaderboard")' in telemetry_client, 'speed-test and leaderboard routes must be explicit'
 assert 'PostAsync("batch", endpoint, body' in telemetry_client, 'queued telemetry batches must preserve legacy generic POST compatibility'
 assert 'QueueSpeedTest(telemetry)' in speed_tools_service, 'completed speed tests must remain local-first when backend upload is unavailable'
-assert '"=+-@".Contains(trimmed[0])' in speed_tools_service, 'leaderboard nickname validation must mirror the Sheets formula-injection guard'
+assert 'LeaderboardNicknamePreferences.Normalize(nickname)' in speed_tools_service, 'leaderboard publication must use the shared nickname validator'
+assert 'leaderboardcontrol' in telemetry_client, 'leaderboard lifecycle must use a dedicated control route'
+assert 'telemetryQueue.Enqueue([TelemetrySerialization.Serialize(entry)])' not in speed_tools_service, 'leaderboard publication must never use delayed telemetry queue'
 speed_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.SpeedTools.cs').read_text(encoding='utf-8')
 assert 'CampusSpeedToolsService' in speed_ui and 'RunSpeedMeasurementAsync' in speed_ui, 'speed-tools UI is not connected to measurement core'
 assert 'PublishLastSpeedResultAsync' in speed_ui and 'GetLeaderboardAsync' in speed_ui, 'speed-tools UI is not connected to leaderboard backend'
-assert 'nicknamePreferences.Load()' in speed_ui and speed_ui.count('nicknamePreferences.TrySave(') == 2, 'rich and compact menus must persist the nickname'
-assert 'new LeaderboardNicknamePreferences(new SettingsStore(speedRuntime.Paths, speedRuntime.Json))' in (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8'), 'nickname preferences must be wired into speed menu'
+assert 'nicknamePreferences.LoadSaved()' in speed_ui and 'nicknamePreferences.TrySave(' in speed_ui, 'speed-tools menus must persist the nickname through shared preferences'
+assert 'new LeaderboardNicknamePreferences(leaderboardSettings)' in (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8'), 'nickname preferences must be wired into speed menu'
+assert 'new LeaderboardParticipationPreferences(leaderboardSettings)' in (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8'), 'leaderboard participation preferences must be wired into speed menu'
 assert 'LeaderboardNickname' in (root / 'src' / 'IS74Wifi.Core' / 'AppSettings.cs').read_text(encoding='utf-8'), 'nickname preference missing from settings'
 
 print('static checks: OK')

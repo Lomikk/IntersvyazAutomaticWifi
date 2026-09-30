@@ -18,8 +18,17 @@ public sealed record AppSettings
     // otherwise a persistent Windows network interface GUID. Never fall back to VPN silently.
     public string? DirectNetworkAdapterId { get; init; }
     public AnonymousStatisticsConsent AnonymousStatisticsConsent { get; init; } = global::IS74Wifi.Core.AnonymousStatisticsConsent.Unknown;
-    // Local-only display preference. Nicknames never identify telemetry installations.
+    // Local-only leaderboard preferences. The public backend is authoritative; these
+    // fields only let the UI avoid obviously invalid requests and explain pending sync.
     public string? LeaderboardNickname { get; init; }
+    public bool LeaderboardParticipationKnown { get; init; }
+    public bool LeaderboardParticipating { get; init; }
+    public bool LeaderboardHasHistory { get; init; }
+    public string? LeaderboardPublishedNickname { get; init; }
+    public int? LeaderboardRenameRemaining { get; init; }
+    public DateTimeOffset? LeaderboardRenameAvailableAtUtc { get; init; }
+    public DateTimeOffset? LeaderboardRejoinAvailableAtUtc { get; init; }
+    public bool LeaderboardFirstPublishWarningAcknowledged { get; init; }
     public bool AutomaticUpdates { get; init; }
     // null means follow the channel implied by the current build: alpha builds
     // continue receiving prereleases, stable builds stay on stable releases.

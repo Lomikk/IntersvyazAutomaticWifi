@@ -122,6 +122,7 @@ internal static class SpeedTestContractTests
 
         await TestGenericTelemetryPostContractAsync(telemetry);
         await TestUntrustedLeaderboardValuesAsync();
+        await TestLeaderboardControlContractAsync();
         await TestTelemetryFailureDiagnosticsAsync();
         await TestManualAppsScriptRedirectTraceAsync();
         await TestCampusSpeedToolsConsentAsync();
@@ -316,6 +317,47 @@ internal static class SpeedTestContractTests
         }
     }
 
+    private static async Task TestLeaderboardControlContractAsync()
+    {
+        var requests = new List<(Uri Uri, string Body)>();
+        using var http = new HttpClient(new DelegateHandler(async (request, cancellationToken) =>
+        {
+            var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+            requests.Add((request.RequestUri!, body));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"ok\":true,\"active\":true,\"has_history\":true," +
+                    "\"nickname\":\"WiFi King\",\"rename_remaining\":2," +
+                    "\"rename_available_at_epoch_ms\":0,\"rejoin_available_at_epoch_ms\":1893456000000}")
+            };
+        }));
+
+        var client = new TelemetryClient(http, new Uri("https://script.example.test/exec?deployment=test"));
+        var installId = "0123456789abcdef0123456789abcdef";
+        var status = await client.GetLeaderboardStatusAsync(installId, TimeSpan.FromSeconds(1));
+        Assert(status.Success && status.State is { Active: true, HasHistory: true, RenameRemaining: 2 },
+            "leaderboard control state was not parsed");
+        Assert(status.State!.Nickname == "WiFi King" && status.State.RejoinAvailableAtUtc is not null,
+            "leaderboard control nickname/timestamps were not parsed");
+
+        var renamed = await client.RenameLeaderboardAsync(installId, "New King", TimeSpan.FromSeconds(1));
+        Assert(renamed.Success, "leaderboard rename control failed");
+        var left = await client.LeaveLeaderboardAsync(installId, TimeSpan.FromSeconds(1));
+        Assert(left.Success, "leaderboard leave control failed");
+        var joined = await client.JoinLeaderboardAsync(installId, "New King", TimeSpan.FromSeconds(1));
+        Assert(joined.Success, "leaderboard rejoin control failed");
+
+        Assert(requests.Count == 4 && requests.All(item => item.Uri.Query.Contains("route=leaderboardcontrol", StringComparison.Ordinal)),
+            "leaderboard lifecycle operations must use the dedicated control route");
+        var operations = requests.Select(item => JsonDocument.Parse(item.Body).RootElement.GetProperty("operation").GetString()).ToArray();
+        Assert(operations.SequenceEqual(["status", "rename", "leave", "join"]),
+            "leaderboard lifecycle operation names changed");
+        Assert(requests.All(item => !item.Body.Contains("test_id", StringComparison.Ordinal) &&
+                                    !item.Body.Contains("entry_id", StringComparison.Ordinal)),
+            "leaderboard lifecycle controls must not masquerade as telemetry events");
+    }
+
     private static async Task TestTelemetryFailureDiagnosticsAsync()
     {
         using (var staleClient = new HttpClient(new DelegateHandler((_, _) =>
@@ -398,18 +440,32 @@ internal static class SpeedTestContractTests
         Assert(!localOnly.StatisticsQueued && !queue.HasPending && postCount == 0,
             "declined statistics consent still wrote or queued speed telemetry");
 
-        var blockedPublish = await service.PublishAsync(localOnly, "campus-cat");
-        Assert(blockedPublish.Write.Error == "statistics_consent_required" && postCount == 0,
-            "leaderboard publish bypassed statistics consent");
+        var publishWithoutStatistics = await service.PublishAsync(localOnly, "campus-cat");
+        Assert(publishWithoutStatistics.Write.Success && postCount == 1,
+            "leaderboard participation must be independent from anonymous statistics consent");
+        Assert(!queue.HasPending,
+            "leaderboard publication must never be deferred through the telemetry queue");
 
         allowed = true;
-        var publish = await service.PublishAsync(localOnly, "campus-cat");
-        Assert(publish.Write.Success && postCount == 1,
-            "leaderboard publish did not resume after consent was granted");
-
         var uploaded = await service.MeasureAsync();
         Assert(uploaded.StatisticsWrite.Success && postCount == 2,
             "speed telemetry did not resume after consent was granted");
+
+        using var failedTemp = TestDirectory.Create();
+        var failedQueue = new TelemetryQueue(new AppPaths(failedTemp.Path));
+        using var failedHttp = new HttpClient(new DelegateHandler((_, _) =>
+            throw new HttpRequestException(HttpRequestError.ConnectionError, "offline", null, null)));
+        var failedService = new CampusSpeedToolsService(
+            new FixedSpeedProvider(),
+            new TelemetryClient(failedHttp, new Uri("https://telemetry.example.test/exec")),
+            failedQueue,
+            "fedcba9876543210fedcba9876543210",
+            "0.0.0-test",
+            3000,
+            () => false);
+        var failedPublish = await failedService.PublishAsync(localOnly, "campus-cat");
+        Assert(!failedPublish.Write.Success && !failedQueue.HasPending,
+            "failed leaderboard publication must not enter the delayed telemetry queue");
     }
 
     private static async Task TestManualAppsScriptRedirectTraceAsync()

@@ -8,9 +8,7 @@ internal static class Program
 {
     private const string ProductVersion = "v0.1.0-alpha.24";
     private const string AnonymousStatisticsConsentMessage =
-        "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации, а также позволяет участвовать в анонимном рейтинге скорости интернета.";
-    private const string AnonymousStatisticsPublishMessage =
-        "Для публикации результата требуется отправка анонимной статистики. Разрешить её?";
+        "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
     private static bool forwardMenuWithoutReveal;
 
@@ -1808,8 +1806,7 @@ internal static class Program
                         {
                             _ = await PromptAnonymousStatisticsConsentAsync(
                                 ui,
-                                initialStatus,
-                                forPublication: false).ConfigureAwait(false);
+                                initialStatus).ConfigureAwait(false);
                         }
                         break;
                     }
@@ -1909,11 +1906,12 @@ internal static class Program
                     case InteractiveMenuAction.SpeedTools:
                     {
                         using var speedRuntime = ApplicationRuntime.Create(ProductVersion);
+                        var leaderboardSettings = new SettingsStore(speedRuntime.Paths, speedRuntime.Json);
                         await ui.RunSpeedToolsAsync(
                             GetInteractiveStatusSnapshot(),
                             speedRuntime.CampusSpeedTools,
-                            cancellationToken => EnsureAnonymousStatisticsConsentForPublicationAsync(ui, cancellationToken),
-                            new LeaderboardNicknamePreferences(new SettingsStore(speedRuntime.Paths, speedRuntime.Json))).ConfigureAwait(false);
+                            new LeaderboardNicknamePreferences(leaderboardSettings),
+                            new LeaderboardParticipationPreferences(leaderboardSettings)).ConfigureAwait(false);
                         break;
                     }
 
@@ -1953,8 +1951,7 @@ internal static class Program
             {
                 _ = await PromptAnonymousStatisticsConsentAsync(
                     ui,
-                    GetInteractiveStatusSnapshot(),
-                    forPublication: false).ConfigureAwait(false);
+                    GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                 continue;
             }
 
@@ -2719,7 +2716,6 @@ internal static class Program
     private static async Task<bool> PromptAnonymousStatisticsConsentAsync(
         InteractiveTerminalUi ui,
         InteractiveStatusSnapshot currentStatus,
-        bool forPublication,
         CancellationToken cancellationToken = default)
     {
         using (var app = ApplicationRuntime.Create(ProductVersion))
@@ -2733,9 +2729,9 @@ internal static class Program
 
         var allowed = await ui.ConfirmYesNoAsync(
             "АНОНИМНАЯ СТАТИСТИКА",
-            forPublication ? AnonymousStatisticsPublishMessage : AnonymousStatisticsConsentMessage,
-            forPublication ? "Разрешить и опубликовать" : "Разрешить",
-            forPublication ? "Не публиковать" : "Не отправлять",
+            AnonymousStatisticsConsentMessage,
+            "Разрешить",
+            "Не отправлять",
             currentStatus,
             cancellationToken).ConfigureAwait(false);
 
@@ -2744,15 +2740,6 @@ internal static class Program
             : AnonymousStatisticsConsent.Declined);
         return allowed;
     }
-
-    private static Task<bool> EnsureAnonymousStatisticsConsentForPublicationAsync(
-        InteractiveTerminalUi ui,
-        CancellationToken cancellationToken) =>
-        PromptAnonymousStatisticsConsentAsync(
-            ui,
-            GetInteractiveStatusSnapshot(),
-            forPublication: true,
-            cancellationToken: cancellationToken);
 
     private static void PromptAnonymousStatisticsConsentConsole()
     {

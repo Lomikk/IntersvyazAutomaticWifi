@@ -25,6 +25,19 @@ public sealed record LeaderboardReadResult(
     string? Error,
     IReadOnlyList<LeaderboardPublicEntry> Entries);
 
+public sealed record LeaderboardControlState(
+    bool Active,
+    bool HasHistory,
+    string? Nickname,
+    int RenameRemaining,
+    DateTimeOffset? RenameAvailableAtUtc,
+    DateTimeOffset? RejoinAvailableAtUtc);
+
+public sealed record LeaderboardControlResult(
+    bool Success,
+    string? Error,
+    LeaderboardControlState? State);
+
 public sealed class TelemetryClient(
     HttpClient http,
     Uri endpoint,
@@ -36,9 +49,9 @@ public sealed class TelemetryClient(
         CancellationToken cancellationToken = default)
     {
         var body = BuildBatchEnvelope(batch.BatchId, batch.EventJson);
-        // Keep queued uploads on the backward-compatible generic endpoint. The
-        // queue can contain a user-triggered speed/leaderboard retry alongside
-        // authorization telemetry.
+        // Keep queued uploads on the backward-compatible generic endpoint.
+        // Authorization telemetry and opted-in speed tests may share this queue;
+        // leaderboard lifecycle actions are always immediate and never queued.
         return await PostAsync("batch", endpoint, body, timeout, cancellationToken).ConfigureAwait(false);
     }
 
@@ -63,6 +76,32 @@ public sealed class TelemetryClient(
             TelemetrySerialization.Serialize(value),
             timeout,
             cancellationToken);
+
+    public Task<LeaderboardControlResult> GetLeaderboardStatusAsync(
+        string installId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default) =>
+        SendLeaderboardControlAsync("status", installId, null, timeout, cancellationToken);
+
+    public Task<LeaderboardControlResult> RenameLeaderboardAsync(
+        string installId,
+        string nickname,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default) =>
+        SendLeaderboardControlAsync("rename", installId, nickname, timeout, cancellationToken);
+
+    public Task<LeaderboardControlResult> LeaveLeaderboardAsync(
+        string installId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default) =>
+        SendLeaderboardControlAsync("leave", installId, null, timeout, cancellationToken);
+
+    public Task<LeaderboardControlResult> JoinLeaderboardAsync(
+        string installId,
+        string nickname,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default) =>
+        SendLeaderboardControlAsync("join", installId, nickname, timeout, cancellationToken);
 
     public async Task<LeaderboardReadResult> GetLeaderboardAsync(
         int limit,
@@ -210,6 +249,138 @@ public sealed class TelemetryClient(
         catch (HttpRequestException ex)
         {
             LogFailure("leaderboard_json", ClassifyTransportError(ex), stopwatch.Elapsed, ex);
+            return null;
+        }
+    }
+
+    private async Task<LeaderboardControlResult> SendLeaderboardControlAsync(
+        string operation,
+        string installId,
+        string? nickname,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var payload = new LeaderboardControlRequest
+        {
+            Operation = operation,
+            InstallId = installId,
+            RequestId = "leaderctl-" + Guid.NewGuid().ToString("N"),
+            Nickname = nickname
+        };
+        var target = BuildRouteUri("leaderboardcontrol");
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+        var stopwatch = Stopwatch.StartNew();
+        LogStart("leaderboard_control_" + operation, HttpMethod.Post, target, timeout);
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, target)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(payload, TelemetryJsonContext.Default.LeaderboardControlRequest),
+                    Encoding.UTF8,
+                    "application/json")
+            };
+            using var response = await http.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                timeoutCts.Token).ConfigureAwait(false);
+            var body = await BoundedHttpContent.ReadAsStringAsync(
+                response.Content, BoundedHttpContent.TelemetryBodyLimitBytes, timeoutCts.Token).ConfigureAwait(false);
+            LogResponse("leaderboard_control_" + operation, response, stopwatch.Elapsed, body);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return new LeaderboardControlResult(false, "http_" + (int)response.StatusCode, null);
+            }
+
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("ok", out var okElement) ||
+                okElement.ValueKind != JsonValueKind.True)
+            {
+                return new LeaderboardControlResult(false, ReadError(root), null);
+            }
+
+            if (!TryReadLeaderboardControlState(root, out var state))
+            {
+                return new LeaderboardControlResult(false, "contract_mismatch", null);
+            }
+
+            return new LeaderboardControlResult(true, null, state);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new LeaderboardControlResult(false, "cancelled", null);
+        }
+        catch (OperationCanceledException)
+        {
+            return new LeaderboardControlResult(false, "timeout", null);
+        }
+        catch (HttpRequestException ex)
+        {
+            return new LeaderboardControlResult(false, ClassifyTransportError(ex), null);
+        }
+        catch (ResponseBodyTooLargeException)
+        {
+            return new LeaderboardControlResult(false, "response_too_large", null);
+        }
+        catch (JsonException)
+        {
+            return new LeaderboardControlResult(false, "invalid_response", null);
+        }
+    }
+
+    private static bool TryReadLeaderboardControlState(JsonElement root, out LeaderboardControlState state)
+    {
+        state = default!;
+        if (!root.TryGetProperty("active", out var activeElement) ||
+            activeElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+            !root.TryGetProperty("has_history", out var historyElement) ||
+            historyElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return false;
+        }
+
+        var nickname = root.TryGetProperty("nickname", out var nicknameElement) &&
+                       nicknameElement.ValueKind == JsonValueKind.String
+            ? LeaderboardDisplayPolicy.SanitizeNickname(nicknameElement.GetString())
+            : null;
+        if (nickname?.Length == 0) nickname = null;
+
+        var renameRemaining = root.TryGetProperty("rename_remaining", out var remainingElement) &&
+                              remainingElement.TryGetInt32(out var remaining)
+            ? Math.Clamp(remaining, 0, 3)
+            : 3;
+
+        state = new LeaderboardControlState(
+            activeElement.GetBoolean(),
+            historyElement.GetBoolean(),
+            nickname,
+            renameRemaining,
+            ReadEpochMs(root, "rename_available_at_epoch_ms"),
+            ReadEpochMs(root, "rejoin_available_at_epoch_ms"));
+        return true;
+    }
+
+    private static DateTimeOffset? ReadEpochMs(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var element) ||
+            element.ValueKind != JsonValueKind.Number ||
+            !element.TryGetInt64(out var value) ||
+            value <= 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            return DateTimeOffset.FromUnixTimeMilliseconds(value);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
             return null;
         }
     }

@@ -11,7 +11,7 @@ namespace IS74Wifi.Core;
 public static class LeaderboardDisplayPolicy
 {
     public const int MaximumEntries = 250;
-    public const int MaximumNicknameScalars = 32;
+    public const int MaximumNicknameScalars = 18;
     public const double MaximumSpeedMbps = 10_000;
     public const double MaximumLatencyMs = 60_000;
     public const double MaximumPacketLossPct = 100;

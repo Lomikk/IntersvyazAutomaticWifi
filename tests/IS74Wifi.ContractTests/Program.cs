@@ -65,6 +65,7 @@ static Task TestStorageAsync()
     var installId = new TelemetryIdentityStore(paths).GetOrCreate();
     var nickPreferences = new LeaderboardNicknamePreferences(new SettingsStore(paths, json));
     Assert(nickPreferences.Load() == "Гость", "fresh installation must display the default nickname");
+    Assert(nickPreferences.LoadSaved() is null, "fresh guest state must not masquerade as a saved public nickname");
     Assert(nickPreferences.TrySave(" WiFi King ", out var storedNickname) && storedNickname == "WiFi King",
         "valid nickname must save in its sanitized display form");
     Assert(new LeaderboardNicknamePreferences(new SettingsStore(paths, new JsonFileStore())).Load() == "WiFi King",
@@ -81,6 +82,22 @@ static Task TestStorageAsync()
         "a user may rename the same installation without resetting it");
     Assert(new LeaderboardNicknamePreferences(new SettingsStore(paths, new JsonFileStore())).Load() == "Алекс",
         "renamed nickname must survive another application instance");
+
+    var participation = new LeaderboardParticipationPreferences(settingsStore);
+    participation.ApplyServerState(new LeaderboardControlState(
+        Active: true,
+        HasHistory: true,
+        Nickname: "Алекс",
+        RenameRemaining: 0,
+        RenameAvailableAtUtc: DateTimeOffset.UtcNow.AddHours(1),
+        RejoinAvailableAtUtc: null));
+    Assert(participation.Load() is { Known: true, Active: true, HasHistory: true, PublishedNickname: "Алекс", RenameRemaining: 0 },
+        "leaderboard server-state cache did not persist");
+    Assert(participation.RenameObviouslyRateLimited(DateTimeOffset.UtcNow, out _),
+        "client must avoid an obviously over-limit rename request");
+    participation.AcknowledgeFirstPublishWarning();
+    Assert(participation.Load().FirstPublishWarningAcknowledged,
+        "first-publication warning acknowledgement did not persist");
     Assert(nickPreferences.TrySave("WiFi King", out _) && nickPreferences.Load() == "WiFi King",
         "returning to an older nickname must restore that name");
     Assert(new TelemetryIdentityStore(paths).GetOrCreate() == installId,

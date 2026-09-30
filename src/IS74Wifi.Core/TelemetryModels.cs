@@ -211,6 +211,15 @@ public sealed record TelemetryLeaderboardEntry
     public string TimeBucket { get; init; } = "unknown";
 }
 
+public sealed record LeaderboardControlRequest
+{
+    public int Schema { get; init; } = TelemetryContract.Schema;
+    public required string Operation { get; init; }
+    public required string InstallId { get; init; }
+    public required string RequestId { get; init; }
+    public string? Nickname { get; init; }
+}
+
 public sealed record TelemetryUploadState(
     DateTimeOffset? LastSuccessfulUploadUtc,
     DateTimeOffset? NextAttemptUtc,
@@ -228,4 +237,5 @@ public sealed record TelemetryUploadState(
 [JsonSerializable(typeof(TelemetryErrorEvent))]
 [JsonSerializable(typeof(TelemetrySpeedTestEvent))]
 [JsonSerializable(typeof(TelemetryLeaderboardEntry))]
+[JsonSerializable(typeof(LeaderboardControlRequest))]
 internal sealed partial class TelemetryJsonContext : JsonSerializerContext;

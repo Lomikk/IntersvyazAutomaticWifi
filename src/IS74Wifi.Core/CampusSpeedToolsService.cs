@@ -8,8 +8,7 @@ public sealed record CampusSpeedTestRun(
     bool StatisticsQueued);
 
 public sealed record CampusLeaderboardPublishResult(
-    TelemetryWriteResult Write,
-    bool Queued);
+    TelemetryWriteResult Write);
 
 public sealed class CampusSpeedToolsService(
     ISpeedTestProvider speedTestProvider,
@@ -75,28 +74,17 @@ public sealed class CampusSpeedToolsService(
         string nickname,
         CancellationToken cancellationToken = default)
     {
-        if (!statisticsAllowed())
+        var normalized = LeaderboardNicknamePreferences.Normalize(nickname);
+        if (normalized is null)
         {
             return new CampusLeaderboardPublishResult(
-                new TelemetryWriteResult(false, false, "statistics_consent_required"),
-                Queued: false);
-        }
-
-        var trimmed = nickname.Trim();
-        if (trimmed.Length is < 1 or > 32 ||
-            trimmed.Any(ch => char.IsControl(ch)) ||
-            "=+-@".Contains(trimmed[0]))
-        {
-            return new CampusLeaderboardPublishResult(
-                new TelemetryWriteResult(false, false, "invalid_nickname"),
-                Queued: false);
+                new TelemetryWriteResult(false, false, "invalid_nickname"));
         }
 
         if (telemetryClient is null)
         {
             return new CampusLeaderboardPublishResult(
-                new TelemetryWriteResult(false, false, "backend_not_configured"),
-                Queued: false);
+                new TelemetryWriteResult(false, false, "backend_not_configured"));
         }
 
         var speed = run.Telemetry;
@@ -107,7 +95,7 @@ public sealed class CampusSpeedToolsService(
             TestId = speed.TestId,
             AppVersion = appVersion,
             EventId = "event-" + Guid.NewGuid().ToString("N"),
-            Nickname = trimmed,
+            Nickname = normalized,
             DownloadMbps = speed.DownloadMbps,
             UploadMbps = speed.UploadMbps,
             LatencyMs = speed.LatencyMs,
@@ -123,13 +111,9 @@ public sealed class CampusSpeedToolsService(
             interactiveBackendTimeout,
             cancellationToken).ConfigureAwait(false);
 
-        var queued = !write.Success && ShouldRetryLater(write.Error);
-        if (queued)
-        {
-            telemetryQueue.Enqueue([TelemetrySerialization.Serialize(entry)]);
-        }
-
-        return new CampusLeaderboardPublishResult(write, queued);
+        // Leaderboard changes are user actions and are never deferred through the
+        // telemetry queue: a delayed publish must not resurrect a position after leave.
+        return new CampusLeaderboardPublishResult(write);
     }
 
     public Task<LeaderboardReadResult> GetLeaderboardAsync(
@@ -145,6 +129,49 @@ public sealed class CampusSpeedToolsService(
         }
 
         return telemetryClient.GetLeaderboardAsync(limit, interactiveBackendTimeout, cancellationToken);
+    }
+
+    public Task<LeaderboardControlResult> GetParticipationStateAsync(
+        CancellationToken cancellationToken = default) =>
+        telemetryClient is null
+            ? Task.FromResult(new LeaderboardControlResult(false, "backend_not_configured", null))
+            : telemetryClient.GetLeaderboardStatusAsync(installId, interactiveBackendTimeout, cancellationToken);
+
+    public Task<LeaderboardControlResult> RenameAsync(
+        string nickname,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = LeaderboardNicknamePreferences.Normalize(nickname);
+        if (normalized is null)
+        {
+            return Task.FromResult(new LeaderboardControlResult(false, "invalid_nickname", null));
+        }
+
+        return telemetryClient is null
+            ? Task.FromResult(new LeaderboardControlResult(false, "backend_not_configured", null))
+            : telemetryClient.RenameLeaderboardAsync(
+                installId, normalized, interactiveBackendTimeout, cancellationToken);
+    }
+
+    public Task<LeaderboardControlResult> LeaveAsync(CancellationToken cancellationToken = default) =>
+        telemetryClient is null
+            ? Task.FromResult(new LeaderboardControlResult(false, "backend_not_configured", null))
+            : telemetryClient.LeaveLeaderboardAsync(installId, interactiveBackendTimeout, cancellationToken);
+
+    public Task<LeaderboardControlResult> RejoinAsync(
+        string nickname,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = LeaderboardNicknamePreferences.Normalize(nickname);
+        if (normalized is null)
+        {
+            return Task.FromResult(new LeaderboardControlResult(false, "invalid_nickname", null));
+        }
+
+        return telemetryClient is null
+            ? Task.FromResult(new LeaderboardControlResult(false, "backend_not_configured", null))
+            : telemetryClient.JoinLeaderboardAsync(
+                installId, normalized, interactiveBackendTimeout, cancellationToken);
     }
 
     private void QueueSpeedTest(TelemetrySpeedTestEvent telemetry) =>

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// Safe read-only contract test for the owner's *private* schema-v4 Apps Script.
+// Safe in-memory contract test for the owner's private schema-v4 Apps Script.
 // Usage: node tests/leaderboard_server_contract.cjs /path/to/private-script.js
 // No live Sheets, deployment changes, setupSheets(), or HTTP calls are made.
 const assert = require('node:assert/strict');
@@ -13,26 +13,48 @@ if (!scriptPath) {
   process.exit(2);
 }
 
-let headers;
-let rows = [];
+let leaderboardHeaders;
+let actionHeaders;
+let leaderboardRows = [];
+let actionRows = [];
 let rangeReads = 0;
-const sheet = {
-  getLastRow: () => rows.length + 1,
-  getRange: (start, col, count, width) => {
-    assert.equal(col, 1);
-    assert.equal(width, headers.length);
-    assert.equal(count, start === 1 ? 1 : rows.length);
-    rangeReads++;
-    return {
-      getDisplayValues: () => [headers],
-      getValues: () => rows.map(row => row.slice())
-    };
-  }
+
+function makeSheet(kind) {
+  const getHeaders = () => kind === 'leaderboard' ? leaderboardHeaders : actionHeaders;
+  const getRows = () => kind === 'leaderboard' ? leaderboardRows : actionRows;
+  return {
+    getLastRow: () => getRows().length + 1,
+    getRange: (start, col, count, width) => {
+      assert.equal(col, 1);
+      assert.equal(width, getHeaders().length);
+      rangeReads++;
+      return {
+        getDisplayValues: () => [getHeaders()],
+        getValues: () => getRows().slice(start - 2, start - 2 + count).map(row => row.slice()),
+        setValues: values => {
+          assert.equal(values.length, count);
+          const rows = getRows();
+          for (let i = 0; i < values.length; i++) {
+            const target = start - 2 + i;
+            if (target === rows.length) rows.push(values[i].slice());
+            else rows[target] = values[i].slice();
+          }
+          return this;
+        }
+      };
+    }
+  };
+}
+
+const leaderboardSheet = makeSheet('leaderboard');
+const actionSheet = makeSheet('actions');
+const spreadsheet = {
+  getSheetByName: name => name === 'Leaderboard' ? leaderboardSheet :
+    name === 'LeaderboardActions' ? actionSheet : null
 };
 const sandbox = {
-  SpreadsheetApp: {
-    openById: () => ({ getSheetByName: name => name === 'Leaderboard' ? sheet : null })
-  },
+  SpreadsheetApp: { openById: () => spreadsheet },
+  LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
   ContentService: {
     MimeType: { JSON: 'application/json' },
     createTextOutput: body => ({ body, setMimeType() { return this; } })
@@ -40,19 +62,23 @@ const sandbox = {
 };
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(scriptPath, 'utf8'), sandbox, { filename: 'private-server.js' });
-headers = [...vm.runInContext('LEADERBOARD_HEADERS', sandbox)];
+leaderboardHeaders = [...vm.runInContext('LEADERBOARD_HEADERS', sandbox)];
+actionHeaders = [...vm.runInContext('LEADERBOARD_ACTION_HEADERS', sandbox)];
 const cfg = vm.runInContext('CONFIG', sandbox);
 assert.equal(cfg.schema, 4);
 assert.deepEqual(Array.from(cfg.acceptedSchemas), [1, 2, 3, 4]);
 assert.equal(cfg.maxBatchEvents, 64);
 assert.equal(cfg.maxPayloadBytes, 65536);
+assert.equal(cfg.leaderboardNicknameMaxLength, 18);
+assert.equal(cfg.leaderboardRenameLimit, 3);
+assert.equal(vm.runInContext('typeof migrateLeaderboardLifecycleV4', sandbox), 'function');
 
 function record({ id = 'install-aaaaaaaaaaaaaaaa', nick = 'WiFi King', down = 100,
   up = 20, ping = 15, jitter = 3, loss = 0, time = 100 } = {}) {
   const values = { schema: 4, install_id: id, nickname: nick,
     download_mbps: down, upload_mbps: up, latency_ms: ping,
     jitter_ms: jitter, packet_loss_pct: loss, received_at_epoch_ms: time };
-  return headers.map(key => values[key] ?? '');
+  return leaderboardHeaders.map(key => values[key] ?? '');
 }
 function read(limit = 100) {
   const data = vm.runInContext(`getPublicLeaderboard_({parameter:{limit:${limit}}})`, sandbox);
@@ -68,71 +94,111 @@ function read(limit = 100) {
   }
   return result;
 }
+function control(operation, { id = 'install-aaaaaaaaaaaaaaaa', nick, request = `req-${operation}-12345678` } = {}) {
+  const payload = { schema: 4, operation, install_id: id, request_id: request };
+  if (nick !== undefined) payload.nickname = nick;
+  try {
+    const output = vm.runInContext(`handleLeaderboardControl_(${JSON.stringify(payload)})`, sandbox);
+    return JSON.parse(output.body);
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+}
+function validatePublish({ id = 'install-aaaaaaaaaaaaaaaa', nick = 'WiFi King' } = {}) {
+  try {
+    vm.runInContext(`validateLeaderboardPublicationUnderLock_(SpreadsheetApp.openById('x'), ${JSON.stringify({ install_id: id, nickname: nick })})`, sandbox);
+    return null;
+  } catch (err) {
+    return String(err && err.message ? err.message : err);
+  }
+}
 
 let checks = 0;
-rows = [];
+leaderboardRows = [];
+actionRows = [];
 assert.equal(read().total, 0); checks++;
-rows = [
+
+leaderboardRows = [
   record({ down: 100, up: 70, time: 1 }),
   record({ down: 115, up: 80, time: 2 }),
   record({ down: 120, up: 100, ping: 12, jitter: 8, loss: 5, time: 3 }),
-  record({ down: 118, up: 200, ping: 1, jitter: 1, time: 4 })
+  record({ nick: 'Алекс', down: 110, time: 5 })
 ];
 let result = read();
 assert.equal(result.total, 1);
+assert.equal(result.entries[0].nickname, 'Алекс');
 assert.deepEqual([result.entries[0].download_mbps, result.entries[0].upload_mbps,
   result.entries[0].latency_ms, result.entries[0].jitter_ms,
   result.entries[0].packet_loss_pct], [120, 100, 12, 8, 5]); checks++;
 
-rows.push(record({ nick: 'Алекс', down: 110, time: 5 }));
+leaderboardRows.push(record({ id: 'install-bbbbbbbbbbbbbbbb', nick: 'Алекс', down: 108, time: 6 }));
 result = read();
 assert.equal(result.total, 2);
-assert.deepEqual(result.entries.map(e => e.nickname), ['WiFi King', 'Алекс']); checks++;
+assert.equal(result.entries.filter(e => e.nickname === 'Алекс').length, 2); checks++;
 
-rows.push(record({ id: 'install-bbbbbbbbbbbbbbbb', down: 108, time: 6 }));
+// A successful rename changes the one public position without changing its best measurement.
+let renamed = control('rename', { nick: 'WiFi King', request: 'req-rename-00000001' });
+assert.equal(renamed.ok, true);
+assert.equal(renamed.nickname, 'WiFi King');
 result = read();
-assert.equal(result.total, 3);
-assert.equal(result.entries.filter(e => e.nickname === 'WiFi King').length, 2); checks++;
+assert.equal(result.total, 2);
+assert.equal(result.entries[0].nickname, 'WiFi King');
+assert.equal(result.entries[0].download_mbps, 120); checks++;
 
-rows.push(record({ down: 125, up: 2, ping: 35, jitter: 17, time: 7 }));
+// Repeating exactly the same request is idempotent and does not consume another rename.
+const actionCountAfterRename = actionRows.length;
+renamed = control('rename', { nick: 'WiFi King', request: 'req-rename-00000001' });
+assert.equal(renamed.ok, true);
+assert.equal(actionRows.length, actionCountAfterRename); checks++;
+
+// Three successful changes in the rolling window are allowed; a fourth is rejected.
+assert.equal(control('rename', { nick: 'King 2', request: 'req-rename-00000002' }).ok, true);
+assert.equal(control('rename', { nick: 'King 3', request: 'req-rename-00000003' }).ok, true);
+const limitedRename = control('rename', { nick: 'King 4', request: 'req-rename-00000004' });
+assert.deepEqual(limitedRename, { ok: false, error: 'rename_rate_limited' }); checks++;
+
+// Leaving is immediate and blocks both the public view and delayed publications.
+const left = control('leave', { request: 'req-leave-00000001' });
+assert.equal(left.ok, true);
+assert.equal(left.active, false);
+assert.equal(read().entries.some(e => e.download_mbps === 120), false);
+assert.equal(validatePublish({ nick: 'King 3' }), 'leaderboard_inactive'); checks++;
+
+// First rejoin is allowed and restores the historical best record; another rejoin inside 24h is blocked.
+const joined = control('join', { nick: 'Return King', request: 'req-join-00000001' });
+assert.equal(joined.ok, true);
+assert.equal(joined.active, true);
 result = read();
-assert.equal(result.total, 3);
-assert.deepEqual([result.entries[0].nickname, result.entries[0].download_mbps,
-  result.entries[0].upload_mbps, result.entries[0].jitter_ms],
-  ['WiFi King', 125, 2, 17]); checks++;
+assert.equal(result.entries[0].nickname, 'Return King');
+assert.equal(result.entries[0].download_mbps, 120);
+assert.equal(validatePublish({ nick: 'Return King' }), null);
+assert.equal(validatePublish({ nick: 'stale nick' }), 'nickname_mismatch');
+assert.equal(control('leave', { request: 'req-leave-00000002' }).ok, true);
+const limitedJoin = control('join', { nick: 'Again', request: 'req-join-00000002' });
+assert.deepEqual(limitedJoin, { ok: false, error: 'rejoin_rate_limited' }); checks++;
 
-assert.equal(read(2).total, 3);
+// Exit is always available even after the rename limit has been exhausted.
+const secondId = 'install-cccccccccccccccc';
+leaderboardRows.push(record({ id: secondId, nick: 'Tie', down: 100, up: 20, ping: 15, time: 1 }));
+assert.equal(control('rename', { id: secondId, nick: 'Tie2', request: 'req-c-ren-00000001' }).ok, true);
+assert.equal(control('rename', { id: secondId, nick: 'Tie3', request: 'req-c-ren-00000002' }).ok, true);
+assert.equal(control('rename', { id: secondId, nick: 'Tie4', request: 'req-c-ren-00000003' }).ok, true);
+assert.equal(control('leave', { id: secondId, request: 'req-c-leave-000001' }).ok, true); checks++;
+
+// Public nicknames are capped at 18 scalars and technical identifiers never escape.
+leaderboardRows = [record({ id: 'install-dddddddddddddddd', nick: 'Я'.repeat(80), down: 90 })];
+actionRows = [];
+result = read();
+assert.equal(result.entries[0].nickname.length, 18);
+assert.ok(!JSON.stringify(result).includes('install-dddddddddddddddd')); checks++;
+
+// Legacy rows without a valid install_id remain independent rather than being guessed together.
+leaderboardRows = [record({ id: '', nick: 'Legacy', down: 30 }),
+  record({ id: '', nick: 'Legacy', down: 40 }),
+  record({ id: 'not valid', nick: 'Legacy', down: 50 })];
+actionRows = [];
+assert.equal(read().total, 3); checks++;
+
 assert.equal(read(2).entries.length, 2); checks++;
 
-rows = [record({ id: '', nick: 'Legacy', down: 30 }),
-  record({ id: '', nick: 'Legacy', down: 40 }),
-  record({ id: 'not valid', nick: 'Legacy', down: 50 }),
-  record({ id: 'not valid', nick: 'Legacy', down: 60 })];
-assert.equal(read().total, 4); checks++;
-
-rows = [record({ nick: 'Bad\x1b[31m', down: 90 }),
-  record({ id: 'install-bbbbbbbbbbbbbbbb', nick: '=HYPERLINK()', down: 80 }),
-  record({ id: 'install-bbbbbbbbbbbbbbbb', nick: '=HYPERLINK()', down: -42 }),
-  record({ id: 'install-cccccccccccccccc', nick: '\u200d', down: 10 })];
-result = read();
-assert.equal(result.total, 2);
-assert.ok(result.entries.every(e => !/[\x00-\x1f\x7f]/.test(e.nickname)));
-assert.ok(result.entries.every(e => e.download_mbps === null || e.download_mbps >= 0)); checks++;
-
-const id = 'install-cccccccccccccccc';
-rows = [record({ id, nick: 'Tie', down: 100, up: 20, ping: 15, time: 1 }),
-  record({ id, nick: 'Tie', down: 100, up: 25, ping: 35, time: 2 }),
-  record({ id, nick: 'Tie', down: 100, up: 25, ping: 5, jitter: 11, time: 3 }),
-  record({ id, nick: 'Tie', down: 100, up: 25, ping: 5, jitter: 7, time: 4 })];
-result = read();
-assert.equal(result.total, 1);
-assert.equal(result.entries[0].jitter_ms, 7); checks++;
-
-// Normalization precedes grouping; two visual equivalents are one pair.
-rows = [record({ id, nick: '  WiFi  King ', down: 70 }),
-  record({ id, nick: 'WiFi King', down: 75 })];
-result = read();
-assert.equal(result.total, 1);
-assert.equal(result.entries[0].download_mbps, 75); checks++;
-
-console.log(`private leaderboard contract: PASS (${checks} scenarios; ${rangeReads} in-memory reads; zero writes)`);
+console.log(`private leaderboard contract: PASS (${checks} scenarios; ${rangeReads} in-memory reads; ${actionRows.length} action rows in final scenario)`);

@@ -137,6 +137,7 @@ internal sealed partial class InteractiveTerminalUi
     private string speedStatusText = "Готово к замеру";
     private string speedLeaderboardStatusText = "Рейтинг не загружен";
     private bool speedLastPublished;
+    private bool speedHasSavedNickname;
 
     private sealed record SpeedLeaderboardRow(
         int Rank,
@@ -149,27 +150,31 @@ internal sealed partial class InteractiveTerminalUi
     public async Task RunSpeedToolsAsync(
         InteractiveStatusSnapshot currentStatus,
         CampusSpeedToolsService speedTools,
-        Func<CancellationToken, Task<bool>> ensureAnonymousStatisticsConsent,
         LeaderboardNicknamePreferences nicknamePreferences,
+        LeaderboardParticipationPreferences participationPreferences,
         CancellationToken cancellationToken = default)
     {
-        speedNicknameDraft = nicknamePreferences.Load();
+        var savedNickname = nicknamePreferences.LoadSaved();
+        speedNicknameDraft = savedNickname ?? LeaderboardNicknamePreferences.DefaultNickname;
+        speedHasSavedNickname = savedNickname is not null;
         status = currentStatus;
         var mainMenuSelection = selected;
 
         if (!CanUseInteractiveSession)
         {
-            await RunSpeedToolsCompactAsync(speedTools, ensureAnonymousStatisticsConsent, nicknamePreferences, cancellationToken).ConfigureAwait(false);
+            await RunSpeedToolsCompactAsync(speedTools, nicknamePreferences, participationPreferences, cancellationToken).ConfigureAwait(false);
             selected = mainMenuSelection;
             return;
         }
 
         using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task<LeaderboardReadResult>? initialLeaderboard = null;
+        Task<LeaderboardControlResult>? initialParticipation = null;
         if (speedTools.BackendEnabled)
         {
             speedLeaderboardStatusText = "Обновляю рейтинг…";
             initialLeaderboard = speedTools.GetLeaderboardAsync(SpeedLeaderboardDefaultLimit, sessionCts.Token);
+            initialParticipation = speedTools.GetParticipationStateAsync(sessionCts.Token);
         }
         else
         {
@@ -188,6 +193,15 @@ internal sealed partial class InteractiveTerminalUi
                 {
                     ApplyLeaderboardResult(await initialLeaderboard.ConfigureAwait(false));
                     initialLeaderboard = null;
+                }
+
+                if (initialParticipation is { IsCompleted: true })
+                {
+                    var participation = await initialParticipation.ConfigureAwait(false);
+                    ApplyParticipationResult(participation, participationPreferences);
+                    initialParticipation = null;
+                    await TrySynchronizePendingNicknameAsync(
+                        speedTools, nicknamePreferences, participationPreferences, cancellationToken).ConfigureAwait(false);
                 }
 
                 UpdateLayout();
@@ -225,20 +239,18 @@ internal sealed partial class InteractiveTerminalUi
                     var nickname = await PromptSpeedNicknameAsync(speedNicknameDraft, cancellationToken).ConfigureAwait(false);
                     if (nickname is not null)
                     {
-                        if (nicknamePreferences.TrySave(nickname, out var savedNickname))
-                        {
-                            speedNicknameDraft = savedNickname;
-                            speedStatusText = "Ник сохранён";
-                        }
-                        else
-                        {
-                            speedStatusText = "Ник не сохранён: используйте буквы или цифры";
-                        }
+                        await SaveLeaderboardNicknameAsync(
+                            speedTools, nicknamePreferences, participationPreferences, nickname, cancellationToken).ConfigureAwait(false);
                     }
                 }
                 else if (key.KeyChar == '4')
                 {
-                    await PublishLastSpeedResultAsync(speedTools, ensureAnonymousStatisticsConsent, cancellationToken).ConfigureAwait(false);
+                    await PublishLastSpeedResultAsync(
+                        speedTools, participationPreferences, cancellationToken).ConfigureAwait(false);
+                }
+                else if (key.KeyChar == '5')
+                {
+                    await LeaveLeaderboardAsync(speedTools, participationPreferences, cancellationToken).ConfigureAwait(false);
                 }
 
                 keyTask = ReadKeyAsync();
@@ -252,6 +264,16 @@ internal sealed partial class InteractiveTerminalUi
                 try
                 {
                     _ = await initialLeaderboard.ConfigureAwait(false);
+                }
+                catch
+                {
+                }
+            }
+            if (initialParticipation is not null)
+            {
+                try
+                {
+                    _ = await initialParticipation.ConfigureAwait(false);
                 }
                 catch
                 {
@@ -387,7 +409,7 @@ internal sealed partial class InteractiveTerminalUi
 
     private async Task PublishLastSpeedResultAsync(
         CampusSpeedToolsService speedTools,
-        Func<CancellationToken, Task<bool>> ensureAnonymousStatisticsConsent,
+        LeaderboardParticipationPreferences participationPreferences,
         CancellationToken cancellationToken)
     {
         if (lastSpeedTestRun is null)
@@ -395,6 +417,15 @@ internal sealed partial class InteractiveTerminalUi
             await ShowSpeedToolsNoticeAsync(
                 "ПУБЛИКАЦИЯ РЕЗУЛЬТАТА",
                 "Сначала выполните замер скорости.",
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!speedHasSavedNickname)
+        {
+            await ShowSpeedToolsNoticeAsync(
+                "ПУБЛИКАЦИЯ РЕЗУЛЬТАТА",
+                "Сначала задайте собственный ник. Режим «Гость» не публикуется в общей таблице.",
                 cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -408,10 +439,9 @@ internal sealed partial class InteractiveTerminalUi
             return;
         }
 
-        if (!speedTools.AnonymousStatisticsAllowed &&
-            !await ensureAnonymousStatisticsConsent(cancellationToken).ConfigureAwait(false))
+        if (!await PrepareLeaderboardParticipationForPublishAsync(
+                speedTools, participationPreferences, cancellationToken).ConfigureAwait(false))
         {
-            speedStatusText = "Публикация отменена · анонимная статистика отключена";
             return;
         }
 
@@ -427,14 +457,267 @@ internal sealed partial class InteractiveTerminalUi
         {
             speedLastPublished = true;
             speedStatusText = $"Опубликовано как {speedNicknameDraft}";
+            var state = await speedTools.GetParticipationStateAsync(cancellationToken).ConfigureAwait(false);
+            ApplyParticipationResult(state, participationPreferences);
             await RefreshSpeedLeaderboardAsync(speedTools, cancellationToken).ConfigureAwait(false);
             return;
         }
 
-        speedStatusText = result.Queued
-            ? "Публикация отложена до следующей выгрузки"
-            : "Публикация не выполнена: " + FriendlyTelemetryError(result.Write.Error);
+        speedStatusText = "Публикация не выполнена: " + FriendlyTelemetryError(result.Write.Error);
     }
+
+    private void ApplyParticipationResult(
+        LeaderboardControlResult result,
+        LeaderboardParticipationPreferences participationPreferences)
+    {
+        if (result.Success && result.State is not null)
+        {
+            participationPreferences.ApplyServerState(result.State);
+        }
+    }
+
+    private async Task SaveLeaderboardNicknameAsync(
+        CampusSpeedToolsService speedTools,
+        LeaderboardNicknamePreferences nicknamePreferences,
+        LeaderboardParticipationPreferences participationPreferences,
+        string proposedNickname,
+        CancellationToken cancellationToken)
+    {
+        if (!nicknamePreferences.TrySave(proposedNickname, out var savedNickname))
+        {
+            speedStatusText = "Ник не сохранён: используйте буквы или цифры";
+            return;
+        }
+
+        speedNicknameDraft = savedNickname;
+        speedHasSavedNickname = true;
+        if (!speedTools.BackendEnabled)
+        {
+            speedStatusText = "Ник сохранён локально";
+            return;
+        }
+
+        var state = participationPreferences.Load();
+        if (!state.Known)
+        {
+            var refresh = await speedTools.GetParticipationStateAsync(cancellationToken).ConfigureAwait(false);
+            ApplyParticipationResult(refresh, participationPreferences);
+            state = participationPreferences.Load();
+        }
+
+        if (!state.Active)
+        {
+            speedStatusText = "Ник сохранён локально";
+            return;
+        }
+
+        if (string.Equals(state.PublishedNickname, savedNickname, StringComparison.Ordinal))
+        {
+            speedStatusText = "Ник уже опубликован";
+            return;
+        }
+
+        if (participationPreferences.RenameObviouslyRateLimited(DateTimeOffset.UtcNow, out var availableAt))
+        {
+            speedStatusText = "Ник сохранён локально · лимит переименований до " + FormatLeaderboardLimitTime(availableAt);
+            return;
+        }
+
+        speedStatusText = "Синхронизирую ник…";
+        var rename = await speedTools.RenameAsync(savedNickname, cancellationToken).ConfigureAwait(false);
+        ApplyParticipationResult(rename, participationPreferences);
+        speedStatusText = rename.Success
+            ? $"Публичный ник изменён на {savedNickname}"
+            : "Ник сохранён локально · публичный ник пока прежний: " + FriendlyTelemetryError(rename.Error);
+    }
+
+    private async Task TrySynchronizePendingNicknameAsync(
+        CampusSpeedToolsService speedTools,
+        LeaderboardNicknamePreferences nicknamePreferences,
+        LeaderboardParticipationPreferences participationPreferences,
+        CancellationToken cancellationToken)
+    {
+        var state = participationPreferences.Load();
+        var localNickname = nicknamePreferences.LoadSaved();
+        if (localNickname is null)
+        {
+            speedNicknameDraft = LeaderboardNicknamePreferences.DefaultNickname;
+            speedHasSavedNickname = false;
+            return;
+        }
+
+        speedNicknameDraft = localNickname;
+        speedHasSavedNickname = true;
+        if (!speedTools.BackendEnabled || !state.Known || !state.Active ||
+            string.Equals(state.PublishedNickname, localNickname, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (participationPreferences.RenameObviouslyRateLimited(DateTimeOffset.UtcNow, out _))
+        {
+            return;
+        }
+
+        var rename = await speedTools.RenameAsync(localNickname, cancellationToken).ConfigureAwait(false);
+        ApplyParticipationResult(rename, participationPreferences);
+        if (rename.Success)
+        {
+            speedStatusText = $"Публичный ник синхронизирован: {localNickname}";
+        }
+    }
+
+    private async Task<bool> PrepareLeaderboardParticipationForPublishAsync(
+        CampusSpeedToolsService speedTools,
+        LeaderboardParticipationPreferences participationPreferences,
+        CancellationToken cancellationToken)
+    {
+        if (!speedHasSavedNickname)
+        {
+            speedStatusText = "Сначала задайте собственный ник · Гость не публикуется";
+            return false;
+        }
+
+        var state = participationPreferences.Load();
+        if (!state.FirstPublishWarningAcknowledged)
+        {
+            var accepted = await ConfirmYesNoAsync(
+                "ПУБЛИЧНЫЙ РЕЙТИНГ",
+                "Рейтинг добровольный. Публично видны только ник и показатели замера. Управление записью привязано к случайному install_id этой установки. Если полностью удалить программу и потерять этот идентификатор, управлять старой публичной записью из новой установки будет нельзя.",
+                "Понятно, продолжить",
+                "Отмена",
+                status,
+                cancellationToken).ConfigureAwait(false);
+            if (!accepted)
+            {
+                speedStatusText = "Публикация отменена";
+                return false;
+            }
+
+            participationPreferences.AcknowledgeFirstPublishWarning();
+        }
+
+        if (!state.Known)
+        {
+            var refresh = await speedTools.GetParticipationStateAsync(cancellationToken).ConfigureAwait(false);
+            if (!refresh.Success)
+            {
+                speedStatusText = "Не удалось проверить состояние рейтинга: " + FriendlyTelemetryError(refresh.Error);
+                return false;
+            }
+            ApplyParticipationResult(refresh, participationPreferences);
+            state = participationPreferences.Load();
+        }
+
+        if (state.HasHistory && !state.Active)
+        {
+            if (participationPreferences.RejoinObviouslyRateLimited(DateTimeOffset.UtcNow, out var availableAt))
+            {
+                speedStatusText = "Повторное вступление доступно после " + FormatLeaderboardLimitTime(availableAt);
+                return false;
+            }
+
+            var rejoinConfirmed = await ConfirmYesNoAsync(
+                "ВЕРНУТЬСЯ В РЕЙТИНГ",
+                "Вы ранее вышли из публичного рейтинга. Повторное вступление разрешено не чаще одного раза за 24 часа. Старый лучший результат снова станет виден после подтверждения сервера.",
+                "Вернуться",
+                "Отмена",
+                status,
+                cancellationToken).ConfigureAwait(false);
+            if (!rejoinConfirmed)
+            {
+                speedStatusText = "Публикация отменена";
+                return false;
+            }
+
+            var rejoin = await speedTools.RejoinAsync(speedNicknameDraft, cancellationToken).ConfigureAwait(false);
+            ApplyParticipationResult(rejoin, participationPreferences);
+            if (!rejoin.Success)
+            {
+                speedStatusText = "Не удалось вернуться в рейтинг: " + FriendlyTelemetryError(rejoin.Error);
+                return false;
+            }
+            state = participationPreferences.Load();
+        }
+
+        if (state.Active && !string.Equals(state.PublishedNickname, speedNicknameDraft, StringComparison.Ordinal))
+        {
+            if (participationPreferences.RenameObviouslyRateLimited(DateTimeOffset.UtcNow, out var availableAt))
+            {
+                speedStatusText = "Публичный ник ещё не синхронизирован · лимит до " + FormatLeaderboardLimitTime(availableAt);
+                return false;
+            }
+
+            var rename = await speedTools.RenameAsync(speedNicknameDraft, cancellationToken).ConfigureAwait(false);
+            ApplyParticipationResult(rename, participationPreferences);
+            if (!rename.Success)
+            {
+                speedStatusText = "Сначала не удалось синхронизировать ник: " + FriendlyTelemetryError(rename.Error);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private async Task LeaveLeaderboardAsync(
+        CampusSpeedToolsService speedTools,
+        LeaderboardParticipationPreferences participationPreferences,
+        CancellationToken cancellationToken)
+    {
+        if (!speedTools.BackendEnabled)
+        {
+            speedStatusText = "Выход недоступен: backend не настроен";
+            return;
+        }
+
+        var state = participationPreferences.Load();
+        if (!state.Known)
+        {
+            var refresh = await speedTools.GetParticipationStateAsync(cancellationToken).ConfigureAwait(false);
+            if (!refresh.Success)
+            {
+                speedStatusText = "Не удалось проверить состояние рейтинга: " + FriendlyTelemetryError(refresh.Error);
+                return;
+            }
+            ApplyParticipationResult(refresh, participationPreferences);
+            state = participationPreferences.Load();
+        }
+
+        if (!state.Active)
+        {
+            speedStatusText = "Вы уже не участвуете в рейтинге";
+            return;
+        }
+
+        var confirmed = await ConfirmYesNoAsync(
+            "ВЫЙТИ ИЗ РЕЙТИНГА",
+            "Публичная позиция исчезнет сразу после подтверждения сервера. История замеров не удаляется. Вернуться в рейтинг можно будет отдельным действием с серверным ограничением не чаще одного раза за 24 часа.",
+            "Удалить публичную запись",
+            "Отмена",
+            status,
+            cancellationToken).ConfigureAwait(false);
+        if (!confirmed)
+        {
+            return;
+        }
+
+        speedStatusText = "Удаляю публичную запись…";
+        var leave = await speedTools.LeaveAsync(cancellationToken).ConfigureAwait(false);
+        ApplyParticipationResult(leave, participationPreferences);
+        if (!leave.Success)
+        {
+            speedStatusText = "Не удалось удалить запись: " + FriendlyTelemetryError(leave.Error);
+            return;
+        }
+
+        speedLastPublished = false;
+        speedStatusText = "Публичная запись удалена";
+        await RefreshSpeedLeaderboardAsync(speedTools, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string FormatLeaderboardLimitTime(DateTimeOffset? value) =>
+        value is null ? "позже" : value.Value.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
 
     private async Task<string?> PromptSpeedNicknameAsync(string currentValue, CancellationToken cancellationToken)
     {
@@ -588,7 +871,7 @@ internal sealed partial class InteractiveTerminalUi
 
         DrawSpeedMeasurementPane(canvas, leftContentX, leftContentY, leftContentWidth);
         DrawSpeedLeaderboardPane(canvas);
-        Center(canvas, CanvasHeight - 1, "Enter/1 замер   2 таблица   R обновить   3 ник   4 публикация   Esc назад", Palette.Dim);
+        Center(canvas, CanvasHeight - 1, "Enter/1 замер   2 таблица   R обновить   3 ник   4 публикация   5 выйти   Esc назад", Palette.Dim);
         Render(canvas);
     }
 
@@ -874,10 +1157,20 @@ internal sealed partial class InteractiveTerminalUi
 
     private async Task RunSpeedToolsCompactAsync(
         CampusSpeedToolsService speedTools,
-        Func<CancellationToken, Task<bool>> ensureAnonymousStatisticsConsent,
         LeaderboardNicknamePreferences nicknamePreferences,
+        LeaderboardParticipationPreferences participationPreferences,
         CancellationToken cancellationToken)
     {
+        if (speedTools.BackendEnabled)
+        {
+            var participation = await speedTools.GetParticipationStateAsync(cancellationToken).ConfigureAwait(false);
+            ApplyParticipationResult(participation, participationPreferences);
+            await TrySynchronizePendingNicknameAsync(
+                speedTools, nicknamePreferences, participationPreferences, cancellationToken).ConfigureAwait(false);
+            ApplyLeaderboardResult(await speedTools.GetLeaderboardAsync(
+                SpeedLeaderboardDefaultLimit, cancellationToken).ConfigureAwait(false));
+        }
+
         while (true)
         {
             Console.Clear();
@@ -907,6 +1200,7 @@ internal sealed partial class InteractiveTerminalUi
             Console.WriteLine("[1] Начать замер   [2] Развернуть таблицу");
             Console.WriteLine("[R] Обновить рейтинг");
             Console.WriteLine("[3] Никнейм        [4] Опубликовать");
+            Console.WriteLine("[5] Выйти из рейтинга");
             Console.WriteLine("[0] Назад");
 
             var key = Console.ReadKey(intercept: true);
@@ -945,14 +1239,10 @@ internal sealed partial class InteractiveTerminalUi
                 Console.Clear();
                 Console.Write("Никнейм: ");
                 var nickname = Console.ReadLine()?.Trim();
-                if (nicknamePreferences.TrySave(nickname, out var savedNickname))
+                if (nickname is not null)
                 {
-                    speedNicknameDraft = savedNickname;
-                    speedStatusText = "Ник сохранён";
-                }
-                else
-                {
-                    speedStatusText = "Ник не сохранён: используйте буквы или цифры";
+                    await SaveLeaderboardNicknameAsync(
+                        speedTools, nicknamePreferences, participationPreferences, nickname, cancellationToken).ConfigureAwait(false);
                 }
             }
             else if (key.KeyChar == '4')
@@ -965,27 +1255,28 @@ internal sealed partial class InteractiveTerminalUi
                 {
                     speedStatusText = "Публикация недоступна: backend не настроен";
                 }
-                else if (!speedTools.AnonymousStatisticsAllowed &&
-                         !await ensureAnonymousStatisticsConsent(cancellationToken).ConfigureAwait(false))
-                {
-                    speedStatusText = "Публикация отменена · анонимная статистика отключена";
-                }
-                else
+                else if (await PrepareLeaderboardParticipationForPublishAsync(
+                             speedTools, participationPreferences, cancellationToken).ConfigureAwait(false))
                 {
                     var result = await speedTools.PublishAsync(lastSpeedTestRun, speedNicknameDraft, cancellationToken).ConfigureAwait(false);
                     speedLastPublished = result.Write.Success;
                     speedStatusText = result.Write.Success
                         ? $"Опубликовано как {speedNicknameDraft}"
-                        : result.Queued
-                            ? "Публикация отложена"
-                            : "Публикация не выполнена: " + FriendlyTelemetryError(result.Write.Error);
+                        : "Публикация не выполнена: " + FriendlyTelemetryError(result.Write.Error);
                     if (result.Write.Success)
                     {
+                        ApplyParticipationResult(
+                            await speedTools.GetParticipationStateAsync(cancellationToken).ConfigureAwait(false),
+                            participationPreferences);
                         ApplyLeaderboardResult(await speedTools.GetLeaderboardAsync(
                             SpeedLeaderboardDefaultLimit,
                             cancellationToken).ConfigureAwait(false));
                     }
                 }
+            }
+            else if (key.KeyChar == '5')
+            {
+                await LeaveLeaderboardAsync(speedTools, participationPreferences, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -1144,7 +1435,6 @@ internal sealed partial class InteractiveTerminalUi
         {
             "backend_not_configured" => "backend не настроен",
             "statistics_disabled" => "анонимная статистика отключена",
-            "statistics_consent_required" => "нужно разрешить анонимную статистику",
             "timeout" => "таймаут HTTP-запроса",
             "cancelled" => "запрос отменён интерфейсом",
             "dns" => "ошибка DNS",
@@ -1158,6 +1448,11 @@ internal sealed partial class InteractiveTerminalUi
             "contract_mismatch" => "backend устарел или несовместим",
             "invalid_response" => "некорректный ответ backend",
             "invalid_nickname" => "некорректный никнейм",
+            "leaderboard_inactive" => "сначала нужно вернуться в рейтинг",
+            "nickname_mismatch" => "публичный ник изменился; обновите состояние",
+            "rename_rate_limited" => "лимит переименований исчерпан",
+            "rejoin_rate_limited" => "повторное вступление пока недоступно",
+            "not_participating" => "публичной записи уже нет",
             null or "" => "неизвестная ошибка",
             _ => "backend: " + error
         };

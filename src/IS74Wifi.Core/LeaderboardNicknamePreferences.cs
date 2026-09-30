@@ -9,7 +9,9 @@ public sealed class LeaderboardNicknamePreferences(SettingsStore settings)
     public const string DefaultNickname = "Гость";
     public const int MaximumNicknameLength = 18;
 
-    public string Load() => Normalize(settings.Load().LeaderboardNickname) ?? DefaultNickname;
+    public string Load() => LoadSaved() ?? DefaultNickname;
+
+    public string? LoadSaved() => Normalize(settings.Load().LeaderboardNickname);
 
     public bool TrySave(string? proposed, out string nickname)
     {
