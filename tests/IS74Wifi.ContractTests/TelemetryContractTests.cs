@@ -142,6 +142,7 @@ internal static class TelemetryContractTests
         TestRegistrationTelemetry();
         TestUploadTimeoutCompatibility();
         await TestUploadConsentGateAsync();
+        await TestMixedQueueRetryAsync();
     }
 
     private static void TestUploadTimeoutCompatibility()
@@ -264,6 +265,76 @@ internal static class TelemetryContractTests
         queue.Enqueue(["{\"event_type\":\"test\",\"schema\":3}"]);
         queue.ClearPending();
         Assert(!queue.HasPending, "telemetry queue did not clear at a consent boundary");
+    }
+
+    private static async Task TestMixedQueueRetryAsync()
+    {
+        using var fixture = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(AppContext.BaseDirectory, "fixtures", "queued-speedtest.json")));
+        var events = fixture.RootElement.GetProperty("events").EnumerateArray().ToArray();
+        var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+        var attempt = JsonSerializer.Deserialize<TelemetryAttemptEvent>(events[0], options)!;
+        var speed = JsonSerializer.Deserialize<TelemetrySpeedTestEvent>(events[1], options)!;
+        var serialized = new[] { TelemetrySerialization.Serialize(attempt), TelemetrySerialization.Serialize(speed) };
+        for (var index = 0; index < events.Length; index++)
+        {
+            using var actual = JsonDocument.Parse(serialized[index]);
+            Assert(JsonElement.DeepEquals(events[index], actual.RootElement),
+                "client serialization diverged from the shared server fixture");
+        }
+
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var queue = new TelemetryQueue(paths);
+        queue.Enqueue([serialized[0]]);
+        queue.Enqueue([serialized[1]]);
+        var stateStore = new TelemetryUploadStateStore(paths, new JsonFileStore());
+        var clock = new UploadTestClock();
+        var posts = 0;
+        string? firstRequestBody = null;
+        using var http = new HttpClient(new DelegateHandler(async (request, cancellationToken) =>
+        {
+            Assert(request.RequestUri!.Query.Contains("route=telemetry", StringComparison.Ordinal),
+                "a shared queue must use the server's batch route");
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            using var payload = JsonDocument.Parse(body);
+            var types = payload.RootElement.GetProperty("events").EnumerateArray()
+                .Select(item => item.GetProperty("event_type").GetString()).Order().ToArray();
+            Assert(types.SequenceEqual(new[] { "attempt", "speed_test" }), "mixed queue lost an event type");
+            posts++;
+            if (posts == 1) firstRequestBody = body;
+            else Assert(body == firstRequestBody, "retry changed the pending payload or its dedupe identity");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                // Models the old receiver, then the compatible receiver after rollout.
+                Content = new StringContent(posts == 1
+                    ? "{\"ok\":false,\"error\":\"route_event_mismatch\"}"
+                    : "{\"ok\":true,\"accepted\":2}")
+            };
+        }));
+        var uploader = new TelemetryUploader(queue, stateStore,
+            new TelemetryClient(http, new Uri("https://telemetry.example.test/exec")),
+            new AppSettings { AnonymousStatisticsConsent = AnonymousStatisticsConsent.Allowed },
+            new DiagnosticLogger(paths), timeProvider: clock);
+
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 1 && queue.GetStatus().PendingFiles == 2,
+            "rejected mixed batch must be retained, not silently discarded");
+        var deferred = stateStore.Load();
+        Assert(deferred.ConsecutiveFailures == 1 && deferred.NextAttemptUtc > clock.Now,
+            "failed upload must back off");
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 1, "uploader ignored retry backoff");
+        clock.Now = deferred.NextAttemptUtc!.Value;
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 2 && !queue.HasPending, "compatible receiver did not unblock the mixed queue");
+        Assert(stateStore.Load().ConsecutiveFailures == 0, "successful retry did not reset failures");
+    }
+
+    private sealed class UploadTestClock : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = new(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
     private static void Assert(bool condition, string message)

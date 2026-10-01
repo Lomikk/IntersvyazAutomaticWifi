@@ -22,6 +22,19 @@ assert 'localStatusTask is { IsCompleted: true }' in menu
 assert 'status = localStatusTask.Result;' in menu
 assert 'refreshedStatusTask is { IsCompleted: true }' in menu
 assert 'ReadLocalInteractiveStatusSnapshot).ConfigureAwait(false)' in program
+
+# Manual authorization must use the queue-backed App runner, not a rendering
+# callback on the critical Core flow. Its behavior is tested in the C# suite.
+connect = program.split('case InteractiveMenuAction.Connect:', 1)[1].split(
+    'case InteractiveMenuAction.EnableAutomaticAuthorization:', 1
+)[0]
+assert 'ManualAuthorizationRunner.RunAsync(' in connect
+assert 'RunManualAuthorizationAsync(stage =>' not in connect
+progress = connect.split('ManualAuthorizationRunner.RunAsync(', 1)[1].split(
+    ').ConfigureAwait(false);', 1
+)[0]
+assert 'GetInteractiveStatusSnapshot' not in progress
+assert 'initialStatus' in progress
 assert 'new RuntimeStateStore(paths, json).Load()' in local
 assert 'new SettingsStore(paths, json).Load()' in local
 for forbidden in ('ApplicationRuntime.Create', 'ProbeAsync(', 'CheckAsync(', 'TryCheckForUpdatesIfDueAsync'):

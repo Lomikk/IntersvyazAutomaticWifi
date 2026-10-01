@@ -1642,7 +1642,7 @@ internal static class Program
                         ui.ShowActionProgress("АВТОРИЗАЦИЯ WI-FI", history, initialStatus);
 
                         var stepTwoAccepted = false;
-                        var outcome = await RunManualAuthorizationAsync(stage =>
+                        void ApplyStage(AuthorizationProgressStage stage)
                         {
                             switch (stage)
                             {
@@ -1679,12 +1679,15 @@ internal static class Program
                                     history.CompleteActive("Доступ в Интернет подтверждён");
                                     break;
                             }
+                        }
 
-                            ui.ShowActionProgress(
+                        var outcome = await ManualAuthorizationRunner.RunAsync(
+                            RunManualAuthorizationAsync,
+                            ApplyStage,
+                            () => ui.ShowActionProgress(
                                 "АВТОРИЗАЦИЯ WI-FI",
                                 history,
-                                GetInteractiveStatusSnapshot());
-                        }).ConfigureAwait(false);
+                                initialStatus)).ConfigureAwait(false);
 
                         history.FinishActiveAsInfo();
                         var outcomeText = DescribeAuthorizationOutcomeForUi(outcome);

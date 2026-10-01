@@ -112,7 +112,7 @@ The first command performs DNS resolution, manually displays every GET redirect 
 
 ## Ingestion API contract
 
-The Apps Script source is intentionally kept outside this public repository. The pre-release receiver accepts schema 4 only and requires an explicit route for every request:
+The Apps Script source is intentionally kept outside this public repository, in the companion private `IntersvyazAutomaticWifi_SERVER` repository (`Code.gs`). The pre-release receiver accepts schema 4 only and requires an explicit route for every request:
 
 ```text
 POST <web-app endpoint>?route=telemetry         # queued telemetry batch
@@ -123,11 +123,26 @@ GET  <web-app endpoint>?route=leaderboard&limit=100
 
 The payload `event_type` still selects the row schema (`attempt`, `mailbox_poll`, `internet_probe`, `portal_response`, `registration_event`, `error`, `speed_test`, or `leaderboard_entry`). Authorization traces use a `{batch_id, events[]}` envelope. The receiver guards each request at 64 events / 64 KiB, which is why the local queue emits at most 64 events and targets roughly 60 KiB per transport batch.
 
+The shared `telemetry` route also accepts deferred `speed_test` events, alone or
+mixed with authorization telemetry. A failed immediate speed-test submission is
+already queued this way by beta clients. `leaderboard_entry` and lifecycle commands
+must never be accepted through that queue. The 2026-10-01 receiver fix restores
+this compatibility without changing schema or requiring a client update. Pending
+queues are retained and resume on the next scheduled retry after server deployment;
+do not clear them to work around `route_event_mismatch`.
+
 The production `/exec` URL is a versioned Apps Script deployment. Saving editor code is not enough: after a receiver change, create a new script version and edit the existing deployment to use it. Keep execution as the deploying account and anonymous/public access enabled. A quick contract check is that the root GET reports schema 4, `accepted_schemas` contains only 4, and `GET ?route=leaderboard&limit=3` returns an object with an `entries` array.
 
 The public leaderboard shows **one active position per valid `install_id`**, selecting that installation's winning measurement (download DESC, then upload DESC, lower latency, newer receipt time) and applying its current lifecycle nickname. All displayed metrics come from one winning measurement. Renaming changes that one public position without rewriting measurement history. Different installations may have identical nicknames and appear independently. Historical rows with empty or invalid `install_id` remain separate, since their identities cannot safely be inferred. Deduplication happens only in the public GET view **before sorting, `limit`, and `total`**; raw `Leaderboard` and `SpeedTests` remain append-only. The response exposes only rank, nickname, download/upload, latency, jitter and optional packet loss; private `install_id`, `test_id`, `event_id`, radio metadata and time bucket remain server-side. The companion private Apps Script is deployed manually, retaining the existing `/exec` URL. Its production surface contains only `doGet` and `doPost`; destructive setup, one-time migration, and manual self-test entry points are not deployed.
 
 The private server's offline contract can be run against the owner's exact schema-v4 baseline plus the leaderboard change without accessing production Sheets: `node tests/leaderboard_server_contract.cjs /path/to/updated-private-server.js`.
+
+Also run `node tests/server_ingestion_contract.cjs /path/to/Code.gs` for full
+in-memory POST validation, mixed batches, retry/deduplication, route separation and
+flush-before-cache/lock-release checks. Both can be run from the private repository
+using `./verify.ps1 -ClientRepository /path/to/IntersvyazAutomaticWifi`.
+The synthetic `tests/fixtures/queued-speedtest.json` is shared with the C# serializer
+and uploader tests; no private source or real user data is included in this repo.
 
 The terminal's optional nickname is a **local `settings.json` preference** (default: `Гость`), reused on later launches and editable from both rich and compact speed menus. It is not a user account or analytical identity; `install_id` remains unchanged when the nickname changes. Publication still requires the existing explicit action and anonymous-statistics consent.
 

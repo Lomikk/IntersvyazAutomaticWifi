@@ -53,7 +53,7 @@ const spreadsheet = {
     name === 'LeaderboardActions' ? actionSheet : null
 };
 const sandbox = {
-  SpreadsheetApp: { openById: () => spreadsheet },
+  SpreadsheetApp: { openById: () => spreadsheet, flush() {} },
   LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
   ContentService: {
     MimeType: { JSON: 'application/json' },
@@ -203,5 +203,17 @@ actionRows = [];
 assert.equal(read().total, 3); checks++;
 
 assert.equal(read(2).entries.length, 2); checks++;
+
+// Receipt time, not winning speed or physical row order, selects a legacy nickname.
+leaderboardRows = [record({ nick: 'Newest', down: 30, time: 50 }),
+  record({ nick: 'Older', down: 40, time: 10 })];
+actionRows = [];
+assert.equal(read().entries[0].nickname, 'Newest');
+assert.equal(read().entries[0].download_mbps, 40); checks++;
+
+// An explicit lifecycle nickname remains authoritative over measurement history.
+assert.equal(control('rename', { nick: 'Explicit', request: 'req-explicit-12345678' }).ok, true);
+leaderboardRows.push(record({ nick: 'Stale upload', time: Date.now() + 1000 }));
+assert.equal(read().entries[0].nickname, 'Explicit'); checks++;
 
 console.log(`private leaderboard contract: PASS (${checks} scenarios; ${rangeReads} in-memory reads; ${actionRows.length} action rows in final scenario)`);

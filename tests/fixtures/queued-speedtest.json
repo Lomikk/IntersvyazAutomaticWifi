@@ -1,0 +1,37 @@
+{
+  "batch_id": "batch-fixture-queued-speedtest",
+  "events": [
+    {
+      "event_type": "attempt",
+      "schema": 4,
+      "attempt_id": "attempt-fixture-0001",
+      "install_id": "install-fixture-00000001",
+      "app_version": "0.0.0-test",
+      "event_id": "event-attempt-fixture-0001",
+      "result": "success",
+      "trigger": "manual",
+      "total_ms": 1200,
+      "schedule_version": "push-v1"
+    },
+    {
+      "event_type": "speed_test",
+      "schema": 4,
+      "test_id": "speed-fixture-0001",
+      "install_id": "install-fixture-00000001",
+      "app_version": "0.0.0-test",
+      "event_id": "event-speed-fixture-0001",
+      "test_version": "is74-v1",
+      "result": "success",
+      "test_scope": "regional",
+      "server_kind": "regional_provider",
+      "download_mbps": 84.3,
+      "upload_mbps": 40.2,
+      "latency_ms": 12,
+      "jitter_ms": 2,
+      "wifi_signal_bucket": "unknown",
+      "wifi_band": "unknown",
+      "connection_type": "unknown",
+      "time_bucket": "unknown"
+    }
+  ]
+}

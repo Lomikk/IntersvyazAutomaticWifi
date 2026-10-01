@@ -418,7 +418,8 @@ internal sealed partial class InteractiveTerminalUi
                 cancellationToken.ThrowIfCancellationRequested();
                 UpdateLayout();
                 UpdateAmbientSweepState();
-                RenderNetworkAdapterFrame(options, selectedIndex);
+                var visibleRows = GetExpandedNetworkAdapterVisibleRowCount();
+                RenderNetworkAdapterFrame(options, selectedIndex, visibleRows);
 
                 var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
                 if (completed != keyTask)
@@ -434,6 +435,14 @@ internal sealed partial class InteractiveTerminalUi
                 else if (key.Key == ConsoleKey.DownArrow)
                 {
                     selectedIndex = (selectedIndex + 1) % options.Count;
+                }
+                else if (key.Key == ConsoleKey.PageUp)
+                {
+                    selectedIndex = Math.Max(0, selectedIndex - visibleRows);
+                }
+                else if (key.Key == ConsoleKey.PageDown)
+                {
+                    selectedIndex = Math.Min(options.Count - 1, selectedIndex + visibleRows);
                 }
                 else if (key.Key == ConsoleKey.Home)
                 {
@@ -1292,18 +1301,26 @@ internal sealed partial class InteractiveTerminalUi
         Render(canvas);
     }
 
-    private void RenderNetworkAdapterFrame(IReadOnlyList<NetworkAdapterOption> options, int selectedIndex)
+    private void RenderNetworkAdapterFrame(
+        IReadOnlyList<NetworkAdapterOption> options,
+        int selectedIndex,
+        int visibleRows)
     {
-        var canvas = CreateActionCanvas(
-            "АДАПТЕР ДЛЯ АВТОРИЗАЦИИ",
-            out var contentX,
-            out var contentY,
-            out var contentWidth);
+        var canvas = CreateCanvas();
+        var boxY = 1;
+        var boxHeight = Math.Max(8, CanvasHeight - 3);
+        var boxX = compactLayout ? 1 : Math.Max(1, (canvasWidth - Math.Min(canvasWidth - 2, 112)) / 2);
+        var boxWidth = compactLayout ? Math.Max(20, canvasWidth - 2) : Math.Min(canvasWidth - 2, 112);
+
+        DrawBox(canvas, boxX, boxY, boxWidth, boxHeight, "АДАПТЕР ДЛЯ АВТОРИЗАЦИИ");
+
+        var contentX = boxX + 3;
+        var contentY = boxY + 2;
+        var contentWidth = Math.Max(1, boxWidth - 6);
         Put(canvas, contentX, contentY,
             Truncate("Выберите маршрут запросов к порталу Интерсвязи", contentWidth), Palette.Text);
 
         var firstOptionRow = contentY + 2;
-        var visibleRows = compactLayout ? 15 : 8;
         var offset = Math.Clamp(selectedIndex - visibleRows + 1, 0, Math.Max(0, options.Count - visibleRows));
         var count = Math.Min(visibleRows, options.Count - offset);
         for (var row = 0; row < count; row++)
@@ -1318,19 +1335,30 @@ internal sealed partial class InteractiveTerminalUi
                 optionIndex == selectedIndex);
         }
 
-        if (options.Count > visibleRows)
-        {
-            PutRightAligned(
-                canvas,
-                contentX,
-                contentX + contentWidth,
-                firstOptionRow + visibleRows,
-                $"{offset + 1}–{offset + count} / {options.Count}",
-                Palette.Dim);
-        }
+        var first = options.Count == 0 ? 0 : offset + 1;
+        var last = options.Count == 0 ? 0 : offset + count;
+        Put(
+            canvas,
+            contentX,
+            boxY + boxHeight - 2,
+            Truncate(
+                $"Пункты {first}–{last} / {options.Count}   Выбрано: [{options[selectedIndex].Shortcut}] {options[selectedIndex].Label}",
+                contentWidth),
+            Palette.Dim);
 
-        Center(canvas, CanvasHeight - 1, "↑ ↓ выбрать   Enter применить   0/S/1–9 сразу   Esc назад", Palette.Dim);
+        Center(
+            canvas,
+            CanvasHeight - 1,
+            "↑↓ выбрать   PgUp/PgDn страница   Home/End край   Enter применить   Esc назад",
+            Palette.Dim);
         Render(canvas);
+    }
+
+    private static int GetExpandedNetworkAdapterVisibleRowCount()
+    {
+        var boxHeight = Math.Max(8, CanvasHeight - 3);
+        // One instruction row, one summary row and box padding.
+        return Math.Max(1, boxHeight - 6);
     }
 
     private static void DrawNetworkAdapterOption(
