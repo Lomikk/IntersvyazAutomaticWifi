@@ -193,7 +193,8 @@ register_flow = csharp_program[register_start:register_end]
 assert register_flow.index('PromptAnonymousStatisticsConsentConsole();') < register_flow.index('RequestConfirmationAsync'), 'console registration must request anonymous statistics consent before contacting the registration API'
 speed_tools_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.SpeedTools.cs').read_text(encoding='utf-8')
 assert 'RunSpeedToolsAsync' in speed_tools_ui and 'ЛИДЕРЫ КАМПУСА' in speed_tools_ui, 'speed tools UI missing'
-assert 'Jitter' in speed_tools_ui and 'Packet loss' in speed_tools_ui, 'speed measurement diagnostics missing'
+assert 'Jitter' in speed_tools_ui, 'speed measurement diagnostics missing'
+assert 'Packet loss' not in speed_tools_ui and 'Loss       ' not in speed_tools_ui, 'unmeasured packet loss must stay hidden from the UI'
 assert 'PromptSpeedNicknameAsync' in speed_tools_ui and '[4] Опубликовать' in speed_tools_ui, 'speed publication UI missing'
 assert 'CampusSpeedToolsService' in speed_tools_ui and 'speedTools.MeasureAsync' in speed_tools_ui, 'speed tools UI must be connected to the measurement service'
 launch_settings = (root / 'src' / 'IS74Wifi.App' / 'Properties' / 'launchSettings.json').read_text(encoding='utf-8')

@@ -395,45 +395,144 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
-    // A short, explicit adapter picker works in both rich and compact layouts.
-    // Selecting the system route is an opt-out, never a silent VPN fallback.
-    public bool TryChooseNetworkAdapter(IReadOnlyList<PhysicalAdapter> adapters, string? currentId,
-        out string? selectedId)
+    public async Task<(bool Confirmed, string? SelectedId)> ChooseNetworkAdapterAsync(
+        IReadOnlyList<PhysicalAdapter> adapters,
+        string? currentId,
+        CancellationToken cancellationToken = default)
     {
-        selectedId = currentId;
-        InvalidateRenderedFrame();
-        Console.Clear();
-        Console.CursorVisible = true;
-        Console.WriteLine("IS74W — прямое подключение для авторизации");
-        Console.WriteLine();
-        Console.WriteLine($"[0] Автоматически {(currentId is null ? "●" : "")}");
-        Console.WriteLine($"[S] Системный маршрут (без обхода VPN) {(currentId == PhysicalAdapterSelection.SystemRoute ? "●" : "")}");
+        var options = BuildNetworkAdapterOptions(adapters, currentId);
+        var selectedIndex = Math.Max(0, options.FindIndex(option => AdapterIdsEqual(option.Id, currentId)));
+
+        if (!CanUseInteractiveSession)
+        {
+            return ChooseNetworkAdapterCompact(options, cancellationToken);
+        }
+
+        UpdateLayout();
+        PrepareInteractiveConsole(clear: false);
+        try
+        {
+            var keyTask = ReadKeyAsync();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                UpdateLayout();
+                UpdateAmbientSweepState();
+                RenderNetworkAdapterFrame(options, selectedIndex);
+
+                var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
+                {
+                    continue;
+                }
+
+                var key = await keyTask.ConfigureAwait(false);
+                if (key.Key == ConsoleKey.UpArrow)
+                {
+                    selectedIndex = (selectedIndex - 1 + options.Count) % options.Count;
+                }
+                else if (key.Key == ConsoleKey.DownArrow)
+                {
+                    selectedIndex = (selectedIndex + 1) % options.Count;
+                }
+                else if (key.Key == ConsoleKey.Home)
+                {
+                    selectedIndex = 0;
+                }
+                else if (key.Key == ConsoleKey.End)
+                {
+                    selectedIndex = options.Count - 1;
+                }
+                else if (key.Key == ConsoleKey.Escape)
+                {
+                    return (false, currentId);
+                }
+                else if (key.Key == ConsoleKey.Enter)
+                {
+                    return (true, options[selectedIndex].Id);
+                }
+                else if (key.Key == ConsoleKey.S)
+                {
+                    return (true, PhysicalAdapterSelection.SystemRoute);
+                }
+                else if (key.KeyChar == '0')
+                {
+                    return (true, null);
+                }
+                else if (key.KeyChar is >= '1' and <= '9')
+                {
+                    var adapterIndex = key.KeyChar - '1';
+                    if (adapterIndex < adapters.Count)
+                    {
+                        return (true, adapters[adapterIndex].Id);
+                    }
+                }
+
+                keyTask = ReadKeyAsync();
+            }
+        }
+        finally
+        {
+            RestoreConsole();
+        }
+    }
+
+    private static List<NetworkAdapterOption> BuildNetworkAdapterOptions(
+        IReadOnlyList<PhysicalAdapter> adapters,
+        string? currentId)
+    {
+        var options = new List<NetworkAdapterOption>
+        {
+            new("0", "Автоматически — выбрать физический адаптер", null),
+            new("S", "Системный маршрут — без обхода VPN", PhysicalAdapterSelection.SystemRoute)
+        };
+
         for (var i = 0; i < adapters.Count; i++)
         {
-            var item = adapters[i];
-            var active = item.CanConnect ? "доступен" : "не подключён";
-            var wifi = item.Ssid is null ? "" : $" / {item.Ssid}";
-            var virtualMark = item.LooksVirtual ? " / возможный виртуальный интерфейс" : "";
-            var selected = string.Equals(item.Id, currentId, StringComparison.OrdinalIgnoreCase) ? " ●" : "";
-            Console.WriteLine($"[{i + 1}] {item.Name}{wifi}{virtualMark} ({active}){selected}");
+            var adapter = adapters[i];
+            var state = adapter.CanConnect ? "доступен" : "не подключён";
+            var ssid = string.IsNullOrWhiteSpace(adapter.Ssid) ? "" : $" · {adapter.Ssid}";
+            var virtualMark = adapter.LooksVirtual ? " · виртуальный" : "";
+            options.Add(new NetworkAdapterOption(
+                (i + 1).ToString(),
+                $"{adapter.Name}{ssid}{virtualMark} — {state}",
+                adapter.Id));
+        }
+
+        for (var i = 0; i < options.Count; i++)
+        {
+            if (AdapterIdsEqual(options[i].Id, currentId))
+            {
+                options[i] = options[i] with { Label = options[i].Label + " · текущий" };
+            }
+        }
+
+        return options;
+    }
+
+    private static bool AdapterIdsEqual(string? left, string? right) =>
+        string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+
+    private static (bool Confirmed, string? SelectedId) ChooseNetworkAdapterCompact(
+        IReadOnlyList<NetworkAdapterOption> options,
+        CancellationToken cancellationToken)
+    {
+        Console.Clear();
+        Console.WriteLine("IS74W — адаптер для авторизации");
+        Console.WriteLine();
+        foreach (var option in options)
+        {
+            Console.WriteLine($"[{option.Shortcut}] {option.Label}");
         }
         Console.WriteLine();
-        Console.WriteLine("Пустой ввод — отмена. Для VPN с kill switch прямой доступ может быть запрещён.");
+        Console.WriteLine("Пустой ввод — отмена.");
         Console.Write("Выбор: ");
+        cancellationToken.ThrowIfCancellationRequested();
         var input = Console.ReadLine()?.Trim();
-        if (string.IsNullOrEmpty(input)) return false;
-        if (input == "0") { selectedId = null; return true; }
-        if (string.Equals(input, "s", StringComparison.OrdinalIgnoreCase))
-        {
-            selectedId = PhysicalAdapterSelection.SystemRoute;
-            return true;
-        }
-        if (int.TryParse(input, out var number) && number >= 1 && number <= adapters.Count)
-        {
-            selectedId = adapters[number - 1].Id;
-            return true;
-        }
-        return false;
+        if (string.IsNullOrEmpty(input)) return (false, null);
+        var selectedOption = options.FirstOrDefault(candidate =>
+            string.Equals(candidate.Shortcut, input, StringComparison.OrdinalIgnoreCase));
+        return string.IsNullOrEmpty(selectedOption.Shortcut) ? (false, null) : (true, selectedOption.Id);
     }
 
     private static bool ConfirmRegistrationCompact()
@@ -1191,6 +1290,61 @@ internal sealed partial class InteractiveTerminalUi
         DrawSelectable(canvas, contentX, contentY + 8, 'N', noLabel, selected == 1);
         Center(canvas, CanvasHeight - 1, "↑ ↓ выбрать   Enter продолжить   Y/N сразу   Esc — нет", Palette.Dim);
         Render(canvas);
+    }
+
+    private void RenderNetworkAdapterFrame(IReadOnlyList<NetworkAdapterOption> options, int selectedIndex)
+    {
+        var canvas = CreateActionCanvas(
+            "АДАПТЕР ДЛЯ АВТОРИЗАЦИИ",
+            out var contentX,
+            out var contentY,
+            out var contentWidth);
+        Put(canvas, contentX, contentY,
+            Truncate("Выберите маршрут запросов к порталу Интерсвязи", contentWidth), Palette.Text);
+
+        var firstOptionRow = contentY + 2;
+        var visibleRows = compactLayout ? 15 : 8;
+        var offset = Math.Clamp(selectedIndex - visibleRows + 1, 0, Math.Max(0, options.Count - visibleRows));
+        var count = Math.Min(visibleRows, options.Count - offset);
+        for (var row = 0; row < count; row++)
+        {
+            var optionIndex = offset + row;
+            DrawNetworkAdapterOption(
+                canvas,
+                contentX,
+                firstOptionRow + row,
+                contentWidth,
+                options[optionIndex],
+                optionIndex == selectedIndex);
+        }
+
+        if (options.Count > visibleRows)
+        {
+            PutRightAligned(
+                canvas,
+                contentX,
+                contentX + contentWidth,
+                firstOptionRow + visibleRows,
+                $"{offset + 1}–{offset + count} / {options.Count}",
+                Palette.Dim);
+        }
+
+        Center(canvas, CanvasHeight - 1, "↑ ↓ выбрать   Enter применить   0/S/1–9 сразу   Esc назад", Palette.Dim);
+        Render(canvas);
+    }
+
+    private static void DrawNetworkAdapterOption(
+        Cell[,] canvas,
+        int x,
+        int y,
+        int width,
+        NetworkAdapterOption option,
+        bool isSelected)
+    {
+        Put(canvas, x, y, isSelected ? "› " : "  ", isSelected ? Palette.Highlight : Palette.Text);
+        Put(canvas, x + 2, y, $"[{option.Shortcut}]", Palette.Dim);
+        Put(canvas, x + 7, y, Truncate(option.Label, Math.Max(1, width - 7)),
+            isSelected ? Palette.Bright : Palette.Text);
     }
 
     private void RenderActionHistoryFrame(
@@ -2170,6 +2324,11 @@ internal sealed partial class InteractiveTerminalUi
         char Hotkey,
         string Label,
         InteractiveMenuAction Action);
+
+    private readonly record struct NetworkAdapterOption(
+        string Shortcut,
+        string Label,
+        string? Id);
 
     private enum MenuPage
     {

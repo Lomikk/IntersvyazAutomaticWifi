@@ -17,7 +17,7 @@ The left pane renders the current/final measurement:
 - upload speed in Mbit/s;
 - ping in milliseconds;
 - jitter in milliseconds;
-- packet loss when a provider can measure it. The current IS74 LibreSpeed deployment does not, so the value is shown as `—` rather than a fabricated zero.
+- packet loss remains part of the telemetry contract for compatible providers, but is not shown in the UI because the current IS74 LibreSpeed deployment does not measure it.
 
 During a rich-layout measurement the provider reports live latency/download/upload progress. `Esc` cancels the active measurement without affecting Wi-Fi authorization.
 

@@ -1756,14 +1756,15 @@ internal static class Program
                     {
                         var adapters = PhysicalAdapterSelection.Enumerate();
                         var current = new SettingsStore(new AppPaths(), new JsonFileStore()).Load().DirectNetworkAdapterId;
-                        if (ui.TryChooseNetworkAdapter(adapters, current, out var chosen))
+                        var adapterChoice = await ui.ChooseNetworkAdapterAsync(adapters, current).ConfigureAwait(false);
+                        if (adapterChoice.Confirmed)
                         {
                             await RunMenuBatchActionAsync(
                                 ui,
                                 "СЕТЕВОЙ АДАПТЕР",
                                 initialStatus,
                                 "Применяю сетевой маршрут...",
-                                progress => SetDirectNetworkAdapter(chosen, progress),
+                                progress => SetDirectNetworkAdapter(adapterChoice.SelectedId, progress),
                                 "Сетевой маршрут сохранён").ConfigureAwait(false);
                         }
                         break;

@@ -174,7 +174,6 @@ internal sealed partial class InteractiveTerminalUi
         {
             speedLeaderboardStatusText = "Обновляю рейтинг…";
             initialLeaderboard = speedTools.GetLeaderboardAsync(SpeedLeaderboardDefaultLimit, sessionCts.Token);
-            initialParticipation = speedTools.GetParticipationStateAsync(sessionCts.Token);
         }
         else
         {
@@ -193,6 +192,7 @@ internal sealed partial class InteractiveTerminalUi
                 {
                     ApplyLeaderboardResult(await initialLeaderboard.ConfigureAwait(false));
                     initialLeaderboard = null;
+                    initialParticipation = speedTools.GetParticipationStateAsync(sessionCts.Token);
                 }
 
                 if (initialParticipation is { IsCompleted: true })
@@ -871,7 +871,7 @@ internal sealed partial class InteractiveTerminalUi
 
         DrawSpeedMeasurementPane(canvas, leftContentX, leftContentY, leftContentWidth);
         DrawSpeedLeaderboardPane(canvas);
-        Center(canvas, CanvasHeight - 1, "Enter/1 замер   2 таблица   R обновить   3 ник   4 публикация   5 выйти   Esc назад", Palette.Dim);
+        Center(canvas, CanvasHeight - 1, "Enter/1 замер   2 таблица   R обновить   3 ник   4 публикация   5 покинуть рейтинг   Esc назад", Palette.Dim);
         Render(canvas);
     }
 
@@ -1022,7 +1022,6 @@ internal sealed partial class InteractiveTerminalUi
         Put(canvas, x, y + 7, Truncate($"↑ Upload     {FormatMetric(upload)} Mbit/s", width), Palette.Text);
         Put(canvas, x, y + 8, Truncate($"Ping         {FormatMetric(latency)} ms", width), Palette.Text);
         Put(canvas, x, y + 9, Truncate($"Jitter       {FormatMetric(jitter)} ms", width), Palette.Text);
-        Put(canvas, x, y + 10, Truncate($"Packet loss  {FormatMetric(measurement?.PacketLossPct)} %", width), Palette.Text);
     }
 
     private void DrawSpeedLeaderboardPane(Cell[,] canvas)
@@ -1181,7 +1180,6 @@ internal sealed partial class InteractiveTerminalUi
             Console.WriteLine($"  Upload     {FormatMetric(lastSpeedTestRun?.Measurement.UploadMbps)} Mbit/s");
             Console.WriteLine($"  Ping       {FormatMetric(lastSpeedTestRun?.Measurement.LatencyMs)} ms");
             Console.WriteLine($"  Jitter     {FormatMetric(lastSpeedTestRun?.Measurement.JitterMs)} ms");
-            Console.WriteLine($"  Loss       {FormatMetric(lastSpeedTestRun?.Measurement.PacketLossPct)} %");
             Console.WriteLine($"  {speedStatusText}");
             Console.WriteLine();
             Console.WriteLine("ЛИДЕРЫ КАМПУСА");

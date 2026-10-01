@@ -19,8 +19,10 @@ public sealed class CampusSpeedToolsService(
     int interactiveBackendTimeoutMilliseconds,
     Func<bool>? anonymousStatisticsAllowed = null)
 {
+    // Older settings files may persist zero or the former 15-second value. Keep
+    // a 30-second floor so upgrades also tolerate Apps Script cold starts.
     private readonly TimeSpan interactiveBackendTimeout = TimeSpan.FromMilliseconds(
-        Math.Clamp(interactiveBackendTimeoutMilliseconds, 3000, 30000));
+        Math.Clamp(interactiveBackendTimeoutMilliseconds, 30000, 60000));
     private readonly Func<bool> statisticsAllowed = anonymousStatisticsAllowed ?? (() => true);
 
     public bool BackendEnabled => telemetryClient is not null;

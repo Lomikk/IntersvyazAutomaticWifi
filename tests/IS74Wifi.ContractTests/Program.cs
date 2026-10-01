@@ -50,6 +50,8 @@ static Task TestStorageAsync()
         "anonymous statistics consent must default to unknown");
     Assert(settings.TelemetryHttpTimeoutMilliseconds == 10000,
         "background telemetry must allow Apps Script sufficient time to respond");
+    Assert(settings.InteractiveBackendTimeoutMilliseconds == 30000,
+        "interactive backend calls must allow Apps Script cold starts sufficient time to respond");
     Assert(settings.MaxAutomaticStepOneAttempts == 4, "automatic attempt limit changed");
     Assert(settings.AutomaticRetryDelaysSeconds.SequenceEqual([15, 30, 60]), "retry schedule changed");
     Assert(File.Exists(paths.SettingsFile), "default settings were not persisted");
