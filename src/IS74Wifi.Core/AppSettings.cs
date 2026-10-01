@@ -42,8 +42,6 @@ public sealed record AppSettings
     public int GuardWindowSeconds { get; init; } = 30;
     public int GuardProbeIntervalMilliseconds { get; init; } = 500;
     public int GuardProbeTimeoutMilliseconds { get; init; } = 300;
-    // Missing/zero in existing settings.json: migrate the historical 10 s / 250 ms defaults once.
-    public int ExpiryWatchPolicyVersion { get; init; }
     public int InternetProbeConfirmDelaySeconds { get; init; } = 2;
     public int MaxAutomaticStepOneAttempts { get; init; } = ProtocolContract.MaxAutomaticStepOneAttempts;
     public int[] AutomaticRetryDelaysSeconds { get; init; } = [15, 30, 60];

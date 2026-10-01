@@ -6,7 +6,7 @@ internal static class AgentContractTests
 {
     public static async Task RunAsync()
     {
-        TestSettingsMigration();
+        TestSettingsDefaults();
         TestAlreadyAuthorizedRetryBackoff();
         TestSleepPolicy();
         TestTelemetryUploadSafety();
@@ -29,29 +29,24 @@ internal static class AgentContractTests
         await TestExhaustedCycleNotifiesWithoutTargetWifiAsync();
     }
 
-    private static void TestSettingsMigration()
+    private static void TestSettingsDefaults()
     {
         var root = Path.Combine(Path.GetTempPath(), "IS74Wifi-watch-settings-" + Guid.NewGuid().ToString("N"));
         try
         {
             var store = new SettingsStore(new AppPaths(root), new JsonFileStore());
             var fresh = store.Load();
-            Assert(fresh.GuardWindowSeconds == 30 && fresh.GuardProbeIntervalMilliseconds == 500 &&
-                   fresh.ExpiryWatchPolicyVersion == 1, "new installs must use the adaptive 30 s guard");
+            Assert(fresh.GuardWindowSeconds == 30 && fresh.GuardProbeIntervalMilliseconds == 500,
+                "new installs must use the adaptive 30 s guard");
 
             store.Save(new AppSettings { GuardWindowSeconds = 10, GuardProbeIntervalMilliseconds = 250 });
-            var upgraded = store.Load();
-            Assert(upgraded.GuardWindowSeconds == 30 && upgraded.GuardProbeIntervalMilliseconds == 500 &&
-                   upgraded.ExpiryWatchPolicyVersion == 1, "existing installed defaults must migrate once");
-
-            store.Save(upgraded with { GuardWindowSeconds = 10, GuardProbeIntervalMilliseconds = 250 });
             Assert(store.Load().GuardWindowSeconds == 10 && store.Load().GuardProbeIntervalMilliseconds == 250,
-                "explicit user settings must survive after the policy migration");
+                "explicit user settings must round-trip");
 
             store.Save(new AppSettings { GuardWindowSeconds = 45, GuardProbeIntervalMilliseconds = 750 });
             var customized = store.Load();
             Assert(customized.GuardWindowSeconds == 45 && customized.GuardProbeIntervalMilliseconds == 750,
-                "legacy custom guard settings must be preserved");
+                "custom guard settings must be preserved");
         }
         finally
         {

@@ -1,4 +1,3 @@
-using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -12,8 +11,7 @@ public sealed record UpdateDescriptor(
     string PackageAssetName,
     Uri PackageDownloadUrl,
     string ChecksumAssetName,
-    Uri ChecksumDownloadUrl,
-    bool IsArchive);
+    Uri ChecksumDownloadUrl);
 
 public sealed record PreparedUpdate(
     UpdateDescriptor Descriptor,
@@ -36,8 +34,8 @@ public enum UpdateProgressStage
     ChecksumDownloaded,
     VerifyingChecksum,
     ChecksumVerified,
-    ExtractingPackage,
-    PackageExtracted
+    PreparingExecutable,
+    ExecutablePrepared
 }
 
 internal sealed record GitHubReleaseDocument(
@@ -60,7 +58,6 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
     public const int MaximumReleaseJsonBytes = 2 * 1024 * 1024;
     public const long MaximumPackageBytes = 128L * 1024 * 1024;
     public const long MaximumChecksumBytes = 4096;
-    public const long MaximumExtractedExecutableBytes = 128L * 1024 * 1024;
     private static readonly Uri ReleasesUri = new($"https://api.github.com/repos/{Repository}/releases?per_page=30");
 
     public async Task<UpdateDescriptor?> CheckForUpdateAsync(
@@ -102,19 +99,8 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
 
             var exeName = $"IS74Wifi-{release.TagName}-win-x64.exe";
             var exeChecksumName = exeName + ".sha256";
-            var zipName = $"IS74Wifi-{release.TagName}-win-x64.zip";
-            var zipChecksumName = zipName + ".sha256";
-
             var package = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, exeName, StringComparison.Ordinal));
             var checksum = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, exeChecksumName, StringComparison.Ordinal));
-            var isArchive = false;
-
-            if (package is null || checksum is null)
-            {
-                package = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, zipName, StringComparison.Ordinal));
-                checksum = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, zipChecksumName, StringComparison.Ordinal));
-                isArchive = true;
-            }
 
             if (package is null || checksum is null) continue;
             if (!Uri.TryCreate(package.BrowserDownloadUrl, UriKind.Absolute, out var packageUri) ||
@@ -130,8 +116,7 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
                     package.Name,
                     packageUri,
                     checksum.Name,
-                    checksumUri,
-                    isArchive);
+                    checksumUri);
             }
         }
 
@@ -180,16 +165,9 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
             ReportProgress(progress, UpdateProgressStage.ChecksumVerified);
 
             var executablePath = Path.Combine(work, "IS74Wifi-new.exe");
-            ReportProgress(progress, UpdateProgressStage.ExtractingPackage);
-            if (descriptor.IsArchive)
-            {
-                ExtractSingleExecutable(packagePath, executablePath);
-            }
-            else
-            {
-                File.Copy(packagePath, executablePath, overwrite: true);
-            }
-            ReportProgress(progress, UpdateProgressStage.PackageExtracted);
+            ReportProgress(progress, UpdateProgressStage.PreparingExecutable);
+            File.Copy(packagePath, executablePath, overwrite: true);
+            ReportProgress(progress, UpdateProgressStage.ExecutablePrepared);
             return new PreparedUpdate(descriptor, work, executablePath, actual);
         }
         catch
@@ -297,31 +275,6 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
         var hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
         return Convert.ToHexString(hash).ToLowerInvariant();
-    }
-
-    private static void ExtractSingleExecutable(string zipPath, string destination)
-    {
-        using var archive = ZipFile.OpenRead(zipPath);
-        var fileEntries = archive.Entries.Where(entry => !string.IsNullOrEmpty(entry.Name)).ToArray();
-        if (fileEntries.Length != 1 || !string.Equals(fileEntries[0].FullName.Replace('\\', '/'), "IS74Wifi.exe", StringComparison.Ordinal))
-            throw new InvalidDataException("Архив обновления должен содержать ровно один файл IS74Wifi.exe.");
-        if (fileEntries[0].Length > MaximumExtractedExecutableBytes)
-            throw new InvalidDataException("Распакованный EXE превышает допустимый размер.");
-
-        // Do not trust ZIP metadata: also enforce the cap while decompressing.
-        using var entry = fileEntries[0].Open();
-        using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None);
-        var buffer = new byte[81920];
-        long extracted = 0;
-        while (true)
-        {
-            var read = entry.Read(buffer);
-            if (read == 0) break;
-            if (extracted > MaximumExtractedExecutableBytes - read)
-                throw new InvalidDataException("Распакованный EXE превышает допустимый размер.");
-            output.Write(buffer, 0, read);
-            extracted += read;
-        }
     }
 
     public static void TryDeleteDirectory(string path)

@@ -58,6 +58,6 @@ The event includes measured download/upload Mbit/s, latency, jitter, phase durat
 
 ## Backend boundary
 
-The external Apps Script is not part of this public repository. The updated schema-v4 receiver keeps backward-compatible generic POST ingestion for queued telemetry and additionally supports explicit `route=speedtest` and `route=leaderboard` POSTs. `GET ?route=leaderboard&limit=...` returns a download-ranked public view containing only presentation metrics; private `install_id`, `test_id` and `event_id` fields never leave the backend.
+The external Apps Script is not part of this public repository. The schema-v4 receiver requires explicit `route=telemetry`, `route=speedtest`, and `route=leaderboard` POSTs. `GET ?route=leaderboard&limit=...` returns a download-ranked public view containing only presentation metrics; private `install_id`, `test_id` and `event_id` fields never leave the backend.
 
 The production Google Apps Script deployment URL is built into the client. `IS74W_TELEMETRY_URL` or the `TelemetryEndpoint` setting can override it for development/testing. Speed measurement still succeeds if the backend is temporarily unavailable; the `speed_test` research event is kept locally for later upload.

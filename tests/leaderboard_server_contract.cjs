@@ -66,12 +66,15 @@ leaderboardHeaders = [...vm.runInContext('LEADERBOARD_HEADERS', sandbox)];
 actionHeaders = [...vm.runInContext('LEADERBOARD_ACTION_HEADERS', sandbox)];
 const cfg = vm.runInContext('CONFIG', sandbox);
 assert.equal(cfg.schema, 4);
-assert.deepEqual(Array.from(cfg.acceptedSchemas), [1, 2, 3, 4]);
+assert.deepEqual(Array.from(cfg.acceptedSchemas), [4]);
 assert.equal(cfg.maxBatchEvents, 64);
 assert.equal(cfg.maxPayloadBytes, 65536);
 assert.equal(cfg.leaderboardNicknameMaxLength, 18);
 assert.equal(cfg.leaderboardRenameLimit, 3);
-assert.equal(vm.runInContext('typeof migrateLeaderboardLifecycleV4', sandbox), 'function');
+assert.equal(vm.runInContext('typeof migrateLeaderboardLifecycleV4', sandbox), 'undefined');
+assert.equal(vm.runInContext('typeof migrateSchema4', sandbox), 'undefined');
+assert.equal(vm.runInContext('typeof setupSheets', sandbox), 'undefined');
+assert.equal(vm.runInContext('typeof sendSafeSpeedTestSelfTest', sandbox), 'undefined');
 
 function record({ id = 'install-aaaaaaaaaaaaaaaa', nick = 'WiFi King', down = 100,
   up = 20, ping = 15, jitter = 3, loss = 0, time = 100 } = {}) {

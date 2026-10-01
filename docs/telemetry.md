@@ -112,10 +112,10 @@ The first command performs DNS resolution, manually displays every GET redirect 
 
 ## Ingestion API contract
 
-The Apps Script source is intentionally kept outside this public repository. The schema-v4 receiver keeps schemas 1–3 and the original generic POST contract for backward compatibility, adds registration diagnostics, and retains explicit routes for user-triggered speed features:
+The Apps Script source is intentionally kept outside this public repository. The pre-release receiver accepts schema 4 only and requires an explicit route for every request:
 
 ```text
-POST <web-app endpoint>                         # legacy/mixed queued batch
+POST <web-app endpoint>?route=telemetry         # queued telemetry batch
 POST <web-app endpoint>?route=speedtest         # one completed speed_test
 POST <web-app endpoint>?route=leaderboard       # one explicit leaderboard_entry
 GET  <web-app endpoint>?route=leaderboard&limit=100
@@ -123,15 +123,15 @@ GET  <web-app endpoint>?route=leaderboard&limit=100
 
 The payload `event_type` still selects the row schema (`attempt`, `mailbox_poll`, `internet_probe`, `portal_response`, `registration_event`, `error`, `speed_test`, or `leaderboard_entry`). Authorization traces use a `{batch_id, events[]}` envelope. The receiver guards each request at 64 events / 64 KiB, which is why the local queue emits at most 64 events and targets roughly 60 KiB per transport batch.
 
-The production `/exec` URL is a versioned Apps Script deployment. Saving editor code is not enough: after a receiver change, create a new script version and edit the existing deployment to use it. Keep execution as the deploying account and anonymous/public access enabled. A quick contract check is that the root GET reports schema 4 and `accepted_schemas` contains 1, 2, 3 and 4 and `GET ?route=leaderboard&limit=3` returns an object with an `entries` array.
+The production `/exec` URL is a versioned Apps Script deployment. Saving editor code is not enough: after a receiver change, create a new script version and edit the existing deployment to use it. Keep execution as the deploying account and anonymous/public access enabled. A quick contract check is that the root GET reports schema 4, `accepted_schemas` contains only 4, and `GET ?route=leaderboard&limit=3` returns an object with an `entries` array.
 
-The public leaderboard shows **one best published result per (`install_id`, sanitized nickname) pair**, selecting that pair's winning measurement (download DESC, then upload DESC, lower latency, newer receipt time). All displayed metrics come from one winning measurement. Changing nickname adds a separate visible group without rewriting the previous group's history; returning to an earlier nickname updates only that earlier pair's best result. Different installations may have identical nicknames and appear independently. Historical rows with empty or invalid `install_id` remain separate, since their identities cannot safely be inferred. Deduplication happens only in the public GET view **before sorting, `limit`, and `total`**; raw `Leaderboard` and `SpeedTests` remain append-only. The response exposes only rank, nickname, download/upload, latency, jitter and optional packet loss; private `install_id`, `test_id`, `event_id`, radio metadata and time bucket remain server-side. The companion private Apps Script is deployed manually, retaining the existing `/exec` URL; do **not** call `setupSheets()` when updating this leaderboard query because that routine can destroy existing data.
+The public leaderboard shows **one active position per valid `install_id`**, selecting that installation's winning measurement (download DESC, then upload DESC, lower latency, newer receipt time) and applying its current lifecycle nickname. All displayed metrics come from one winning measurement. Renaming changes that one public position without rewriting measurement history. Different installations may have identical nicknames and appear independently. Historical rows with empty or invalid `install_id` remain separate, since their identities cannot safely be inferred. Deduplication happens only in the public GET view **before sorting, `limit`, and `total`**; raw `Leaderboard` and `SpeedTests` remain append-only. The response exposes only rank, nickname, download/upload, latency, jitter and optional packet loss; private `install_id`, `test_id`, `event_id`, radio metadata and time bucket remain server-side. The companion private Apps Script is deployed manually, retaining the existing `/exec` URL. Its production surface contains only `doGet` and `doPost`; destructive setup, one-time migration, and manual self-test entry points are not deployed.
 
 The private server's offline contract can be run against the owner's exact schema-v4 baseline plus the leaderboard change without accessing production Sheets: `node tests/leaderboard_server_contract.cjs /path/to/updated-private-server.js`.
 
 The terminal's optional nickname is a **local `settings.json` preference** (default: `Гость`), reused on later launches and editable from both rich and compact speed menus. It is not a user account or analytical identity; `install_id` remains unchanged when the nickname changes. Publication still requires the existing explicit action and anonymous-statistics consent.
 
-**Server rollout:** the corresponding standalone schema-v4 Apps Script must be published as a **new version of the existing `/exec` deployment**. It groups historical entries at GET time; both `Leaderboard` and `SpeedTests` remain append-only, the wire schema/POST routes are unchanged, and no migration or sheet reset is required. **Do not run `setupSheets()`** on existing data.
+**Server rollout:** the corresponding standalone schema-v4 Apps Script must be published as a **new version of the existing `/exec` deployment**. It groups historical entries at GET time; both `Leaderboard` and `SpeedTests` remain append-only, and no migration or sheet reset is required.
 
 No route-specific rate limits, accepted-tests-per-day limit, or ingestion kill switch are enforced yet. Those remain possible backend hardening work. Because the client is open source, future anti-abuse controls should be treated as operational guards rather than an identity/security boundary.
 
@@ -154,11 +154,9 @@ For the network-quality study, `SpeedTests` is the canonical research source. `L
 
 The public leaderboard response contains rank, nickname, and measurement values only.
 
-## Spreadsheet setup
+## Spreadsheet layout
 
-While the spreadsheet contains test data only, `setupSheets()` is intentionally a destructive development reset for the telemetry sheets. It clears old test rows and schema remnants and writes the exact current headers.
-
-Once production telemetry starts, `setupSheets()` must no longer be run. Future schema changes must use explicit non-destructive migrations.
+The schema-4 workbook contains the eight event sheets above plus `LeaderboardActions`, which stores the current leaderboard lifecycle audit trail. `README` documents the privacy contract. All ten tabs are intentional; there are no migration-only sheets. Future schema changes must use explicit non-destructive migrations maintained outside the deployed Web App source.
 
 ## Public leaderboard input safety (#13)
 
@@ -184,7 +182,7 @@ measurement are omitted, and the client never accepts more rows than requested.
 The backend must preserve private `install_id`/`test_id` exclusion from public reads.
 
 The Apps Script v4 update for #13 is a **non-destructive code-only update**: edit the
-**existing** deployed Web App to a new script version, retaining its `/exec` URL;
-**do not run `setupSheets()`**. Backend source is distributed separately on OneDrive,
+**existing** deployed Web App to a new script version, retaining its `/exec` URL.
+Backend source is distributed separately on OneDrive,
 so it must be deployed and self-tested separately before closing #13. The client-side
 sanitizer is still required even when the server has been updated.

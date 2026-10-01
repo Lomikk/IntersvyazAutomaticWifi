@@ -83,7 +83,7 @@ This is not a C# migration regression; the PowerShell reference has the same pol
 
 The 30-second adaptive guard covers a wider range of small clock offsets. A first timer-driven `AlreadyAuthorized` now enables persistent, tapered Internet probes; elapsed time by itself can no longer exhaust the remaining portal-send budget. A contradictory confirmed-captive/`AlreadyAuthorized` cycle is rate-limited. Exceptionally late expiry is still observable at the one-minute fallback cadence, not every 500 ms forever. Conversely, if the portal expires minutes before prediction, the preceding limitation applies.
 
-The legacy PowerShell reference intentionally retains its historical 10-second/250-ms policy; these adaptive changes apply to the C# agent only. Existing persisted C# defaults migrate once on load, preserving separately customized guard settings.
+The legacy PowerShell reference intentionally retains its historical 10-second/250-ms policy; these adaptive changes apply to the C# agent only. The unreleased C# application starts directly with the adaptive defaults while preserving later user customization.
 
 ### Baseline latency is unavoidable but visible
 

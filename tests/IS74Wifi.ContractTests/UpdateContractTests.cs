@@ -1,4 +1,3 @@
-using System.IO.Compression;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -16,7 +15,6 @@ internal static class UpdateContractTests
         TestChecksumParser();
         await TestReleaseChannelSelectionAsync();
         await TestDirectExecutableSelectionAndVerifiedDownloadAsync();
-        await TestLegacyZipFallbackAsync();
         await TestOversizedReleaseAndPackageAsync();
     }
 
@@ -146,12 +144,12 @@ internal static class UpdateContractTests
     private static void TestChecksumParser()
     {
         var hash = new string('a', 64);
-        var parsed = GitHubUpdateClient.ParseChecksum($"{hash}  IS74Wifi-v0.1.0-alpha.9-win-x64.zip\n", "IS74Wifi-v0.1.0-alpha.9-win-x64.zip");
+        var parsed = GitHubUpdateClient.ParseChecksum($"{hash}  IS74Wifi-v0.1.0-alpha.9-win-x64.exe\n", "IS74Wifi-v0.1.0-alpha.9-win-x64.exe");
         Assert(parsed == hash, "valid checksum did not parse");
 
         try
         {
-            GitHubUpdateClient.ParseChecksum($"{hash}  other.zip", "IS74Wifi-v0.1.0-alpha.9-win-x64.zip");
+            GitHubUpdateClient.ParseChecksum($"{hash}  other.exe", "IS74Wifi-v0.1.0-alpha.9-win-x64.exe");
             throw new InvalidOperationException("checksum for a different asset was accepted");
         }
         catch (InvalidDataException)
@@ -215,8 +213,6 @@ internal static class UpdateContractTests
     {
         var exeBytes = Encoding.UTF8.GetBytes("new-native-aot-exe");
         var exeHash = Convert.ToHexString(SHA256.HashData(exeBytes)).ToLowerInvariant();
-        var zipBytes = CreateReleaseZip();
-        var zipHash = Convert.ToHexString(SHA256.HashData(zipBytes)).ToLowerInvariant();
         var releasesJson = """
         [
           {
@@ -233,9 +229,7 @@ internal static class UpdateContractTests
             "html_url":"https://github.test/releases/alpha10",
             "assets":[
               {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.exe","browser_download_url":"https://download.test/alpha10.exe"},
-              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.exe.sha256","browser_download_url":"https://download.test/alpha10.exe.sha256"},
-              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.zip","browser_download_url":"https://download.test/alpha10.zip"},
-              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.zip.sha256","browser_download_url":"https://download.test/alpha10.zip.sha256"}
+              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.exe.sha256","browser_download_url":"https://download.test/alpha10.exe.sha256"}
             ]
           },
           {
@@ -256,10 +250,6 @@ internal static class UpdateContractTests
                 return BytesResponse(exeBytes, "application/octet-stream");
             if (request.RequestUri.AbsoluteUri == "https://download.test/alpha10.exe.sha256")
                 return TextResponse($"{exeHash}  IS74Wifi-v0.1.0-alpha.10-win-x64.exe", "text/plain");
-            if (request.RequestUri.AbsoluteUri == "https://download.test/alpha10.zip")
-                return BytesResponse(zipBytes, "application/zip");
-            if (request.RequestUri.AbsoluteUri == "https://download.test/alpha10.zip.sha256")
-                return TextResponse($"{zipHash}  IS74Wifi-v0.1.0-alpha.10-win-x64.zip", "text/plain");
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }));
 
@@ -267,7 +257,6 @@ internal static class UpdateContractTests
         var update = await updater.CheckForUpdateAsync("v0.1.0-alpha.9", includePrerelease: true);
         Assert(update?.TagName == "v0.1.0-alpha.10", "latest usable prerelease was not selected");
         Assert(update?.PackageAssetName == "IS74Wifi-v0.1.0-alpha.10-win-x64.exe", "direct EXE asset was not preferred");
-        Assert(update?.IsArchive == false, "direct EXE asset was incorrectly marked as an archive");
 
         var transfer = new List<UpdateTransferProgress>();
         var prepared = await updater.DownloadAndVerifyAsync(update!, transferProgress: transfer.Add);
@@ -281,52 +270,6 @@ internal static class UpdateContractTests
             Assert(packageProgress[0].BytesReceived == 0, "package transfer progress did not start at zero");
             Assert(packageProgress[^1].BytesReceived == exeBytes.Length, "package transfer progress did not reach the full payload");
             Assert(packageProgress[^1].TotalBytes == exeBytes.Length, "package transfer total length changed");
-        }
-        finally
-        {
-            GitHubUpdateClient.TryDeleteDirectory(prepared.WorkingDirectory);
-        }
-    }
-
-    private static async Task TestLegacyZipFallbackAsync()
-    {
-        var zipBytes = CreateReleaseZip();
-        var hash = Convert.ToHexString(SHA256.HashData(zipBytes)).ToLowerInvariant();
-        var releasesJson = """
-        [
-          {
-            "tag_name":"v0.1.0-alpha.10",
-            "draft":false,
-            "prerelease":true,
-            "html_url":"https://github.test/releases/alpha10",
-            "assets":[
-              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.zip","browser_download_url":"https://download.test/alpha10.zip"},
-              {"name":"IS74Wifi-v0.1.0-alpha.10-win-x64.zip.sha256","browser_download_url":"https://download.test/alpha10.sha256"}
-            ]
-          }
-        ]
-        """;
-
-        using var client = new HttpClient(new UpdateHandler(request =>
-        {
-            if (request.RequestUri!.Host == "api.github.com")
-                return TextResponse(releasesJson, "application/json");
-            if (request.RequestUri.AbsoluteUri == "https://download.test/alpha10.zip")
-                return BytesResponse(zipBytes, "application/zip");
-            if (request.RequestUri.AbsoluteUri == "https://download.test/alpha10.sha256")
-                return TextResponse($"{hash}  IS74Wifi-v0.1.0-alpha.10-win-x64.zip", "text/plain");
-            return new HttpResponseMessage(HttpStatusCode.NotFound);
-        }));
-
-        var updater = new GitHubUpdateClient(client);
-        var update = await updater.CheckForUpdateAsync("v0.1.0-alpha.9", includePrerelease: true);
-        Assert(update?.IsArchive == true, "legacy ZIP asset was not recognized as an archive fallback");
-
-        var prepared = await updater.DownloadAndVerifyAsync(update!);
-        try
-        {
-            Assert(File.ReadAllText(prepared.ExecutablePath) == "new-native-aot-exe", "legacy ZIP fallback was not extracted");
-            Assert(prepared.PackageSha256 == hash, "legacy ZIP fallback hash changed");
         }
         finally
         {
@@ -354,8 +297,7 @@ internal static class UpdateContractTests
         var descriptor = new UpdateDescriptor(
             "v0.1.0-alpha.21", "https://github.test/releases/alpha21",
             "IS74Wifi-v0.1.0-alpha.21-win-x64.exe", new Uri("https://download.test/oversized.exe"),
-            "IS74Wifi-v0.1.0-alpha.21-win-x64.exe.sha256", new Uri("https://download.test/oversized.exe.sha256"),
-            false);
+            "IS74Wifi-v0.1.0-alpha.21-win-x64.exe.sha256", new Uri("https://download.test/oversized.exe.sha256"));
         using var packageClient = new HttpClient(new UpdateHandler(_ =>
         {
             var response = BytesResponse(new byte[1], "application/octet-stream");
@@ -372,19 +314,6 @@ internal static class UpdateContractTests
         var leftBehind = Directory.GetDirectories(Path.GetTempPath(), "IS74Wifi-update-*")
             .Where(path => !workBefore.Contains(path)).ToArray();
         Assert(leftBehind.Length == 0, "oversized update left a temporary work directory");
-    }
-
-    private static byte[] CreateReleaseZip()
-    {
-        using var stream = new MemoryStream();
-        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
-        {
-            var entry = zip.CreateEntry("IS74Wifi.exe");
-            using var output = entry.Open();
-            var bytes = Encoding.UTF8.GetBytes("new-native-aot-exe");
-            output.Write(bytes);
-        }
-        return stream.ToArray();
     }
 
     private static HttpResponseMessage TextResponse(string value, string mediaType) =>

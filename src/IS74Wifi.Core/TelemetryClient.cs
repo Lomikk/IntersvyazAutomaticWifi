@@ -49,10 +49,14 @@ public sealed class TelemetryClient(
         CancellationToken cancellationToken = default)
     {
         var body = BuildBatchEnvelope(batch.BatchId, batch.EventJson);
-        // Keep queued uploads on the backward-compatible generic endpoint.
         // Authorization telemetry and opted-in speed tests may share this queue;
         // leaderboard lifecycle actions are always immediate and never queued.
-        return await PostAsync("batch", endpoint, body, timeout, cancellationToken).ConfigureAwait(false);
+        return await PostAsync(
+            "batch",
+            BuildRouteUri("telemetry"),
+            body,
+            timeout,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public Task<TelemetryWriteResult> SubmitSpeedTestAsync(

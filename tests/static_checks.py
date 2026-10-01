@@ -288,7 +288,7 @@ assert 'BuildUri("backend/getIP.php"' not in speedtest and 'BuildUri("results/te
 assert 'PacketLossPct: null' in speedtest, 'unsupported packet loss must remain unmeasured'
 assert 'IProgress<SpeedTestProgress>' in speedtest_models and 'CancellationToken' in speedtest_models, 'speed-test UI progress/cancellation contract missing'
 assert 'BuildRouteUri("speedtest")' in telemetry_client and 'BuildRouteUri("leaderboard")' in telemetry_client, 'speed-test and leaderboard routes must be explicit'
-assert 'PostAsync("batch", endpoint, body' in telemetry_client, 'queued telemetry batches must preserve legacy generic POST compatibility'
+assert 'BuildRouteUri("telemetry")' in telemetry_client, 'queued telemetry batches must use the explicit telemetry route'
 assert 'QueueSpeedTest(telemetry)' in speed_tools_service, 'completed speed tests must remain local-first when backend upload is unavailable'
 assert 'LeaderboardNicknamePreferences.Normalize(nickname)' in speed_tools_service, 'leaderboard publication must use the shared nickname validator'
 assert 'leaderboardcontrol' in telemetry_client, 'leaderboard lifecycle must use a dedicated control route'

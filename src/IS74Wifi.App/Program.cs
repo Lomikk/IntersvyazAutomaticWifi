@@ -6,7 +6,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.24";
+    private const string ProductVersion = "v0.1.0-alpha.25";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
@@ -2363,10 +2363,10 @@ internal static class Program
                 case UpdateProgressStage.ChecksumVerified:
                     history.CompleteActive("SHA-256 пакета совпадает");
                     break;
-                case UpdateProgressStage.ExtractingPackage:
+                case UpdateProgressStage.PreparingExecutable:
                     history.Start("Подготавливаю IS74Wifi.exe...");
                     break;
-                case UpdateProgressStage.PackageExtracted:
+                case UpdateProgressStage.ExecutablePrepared:
                     history.CompleteActive("IS74Wifi.exe подготовлен");
                     break;
             }

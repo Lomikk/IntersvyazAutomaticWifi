@@ -209,10 +209,11 @@ internal static class SpeedTestContractTests
             [TelemetrySerialization.Serialize(telemetry)],
             []);
         var batchWrite = await telemetryClient.SendTelemetryBatchAsync(batch, TimeSpan.FromSeconds(1));
-        Assert(batchWrite.Success, "generic queued batch POST was rejected by client parser");
+        Assert(batchWrite.Success, "queued telemetry POST was rejected by client parser");
         var queuedRequest = seen.Last(item => item.Method == "POST");
-        Assert(queuedRequest.Uri.Query == "?deployment=test",
-            "queued telemetry must stay on the backward-compatible generic POST route");
+        Assert(queuedRequest.Uri.Query.Contains("deployment=test", StringComparison.Ordinal) &&
+               queuedRequest.Uri.Query.Contains("route=telemetry", StringComparison.Ordinal),
+            "queued telemetry must use the explicit telemetry route");
     }
 
     private static async Task TestUntrustedLeaderboardValuesAsync()

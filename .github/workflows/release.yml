@@ -161,36 +161,9 @@ jobs:
           $exeHashPath = "$exePath.sha256"
           "$exeHash  $([IO.Path]::GetFileName($exePath))" | Set-Content $exeHashPath -Encoding ascii -NoNewline
 
-          # Transitional compatibility artifact for clients released before
-          # direct-EXE updater support. Remove this after the transition release.
-          $staging = Join-Path $dist "$packageBase-legacy"
-          New-Item -ItemType Directory -Force $staging | Out-Null
-          Copy-Item './artifacts/nativeaot/IS74Wifi.exe' (Join-Path $staging 'IS74Wifi.exe') -Force
-
-          $zipPath = Join-Path $dist "$packageBase.zip"
-          Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
-
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-          try {
-            $entries = @($zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' })
-            if ($entries.Count -ne 1 -or $entries[0] -ne 'IS74Wifi.exe') {
-              throw "Unexpected archive contents: $($entries -join ', ')"
-            }
-          }
-          finally {
-            $zip.Dispose()
-          }
-
-          $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          $zipHashPath = "$zipPath.sha256"
-          "$zipHash  $([IO.Path]::GetFileName($zipPath))" | Set-Content $zipHashPath -Encoding ascii -NoNewline
-
           "exe_path=$exePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "exe_hash_path=$exeHashPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "exe_sha256=$exeHash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "zip_hash_path=$zipHashPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -199,8 +172,6 @@ jobs:
           path: |
             ${{ steps.package.outputs.exe_path }}
             ${{ steps.package.outputs.exe_hash_path }}
-            ${{ steps.package.outputs.zip_path }}
-            ${{ steps.package.outputs.zip_hash_path }}
           if-no-files-found: error
           retention-days: 30
 
@@ -214,8 +185,6 @@ jobs:
           $exe = '${{ steps.package.outputs.exe_path }}'
           $exeHashFile = '${{ steps.package.outputs.exe_hash_path }}'
           $exeHash = '${{ steps.package.outputs.exe_sha256 }}'
-          $zip = '${{ steps.package.outputs.zip_path }}'
-          $zipHashFile = '${{ steps.package.outputs.zip_hash_path }}'
           $isPrerelease = '${{ steps.release.outputs.prerelease }}' -eq 'true'
 
           $notes = @"
@@ -225,16 +194,13 @@ jobs:
           - self-contained IS74Wifi.exe
           - SHA-256: $exeHash
 
-          A legacy ZIP is included temporarily so older installed builds can update
-          into a version that understands direct EXE release assets.
-
           The release was built from ProductVersion $tag and passed C# contract tests,
           PowerShell reference regression checks, NativeAOT publish, version/status smoke,
           and clean-state agent smoke before publication.
           "@
 
           $args = @(
-            'release', 'create', $tag, $exe, $exeHashFile, $zip, $zipHashFile,
+            'release', 'create', $tag, $exe, $exeHashFile,
             '--repo', $repo,
             '--target', '${{ github.sha }}',
             '--title', "IS74Wifi $tag",
