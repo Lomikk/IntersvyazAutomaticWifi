@@ -1,0 +1,58 @@
+[
+  {
+    "event_type": "mailbox_poll", "schema": 4,
+    "attempt_id": "attempt-wire-0001", "install_id": "install-wire-00000001",
+    "app_version": "0.0.0-test", "event_id": "event-mailbox-wire-0001",
+    "poll_index": 1, "schedule_version": "push-v1",
+    "planned_start_ms": 100, "actual_start_ms": 101, "completed_ms": 110,
+    "duration_ms": 9, "response_order": 1, "http_status": 200,
+    "page_size": 50, "returned_count": 2, "fresh_message_count": 1,
+    "wifi_code_found": true, "newest_id_delta": 2, "wifi_message_id_delta": 2,
+    "in_flight_at_start": 1, "cache_status": "MISS", "cancelled": false,
+    "cancel_reason": "none"
+  },
+  {
+    "event_type": "internet_probe", "schema": 4,
+    "attempt_id": "attempt-wire-0001", "install_id": "install-wire-00000001",
+    "app_version": "0.0.0-test", "event_id": "event-internet-wire-0001",
+    "phase": "post_step_two", "probe_index": 1,
+    "planned_start_ms": 200, "actual_start_ms": 200, "completed_ms": 210,
+    "duration_ms": 10, "http_status": 200, "location_kind": "none",
+    "online": true, "body_kind": "empty", "in_flight_at_start": 1
+  },
+  {
+    "event_type": "portal_response", "schema": 4,
+    "attempt_id": "attempt-wire-0001", "install_id": "install-wire-00000001",
+    "app_version": "0.0.0-test", "event_id": "event-portal-wire-0001",
+    "stage": "step_two", "request_index": 1, "started_ms": 170,
+    "completed_ms": 190, "duration_ms": 20, "http_status": 302,
+    "location_kind": "stepThree", "server": "nginx", "content_type": "text/html",
+    "content_length": 0, "retry_after_ms": 0, "body_kind": "empty",
+    "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "event_type": "registration_event", "schema": 4,
+    "attempt_id": "attempt-wire-0001", "install_id": "install-wire-00000001",
+    "app_version": "0.0.0-test", "event_id": "event-register-wire-0001",
+    "stage": "get_confirm", "request_index": 1, "result": "success",
+    "duration_ms": 200, "http_status": 200, "error_class": "none",
+    "retry_after_ms": 0, "server": "nginx"
+  },
+  {
+    "event_type": "error", "schema": 4,
+    "attempt_id": "attempt-wire-0001", "install_id": "install-wire-00000001",
+    "app_version": "0.0.0-test", "event_id": "event-error-wire-0001",
+    "stage": "mailbox", "error_class": "timeout", "http_status": 408,
+    "duration_ms": 1000, "exception_type": "TimeoutException",
+    "native_error": "10060", "location_kind": "none"
+  },
+  {
+    "event_type": "leaderboard_entry", "schema": 4,
+    "entry_id": "entry-wire-0001", "install_id": "install-wire-00000001",
+    "test_id": "speed-wire-0001", "app_version": "0.0.0-test",
+    "event_id": "event-leader-wire-0001", "nickname": "Wire test",
+    "download_mbps": 84.3, "upload_mbps": 40.2, "latency_ms": 12,
+    "jitter_ms": 2, "packet_loss_pct": 0, "wifi_signal_bucket": "good",
+    "wifi_band": "5ghz", "time_bucket": "evening"
+  }
+]

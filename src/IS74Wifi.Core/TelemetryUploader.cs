@@ -68,10 +68,10 @@ public sealed class TelemetryUploader(
             if (!result.Success)
             {
                 var failures = Math.Min(20, state.ConsecutiveFailures + 1);
-                var retry = GetRetryDelay(result.Error, failures);
+                var retry = GetRetryDelay(result, failures);
                 stateStore.Save(new TelemetryUploadState(
                     state.LastSuccessfulUploadUtc,
-                    now + retry,
+                    clock.GetUtcNow() + retry,
                     failures));
                 logger.Write(DiagnosticLevel.Warn,
                     $"telemetry.upload deferred reason={result.Error ?? "unknown"} retryMinutes={retry.TotalMinutes:0}");
@@ -93,10 +93,14 @@ public sealed class TelemetryUploader(
         }
     }
 
-    private static TimeSpan GetRetryDelay(string? error, int failures)
+    private static TimeSpan GetRetryDelay(TelemetryWriteResult result, int failures)
     {
-        if (string.Equals(error, "rate_limited", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(error, "daily_limit_reached", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(result.Error, "rate_limited", StringComparison.OrdinalIgnoreCase))
+        {
+            return TimeSpan.FromSeconds(Math.Clamp(result.RetryAfterSeconds ?? 60, 1, 21600));
+        }
+
+        if (string.Equals(result.Error, "daily_limit_reached", StringComparison.OrdinalIgnoreCase))
         {
             return TimeSpan.FromHours(6);
         }

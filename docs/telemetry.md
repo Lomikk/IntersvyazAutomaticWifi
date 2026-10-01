@@ -119,6 +119,7 @@ POST <web-app endpoint>?route=telemetry         # queued telemetry batch
 POST <web-app endpoint>?route=speedtest         # one completed speed_test
 POST <web-app endpoint>?route=leaderboard       # one explicit leaderboard_entry
 GET  <web-app endpoint>?route=leaderboard&limit=100
+POST <web-app endpoint>?route=leaderboardcontrol # status / rename / leave / join
 ```
 
 The payload `event_type` still selects the row schema (`attempt`, `mailbox_poll`, `internet_probe`, `portal_response`, `registration_event`, `error`, `speed_test`, or `leaderboard_entry`). Authorization traces use a `{batch_id, events[]}` envelope. The receiver guards each request at 64 events / 64 KiB, which is why the local queue emits at most 64 events and targets roughly 60 KiB per transport batch.
@@ -148,7 +149,55 @@ The terminal's optional nickname is a **local `settings.json` preference** (defa
 
 **Server rollout:** the corresponding standalone schema-v4 Apps Script must be published as a **new version of the existing `/exec` deployment**. It groups historical entries at GET time; both `Leaderboard` and `SpeedTests` remain append-only, and no migration or sheet reset is required.
 
-No route-specific rate limits, accepted-tests-per-day limit, or ingestion kill switch are enforced yet. Those remain possible backend hardening work. Because the client is open source, future anti-abuse controls should be treated as operational guards rather than an identity/security boundary.
+### Small per-install request limits
+
+The companion receiver now applies the following burst guards before opening
+Sheets, with counter updates serialized by its script lock:
+
+| POST route | Requests per `install_id` per 60-second window |
+|---|---:|
+| `telemetry` | 12 batches, each still limited to 64 events / 64 KiB |
+| `speedtest` | 6 |
+| `leaderboard` | 6 |
+| `leaderboardcontrol` | 30, shared across status/rename/leave/join |
+
+A window starts with the first counted request. Retries count as requests but
+deduplication still prevents repeated event writes. A mixed-ID batch counts once
+for each distinct ID; all IDs are checked before any counter is charged. This
+supports queues retained across local identity changes. The client's maximum
+flush of 8 full batches fits within the telemetry allowance. Existing rename and
+rejoin limits over 24 hours are unchanged.
+
+Rejections use the existing JSON failure envelope with an optional additive field:
+`{"ok":false,"error":"rate_limited","retry_after_seconds":60}`. Apps Script
+ContentService still returns JSON over HTTP; do not require an HTTP 429 status.
+The delay is the remaining window, rounded up (1–60 seconds). Failure to acquire
+the script lock within one second returns the same error with a 2-second delay.
+The uploader retains its batch and waits from receipt of the response; missing
+delay defaults to 60 seconds. Immediate rate-limited speed statistics are queued,
+but leaderboard publications and lifecycle actions are never deferred.
+
+Anonymous leaderboard GETs share a 15-second cache of the top 250 public entries;
+`limit` is applied after retrieving this common cache. A miss is rebuilt under
+the script lock to avoid concurrent full scans. Successful publication, rename,
+leave or join invalidates the cache under the same lock. No identifier is added
+to public GET requests. Health responses do not access Sheets.
+
+These are best-effort guards against accidental spam, not a security boundary:
+Apps Script may evict cache-backed counters early; generating another `install_id`
+still gives another quota. There are deliberately no accounts, access keys,
+global write budget or ingestion kill switch. See Google's
+[cache lifetime and size limits](https://developers.google.com/apps-script/reference/cache/cache#put(String,String,Integer)).
+
+Schema remains 4. Prefer updating beta clients before deploying these limits:
+older clients can read the error but wait 6 hours on a throttled batch and do not
+queue an immediately rate-limited speed result. The new client also works with
+the older server. No Sheet migration or `/exec` URL change is required.
+
+Shared fixtures in `tests/fixtures/backend-events.json` plus `queued-speedtest.json`
+cover all eight event types in both the production C# serializer and the private
+server's validation/storage. `backend-rate-limited.json` is shared by server and
+client response/retry tests. These are synthetic examples, not production data.
 
 ## Storage model
 

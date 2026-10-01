@@ -143,6 +143,7 @@ internal static class TelemetryContractTests
         TestUploadTimeoutCompatibility();
         await TestUploadConsentGateAsync();
         await TestMixedQueueRetryAsync();
+        await TestServerRetryDelayAsync();
     }
 
     private static void TestUploadTimeoutCompatibility()
@@ -329,6 +330,51 @@ internal static class TelemetryContractTests
         await uploader.TryFlushIfDueAsync();
         Assert(posts == 2 && !queue.HasPending, "compatible receiver did not unblock the mixed queue");
         Assert(stateStore.Load().ConsecutiveFailures == 0, "successful retry did not reset failures");
+    }
+
+    private static async Task TestServerRetryDelayAsync()
+    {
+        var rateJson = await File.ReadAllTextAsync(
+            Path.Combine(AppContext.BaseDirectory, "fixtures", "backend-rate-limited.json"));
+        foreach (var (reply, delaySeconds) in new[]
+        {
+            (rateJson, 60),
+            ("{\"ok\":false,\"error\":\"rate_limited\",\"retry_after_seconds\":2}", 2),
+            ("{\"ok\":false,\"error\":\"rate_limited\"}", 60),
+            ("{\"ok\":false,\"error\":\"daily_limit_reached\"}", 21600)
+        })
+        {
+            using var temp = TestDirectory.Create();
+            var paths = new AppPaths(temp.Path);
+            var queue = new TelemetryQueue(paths);
+            queue.Enqueue(["{\"event_type\":\"attempt\",\"schema\":4}"]);
+            var posts = 0;
+            var clock = new UploadTestClock();
+            using var http = new HttpClient(new DelegateHandler((_, _) =>
+            {
+                if (posts == 0) clock.Now = clock.Now.AddSeconds(3);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(++posts == 1 ? reply : "{\"ok\":true}")
+                });
+            }));
+            var started = clock.Now;
+            var states = new TelemetryUploadStateStore(paths, new JsonFileStore());
+            var uploader = new TelemetryUploader(queue, states,
+                new TelemetryClient(http, new Uri("https://backend.example.test/exec")),
+                new AppSettings { AnonymousStatisticsConsent = AnonymousStatisticsConsent.Allowed },
+                new DiagnosticLogger(paths), timeProvider: clock);
+            await uploader.TryFlushIfDueAsync();
+            Assert(queue.HasPending && states.Load().NextAttemptUtc == started.AddSeconds(3 + delaySeconds),
+                "throttled upload lost queued data or ignored the server retry delay");
+            clock.Now = started.AddSeconds(3 + delaySeconds - 1);
+            await uploader.TryFlushIfDueAsync();
+            Assert(posts == 1, "uploader retried before the server delay elapsed");
+            clock.Now = started.AddSeconds(3 + delaySeconds);
+            await uploader.TryFlushIfDueAsync();
+            Assert(posts == 2 && !queue.HasPending && states.Load().ConsecutiveFailures == 0,
+                "uploader failed to resume after throttling");
+        }
     }
 
     private sealed class UploadTestClock : TimeProvider

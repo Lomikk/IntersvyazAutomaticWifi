@@ -54,7 +54,10 @@ const spreadsheet = {
 };
 const sandbox = {
   SpreadsheetApp: { openById: () => spreadsheet, flush() {} },
-  LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+  LockService: { getScriptLock: () => ({ tryLock() { return true; }, releaseLock() {} }) },
+  // This suite mutates rows directly to exercise projections/lifecycle rules.
+  // Cache and real rate windows are exercised by server_ingestion_contract.cjs.
+  CacheService: { getScriptCache: () => ({ get: () => null, put() {}, remove() {} }) },
   ContentService: {
     MimeType: { JSON: 'application/json' },
     createTextOutput: body => ({ body, setMimeType() { return this; } })

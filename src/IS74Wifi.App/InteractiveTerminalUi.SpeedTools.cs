@@ -1449,6 +1449,7 @@ internal sealed partial class InteractiveTerminalUi
             "leaderboard_inactive" => "сначала нужно вернуться в рейтинг",
             "nickname_mismatch" => "публичный ник изменился; обновите состояние",
             "rename_rate_limited" => "лимит переименований исчерпан",
+            "rate_limited" => "слишком частые запросы или сервер занят; повторите немного позже",
             "rejoin_rate_limited" => "повторное вступление пока недоступно",
             "not_participating" => "публичной записи уже нет",
             null or "" => "неизвестная ошибка",

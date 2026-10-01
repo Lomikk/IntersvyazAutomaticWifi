@@ -9,7 +9,8 @@ namespace IS74Wifi.Core;
 public sealed record TelemetryWriteResult(
     bool Success,
     bool Duplicate,
-    string? Error);
+    string? Error,
+    int? RetryAfterSeconds = null);
 
 public sealed record LeaderboardPublicEntry(
     int Rank,
@@ -23,7 +24,8 @@ public sealed record LeaderboardPublicEntry(
 public sealed record LeaderboardReadResult(
     bool Success,
     string? Error,
-    IReadOnlyList<LeaderboardPublicEntry> Entries);
+    IReadOnlyList<LeaderboardPublicEntry> Entries,
+    int? RetryAfterSeconds = null);
 
 public sealed record LeaderboardControlState(
     bool Active,
@@ -36,7 +38,8 @@ public sealed record LeaderboardControlState(
 public sealed record LeaderboardControlResult(
     bool Success,
     string? Error,
-    LeaderboardControlState? State);
+    LeaderboardControlState? State,
+    int? RetryAfterSeconds = null);
 
 public sealed class TelemetryClient(
     HttpClient http,
@@ -142,7 +145,7 @@ public sealed class TelemetryClient(
                 !root.TryGetProperty("ok", out var okElement) ||
                 okElement.ValueKind != JsonValueKind.True)
             {
-                return new LeaderboardReadResult(false, ReadError(root), []);
+                return new LeaderboardReadResult(false, ReadError(root), [], ReadRetryAfterSeconds(root));
             }
 
             if (!root.TryGetProperty("entries", out var entriesElement) ||
@@ -305,7 +308,7 @@ public sealed class TelemetryClient(
                 !root.TryGetProperty("ok", out var okElement) ||
                 okElement.ValueKind != JsonValueKind.True)
             {
-                return new LeaderboardControlResult(false, ReadError(root), null);
+                return new LeaderboardControlResult(false, ReadError(root), null, ReadRetryAfterSeconds(root));
             }
 
             if (!TryReadLeaderboardControlState(root, out var state))
@@ -426,7 +429,7 @@ public sealed class TelemetryClient(
                          okElement.ValueKind is JsonValueKind.True;
                 if (!ok)
                 {
-                    return new TelemetryWriteResult(false, false, ReadError(root));
+                    return new TelemetryWriteResult(false, false, ReadError(root), ReadRetryAfterSeconds(root));
                 }
 
                 var duplicateBatch = root.TryGetProperty("duplicate_batch", out var duplicateElement) &&
@@ -480,6 +483,14 @@ public sealed class TelemetryClient(
         builder.Query = string.Join("&", values);
         return builder.Uri;
     }
+
+    private static int? ReadRetryAfterSeconds(JsonElement root) =>
+        root.ValueKind == JsonValueKind.Object &&
+        root.TryGetProperty("retry_after_seconds", out var value) &&
+        value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var seconds) &&
+        seconds > 0
+            ? Math.Min(seconds, 21600)
+            : null;
 
     private static string ReadError(JsonElement root) =>
         root.ValueKind == JsonValueKind.Object &&

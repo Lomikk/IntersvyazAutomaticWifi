@@ -467,6 +467,21 @@ internal static class SpeedTestContractTests
         var failedPublish = await failedService.PublishAsync(localOnly, "campus-cat");
         Assert(!failedPublish.Write.Success && !failedQueue.HasPending,
             "failed leaderboard publication must not enter the delayed telemetry queue");
+
+        var rateReply = await File.ReadAllTextAsync(
+            Path.Combine(AppContext.BaseDirectory, "fixtures", "backend-rate-limited.json"));
+        using var rateHttp = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(rateReply) })));
+        var rateService = new CampusSpeedToolsService(new FixedSpeedProvider(),
+            new TelemetryClient(rateHttp, new Uri("https://backend.example.test/exec")),
+            failedQueue, "fedcba9876543210fedcba9876543210", "0.0.0-test", 3000, () => true);
+        var throttledRun = await rateService.MeasureAsync();
+        Assert(throttledRun.StatisticsQueued && throttledRun.StatisticsWrite.RetryAfterSeconds == 60 &&
+               failedQueue.GetStatus().PendingFiles == 1,
+            "rate-limited speed statistics must be queued for later delivery");
+        var throttledPublish = await rateService.PublishAsync(throttledRun, "campus-cat");
+        Assert(throttledPublish.Write.Error == "rate_limited" && failedQueue.GetStatus().PendingFiles == 1,
+            "rate-limited leaderboard publication must stay explicit, not be queued");
     }
 
     private static async Task TestManualAppsScriptRedirectTraceAsync()

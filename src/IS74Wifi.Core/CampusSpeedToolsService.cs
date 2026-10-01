@@ -180,6 +180,7 @@ public sealed class CampusSpeedToolsService(
         telemetryQueue.Enqueue([TelemetrySerialization.Serialize(telemetry)]);
 
     private static bool ShouldRetryLater(string? error) => error is
+        "rate_limited" or
         "timeout" or
         "transport" or
         "dns" or

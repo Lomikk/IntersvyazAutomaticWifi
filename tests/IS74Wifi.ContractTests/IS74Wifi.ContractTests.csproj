@@ -12,5 +12,7 @@
     <!-- Exercise the actual App helper without starting/building the interactive EXE. -->
     <Compile Include="..\..\src\IS74Wifi.App\ManualAuthorizationRunner.cs" Link="App\ManualAuthorizationRunner.cs" />
     <None Include="..\fixtures\queued-speedtest.json" Link="fixtures\queued-speedtest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\backend-rate-limited.json" Link="fixtures\backend-rate-limited.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\backend-events.json" Link="fixtures\backend-events.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
