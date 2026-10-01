@@ -6,7 +6,7 @@ namespace IS74Wifi.App;
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.25";
+    private const string ProductVersion = "v0.1.0-alpha.26";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
