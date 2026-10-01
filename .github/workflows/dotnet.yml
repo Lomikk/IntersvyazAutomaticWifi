@@ -1,4 +1,4 @@
-name: .NET migration
+name: Client checks
 
 on:
   push:
@@ -7,14 +7,28 @@ on:
       - 'IS74Wifi.slnx'
       - 'src/IS74Wifi.App/**'
       - 'src/IS74Wifi.Core/**'
-      - 'tests/IS74Wifi.ContractTests/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'docs/**'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'IS74Wifi.ps1'
+      - 'agent.ps1'
+      - 'src/IS74Wifi.psm1'
       - '.github/workflows/dotnet.yml'
   pull_request:
     paths:
       - 'IS74Wifi.slnx'
       - 'src/IS74Wifi.App/**'
       - 'src/IS74Wifi.Core/**'
-      - 'tests/IS74Wifi.ContractTests/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'docs/**'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'IS74Wifi.ps1'
+      - 'agent.ps1'
+      - 'src/IS74Wifi.psm1'
       - '.github/workflows/dotnet.yml'
 
 jobs:
@@ -28,23 +42,23 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Restore
-        run: dotnet restore .\IS74Wifi.slnx
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
-      - name: Build
-        run: dotnet build .\IS74Wifi.slnx --configuration Release --no-restore
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
 
-      - name: C# contract tests
-        run: dotnet run --project .\tests\IS74Wifi.ContractTests\IS74Wifi.ContractTests.csproj --configuration Release --no-build
-
-      - name: Interactive UI live status contract
-        run: py -3 .\tests\ui_live_status_contract.py
+      - name: Full public checks (private backend explicitly skipped)
+        shell: pwsh
+        run: ./scripts/check.ps1 -Mode Full -SkipBackend -Configuration Release
 
       - name: Smoke test CLI
         shell: pwsh
         run: |
-          $exe = Resolve-Path '.\src\IS74Wifi.App\bin\Release\net10.0-windows10.0.19041.0\IS74Wifi.exe'
-          $process = Start-Process -FilePath $exe -ArgumentList 'version' -Wait -PassThru
+          $exe = Resolve-Path '.\artifacts\check\Release\app\IS74Wifi.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList 'version' -WindowStyle Hidden -Wait -PassThru
           if ($process.ExitCode -ne 0) {
             throw "version smoke test failed with exit code $($process.ExitCode)"
           }
@@ -52,8 +66,18 @@ jobs:
       - name: Verify real agent mode is consoleless on clean state
         shell: pwsh
         run: |
-          $exe = Resolve-Path '.\src\IS74Wifi.App\bin\Release\net10.0-windows10.0.19041.0\IS74Wifi.exe'
-          $process = Start-Process -FilePath $exe -ArgumentList 'agent' -Wait -PassThru
-          if ($process.ExitCode -ne 0) {
-            throw "clean-state agent smoke test failed with exit code $($process.ExitCode)"
+          $exe = Resolve-Path '.\artifacts\check\Release\app\IS74Wifi.exe'
+          $oldLocalAppData = $env:LOCALAPPDATA
+          $oldRunLocal = $env:IS74W_RUN_LOCAL
+          try {
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'is74-checks-clean-state'
+            $env:IS74W_RUN_LOCAL = '1'
+            $process = Start-Process -FilePath $exe -ArgumentList 'agent' -WindowStyle Hidden -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "clean-state agent smoke test failed with exit code $($process.ExitCode)"
+            }
+          }
+          finally {
+            $env:LOCALAPPDATA = $oldLocalAppData
+            $env:IS74W_RUN_LOCAL = $oldRunLocal
           }

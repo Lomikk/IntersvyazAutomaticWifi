@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse production scripts with Windows PowerShell 5.1
+      - name: Parse reference scripts with Windows PowerShell 5.1
         shell: powershell
         run: |
           $files = @(
@@ -35,7 +35,7 @@ jobs:
             }
           }
 
-      - name: Import production module with Windows PowerShell 5.1
+      - name: Import reference module with Windows PowerShell 5.1
         shell: powershell
         run: |
           Import-Module .\src\IS74Wifi.psm1 -Force
@@ -45,7 +45,7 @@ jobs:
         shell: powershell
         run: .\tests\critical_path_contract.ps1
 
-      - name: Parse and import production runtime with PowerShell 7
+      - name: Parse and import reference runtime with PowerShell 7
         shell: pwsh
         run: |
           $files = @(

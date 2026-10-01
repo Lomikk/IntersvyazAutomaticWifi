@@ -1,5 +1,10 @@
 # C# migration roadmap
 
+> Historical migration plan and decision log. C# is now the active beta runtime;
+> PowerShell is retained as a reference. Phase notes/exit gates below are historical
+> snapshots, not a current backlog. Use the [current project map](project-map.md),
+> [check commands](checks.md) and [staged maintenance plan](maintainability-audit-and-plan.md).
+
 ## Goal
 
 Replace the PowerShell production runtime with a small, Windows-only C#/.NET executable while preserving the already researched IS74 protocol and the behavior of the current agent.
@@ -28,7 +33,7 @@ Primary goals:
 - No heavyweight GUI framework, database, dependency-injection container, or Windows Service in the initial migration.
 - Win32 interop policy: prefer source-generated `LibraryImport` on .NET 10. `AllowUnsafeBlocks=true` is enabled for generated stubs; use legacy `DllImport` only when a specific API cannot be expressed cleanly with `LibraryImport`.
 
-.NET 10 is chosen because the migration starts in 2026 and .NET 8 is near end of support. Packaging policy (framework-dependent vs self-contained vs NativeAOT) is intentionally deferred until the runtime is functionally complete; size and startup measurements will decide it.
+.NET 10 was chosen when the migration started in 2026. Packaging was initially deferred; NativeAOT win-x64 has since been selected (Phase 8), with a single self-contained EXE.
 
 ## Protocol invariants to preserve
 
@@ -172,9 +177,9 @@ Exit gate: Windows 10 and Windows 11 field tests confirm no terminal window rema
 
 Status: **field validated; cached-IP-first rejected for production**. The C# rewrite implemented a persisted hostname-to-IP cache and `SocketsHttpHandler.ConnectCallback`, but a real Windows captive test showed that the optimization has the wrong latency trade-off for the default path. Ordinary DNS for `api.is74.ru` / `w.is74.ru` cost only tens of milliseconds, while one stale black-holed cached address consumed about the full `700 ms` cached-connect budget before DNS fallback.
 
-Production therefore uses ordinary system DNS and normal hostname-based connections. The cached/direct-IP connector remains only as experimental/diagnostic code and is not wired into `ApplicationRuntime`, API/portal/probe `HttpClient` profiles, agent wake-ups, or registration.
+That experiment's `CachedDnsConnector` / `HostAddressCache` remains disconnected from `ApplicationRuntime`. This must not be confused with the later **DirectNetworkConnector**, which is now wired into API/portal/probe clients by default to bind connections to a selected physical adapter. Its interface DNS has a system-DNS fallback for name resolution only; TCP remains bound to the adapter. Explicit system-route mode bypasses it. See [direct-network.md](direct-network.md).
 
-- No cached-IP attempt occurs before system DNS in normal operation.
+- The old persisted cached-IP-first path is not used; the current adapter resolver has its own short-lived successful-resolution cache.
 - No background DNS warmer runs in the production agent.
 - `api.is74.ru` keeps ordinary HTTPS hostname/SNI/certificate-name semantics.
 - DNS failures remain typed transport failures rather than raw user-facing exceptions.

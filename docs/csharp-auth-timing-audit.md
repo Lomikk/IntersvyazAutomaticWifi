@@ -1,8 +1,8 @@
 # C# Wi-Fi authorization timing audit
 
-This note records a source-level audit of the current C# authorization path. It focuses on when the background agent wakes, when `stepOne` is allowed to fire, and which transport behaviours can add latency. Protocol facts come from `docs/protocol.md` and the PowerShell/field experiments.
+This note records a historical source-level audit of the C# authorization path. It focuses on when the background agent wakes, when `stepOne` is allowed to fire, and which transport behaviours can add latency. Protocol facts come from `docs/protocol.md` and the PowerShell/field experiments. This is not the current task list; see the [project map](project-map.md) and [maintenance plan](maintainability-audit-and-plan.md), including the completed App progress-runner fix (A2).
 
-> Update after field validation: cached-IP-first/direct-connect is no longer part of the production C# path. The historical cache fixes below describe an earlier implementation that was subsequently disconnected after real captive measurements showed a small direct-IP gain versus a much larger stale-IP penalty. Production now uses ordinary system DNS. The primary Internet probe is local `http://online.susu.ru/`, not Microsoft Connect Test.
+> Current routing clarification: the old persisted cached-IP-first experiment (`CachedDnsConnector`) was disconnected after field measurements. The later `DirectNetworkConnector` is active: adapter DNS, system-DNS resolution fallback, TCP bound to the selected physical adapter; explicit system-route mode bypasses it. Do not interpret the historical cache fixes below as changes required to today's path. See [direct-network.md](direct-network.md). The primary Internet probe is local `http://online.susu.ru/`, not Microsoft Connect Test.
 
 ## Current trigger model
 
@@ -39,7 +39,7 @@ The baseline is intentionally completed before `stepOne`; otherwise a newly gene
 
 Before the guard, `AgentService` awaited `WarmKnownHostsAsync`. The previous implementation resolved tracked hosts sequentially with no warm-only timeout. A slow/wedged system DNS lookup could therefore keep one `TickAsync` alive long enough to miss the expected expiry edge.
 
-That implementation was initially hardened with parallel bounded warmups. Field testing later rejected cached-IP-first for production entirely, so the current agent performs no DNS warmup before the guard and the production request path uses ordinary system DNS.
+That implementation was initially hardened with parallel bounded warmups. Field testing later rejected cached-IP-first entirely. The current agent performs no DNS warmup before the guard; current request routing uses the adapter connector described at the top, not the old cached-IP connector.
 
 ### 2. A stale multi-address cache multiplied the cached-connect penalty
 
@@ -87,7 +87,7 @@ The legacy PowerShell reference intentionally retains its historical 10-second/2
 
 ### Baseline latency is unavoidable but visible
 
-The automatic trigger enters `AuthorizationFlow` and must complete one baseline API request before `stepOne`. This is required for freshness correctness. Normally the long-lived API `HttpClient` and ordinary system DNS keep it small, but a cold TLS connection or failing network can still add latency before `T=0` of the proven `stepOne`/polling schedule. The baseline itself should not be moved after or raced with `stepOne`.
+The automatic trigger enters `AuthorizationFlow` and must complete one baseline API request before `stepOne`. This is required for freshness correctness. A long-lived API `HttpClient` can reuse its connection, but cold DNS/TLS or a failing network can still add latency before `T=0` of the proven `stepOne`/polling schedule. The baseline itself should not be moved after or raced with `stepOne`.
 
 ## Validation available in this workspace
 

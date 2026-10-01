@@ -42,7 +42,7 @@ The deployed worker does not measure packet loss. `packet_loss_pct` therefore re
 - `GET /backend/getIP.php` — the app does not need to learn or persist the public IP;
 - `POST /results/telemetry.php` — the app does not submit results into the provider site's telemetry system.
 
-The core exposes `IProgress<SpeedTestProgress>` and cancellation so the separate terminal UI branch can render a live speedometer and stop a test cleanly. Authorization does not call the speed-test provider, so these high-bandwidth requests cannot enter the captive-authorization critical path.
+The core exposes `IProgress<SpeedTestProgress>` and cancellation to the integrated speed screen in `InteractiveTerminalUi.SpeedTools.cs`; see [speed-tools-ui.md](speed-tools-ui.md). Authorization does not call the speed-test provider, so these high-bandwidth requests cannot enter the captive-authorization critical path.
 
 `HttpClientProfiles.CreateSpeedTestClient()` allows up to eight same-origin connections, enough for the observed five download streams plus control traffic.
 
@@ -54,10 +54,10 @@ A completed measurement can be converted with `SpeedTestTelemetry.CreateEvent(..
 - `server_kind = regional_provider`;
 - `test_version = is74-librespeed-5.4.1-v1`.
 
-The event includes measured download/upload Mbit/s, latency, jitter, phase durations, transferred byte counts and the number of latency samples used. `WindowsWifiService.GetSpeedTestRadioSnapshot()` can additionally attach a coarse signal bucket, campus-vs-other Wi-Fi classification, link Rx/Tx rates, and 802.11 PHY generation. Windows WLAN signal quality is bucketed as `excellent >= 80`, `good >= 60`, `fair >= 40`, otherwise `poor`. Wi-Fi band remains `unknown` until we add a reliable frequency/channel source; guessing 2.4/5/6 GHz from PHY alone would corrupt research data.
+The event includes measured download/upload Mbit/s, latency, jitter, phase durations, transferred byte counts and the number of latency samples used. `WindowsWifiService.GetSpeedTestRadioSnapshot()` currently classifies campus-vs-other Wi-Fi from SSID only. Signal, PHY, link rates and band remain unknown/null: location-gated radio queries are not made. Schema fields retained for compatible providers are not proof that this client measures them.
 
 ## Backend boundary
 
-The external Apps Script is not part of this public repository. The schema-v4 receiver requires explicit `route=telemetry`, `route=speedtest`, and `route=leaderboard` POSTs. `GET ?route=leaderboard&limit=...` returns a download-ranked public view containing only presentation metrics; private `install_id`, `test_id` and `event_id` fields never leave the backend.
+The Apps Script source is in the private companion repository, not this public one. The schema-v4 receiver uses explicit `route=telemetry`, `route=speedtest`, `route=leaderboard` and `route=leaderboardcontrol` POSTs. `GET ?route=leaderboard&limit=...` returns a download-ranked public view containing only presentation metrics; private `install_id`, `test_id` and `event_id` fields are not exposed in that public view. See [telemetry.md](telemetry.md) for the shared wire contract and [checks.md](checks.md) for offline verification.
 
-The production Google Apps Script deployment URL is built into the client. `IS74W_TELEMETRY_URL` or the `TelemetryEndpoint` setting can override it for development/testing. Speed measurement still succeeds if the backend is temporarily unavailable; the `speed_test` research event is kept locally for later upload.
+The production Google Apps Script deployment URL is built into the client. `IS74W_TELEMETRY_URL` or the `TelemetryEndpoint` setting can override it for development/testing. Speed measurement still succeeds if the backend is temporarily unavailable; with anonymous-statistics consent, retryable `speed_test` events are kept locally for later upload. Without consent they are not sent or queued. Explicit leaderboard publication is independent of that consent and is never queued.

@@ -32,7 +32,14 @@ var tests = new (string Name, Func<Task> Run)[]
 // the pure direct-network contracts there without weakening the Windows suite.
 var filter = args.FirstOrDefault(arg => arg.StartsWith("--filter=", StringComparison.Ordinal))?
     ["--filter=".Length..];
-foreach (var test in tests.Where(test => filter is null || test.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)))
+var selectedTests = tests.Where(test => filter is null || test.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToArray();
+if (selectedTests.Length == 0)
+{
+    Console.Error.WriteLine($"No contract tests match filter '{filter}'.");
+    return 1;
+}
+
+foreach (var test in selectedTests)
 {
     await test.Run();
     Console.WriteLine($"PASS {test.Name}");

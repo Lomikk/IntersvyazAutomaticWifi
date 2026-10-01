@@ -145,7 +145,7 @@ using `./verify.ps1 -ClientRepository /path/to/IntersvyazAutomaticWifi`.
 The synthetic `tests/fixtures/queued-speedtest.json` is shared with the C# serializer
 and uploader tests; no private source or real user data is included in this repo.
 
-The terminal's optional nickname is a **local `settings.json` preference** (default: `Гость`), reused on later launches and editable from both rich and compact speed menus. It is not a user account or analytical identity; `install_id` remains unchanged when the nickname changes. Publication still requires the existing explicit action and anonymous-statistics consent.
+The terminal's optional nickname is a **local `settings.json` preference** (default display: `Гость`), reused on later launches and editable from both rich and compact speed menus. The unsaved guest state cannot publish. A nickname is not a user account or analytical identity; `install_id` remains unchanged when it changes. Publication requires explicit participation/action, independently of anonymous-statistics consent. A saved rename for an active participant is synchronized through leaderboard control, subject to its limits; pending synchronization does not change the public name until accepted.
 
 **Server rollout:** the corresponding standalone schema-v4 Apps Script must be published as a **new version of the existing `/exec` deployment**. It groups historical entries at GET time; both `Leaderboard` and `SpeedTests` remain append-only, and no migration or sheet reset is required.
 
