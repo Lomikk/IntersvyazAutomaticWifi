@@ -64,6 +64,7 @@ try {
         if ($Mode -eq 'App') {
             Add-Step 'C# contract: manual authorization progress' 'dotnet' @($contractAssembly, '--filter=manual-authorization-progress')
             Add-Step 'C# contract: terminal UI' 'dotnet' @($contractAssembly, '--filter=terminal-ui')
+            Add-Step 'C# contract: status service' 'dotnet' @($contractAssembly, '--filter=status-service')
         }
         else {
             Add-Step 'C# contracts' 'dotnet' @($contractAssembly)

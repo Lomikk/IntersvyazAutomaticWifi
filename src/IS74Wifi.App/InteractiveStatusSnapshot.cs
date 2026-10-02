@@ -32,13 +32,6 @@ internal enum WifiNetworkState
     Other
 }
 
-internal enum WifiAuthorizationState
-{
-    Unknown,
-    Active,
-    Expired
-}
-
 internal enum InteractiveMenuAction
 {
     None,

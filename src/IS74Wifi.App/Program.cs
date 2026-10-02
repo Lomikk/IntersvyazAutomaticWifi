@@ -2223,9 +2223,22 @@ internal static class Program
 
     private static async Task OpenDetailedStatusReportAsync()
     {
-        var lines = await BuildDetailedStatusLinesAsync().ConfigureAwait(false);
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        var statusService = new StatusService(ProductVersion, app.Paths, app.Json);
+        var lines = await statusService.BuildDetailedReportAsync(
+            async cancellationToken =>
+            {
+                var probe = await app.Internet.ProbeAsync(
+                    TimeSpan.FromSeconds(3),
+                    cancellationToken).ConfigureAwait(false);
+                return probe.Online;
+            }).ConfigureAwait(false);
+
         var reportPath = Path.Combine(Path.GetTempPath(), "IS74Wifi-status.txt");
-        await File.WriteAllLinesAsync(reportPath, lines, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true)).ConfigureAwait(false);
+        await File.WriteAllLinesAsync(
+            reportPath,
+            lines,
+            new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true)).ConfigureAwait(false);
 
         var startInfo = new ProcessStartInfo
         {
@@ -2234,85 +2247,6 @@ internal static class Program
         };
         startInfo.ArgumentList.Add(reportPath);
         _ = Process.Start(startInfo) ?? throw new InvalidOperationException("Не удалось открыть подробный отчёт.");
-    }
-
-    private static async Task<IReadOnlyList<string>> BuildDetailedStatusLinesAsync()
-    {
-        using var app = ApplicationRuntime.Create(ProductVersion);
-        var installation = new ProgramInstallation();
-        var secrets = app.Secrets.Load();
-        var session = app.Session.Load();
-        var state = app.RuntimeState.Load();
-        var internet = await app.Internet.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-        var automatic = installation.IsInstalled && app.Autostart.IsEnabledFor(installation.ExecutablePath);
-        var installedVersion = installation.ReadInstalledVersion();
-        var displayedSsid = GetDisplayedWifiSsid();
-        var updateMaintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
-        var updateState = updateMaintenance.LoadState();
-
-        var lines = new List<string>
-        {
-            "IS74W — подробный отчёт",
-            $"Создан: {DateTimeOffset.Now:dd.MM.yyyy HH:mm:ss zzz}",
-            string.Empty,
-            "=== Программа ===",
-            $"Запущенная версия: {ProductVersion}",
-            $"Запущенный EXE: {Environment.ProcessPath ?? "неизвестно"}",
-            $"Установка: {(installation.IsInstalled ? "есть" : "нет")}",
-            $"Установленная версия: {installedVersion ?? "неизвестно"}",
-            $"Установленный EXE: {(installation.IsInstalled ? installation.ExecutablePath : "—")}",
-            string.Empty,
-            "=== Состояние ===",
-            $"Интернет: {(internet.Online ? "доступен" : "не подтверждён")}",
-            $"Сеть: {(app.Settings.IgnoreNetworkCheck ? "проверка отключена ○" : FormatWifiNetwork(displayedSsid))}",
-            $"Авторизация: {FormatWifiAuthorization(state)}",
-            $"Регистрация: {(secrets is null ? "нет" : "сохранена")}",
-            $"Телефон: {MaskPhone(secrets?.Phone)}",
-            $"Автовход: {(automatic ? "включён" : "выключен")}",
-            $"Фоновый режим: {(AgentProcessControl.IsAgentRunning() ? "работает" : "остановлен")}",
-            $"Уведомления: {FormatNotificationMode(app.Settings.NotificationMode)}",
-            $"API-сессия: {FormatSessionEnd(session?.AccessEnd)}"
-        };
-
-        lines.Add(string.Empty);
-        lines.Add("=== Обновления ===");
-        lines.Add($"Режим: {(app.Settings.AutomaticUpdates ? "автоматически" : "уведомлять")}");
-        lines.Add($"Канал: {(updateMaintenance.IncludePrereleases(app.Settings) ? "обычные + Pre-release" : "обычные версии")}");
-        lines.Add($"Доступно: {updateState.AvailableVersion ?? "нет"}");
-        lines.Add($"Последняя проверка: {(updateState.LastCheckedUtc is { } checkedAt ? checkedAt.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") : "ещё не выполнялась")}");
-        if (!string.IsNullOrWhiteSpace(updateState.LastError))
-        {
-            lines.Add($"Последняя ошибка проверки: {updateState.LastError}");
-        }
-
-        var telemetryStatus = app.TelemetryQueue.GetStatus();
-        var telemetryUpload = new TelemetryUploadStateStore(app.Paths, app.Json).Load();
-        lines.Add(string.Empty);
-        lines.Add("=== Телеметрия ===");
-        lines.Add($"Режим: {FormatAnonymousStatisticsConsent(app.Settings.AnonymousStatisticsConsent)}");
-        lines.Add($"Ожидает выгрузки: {telemetryStatus.PendingFiles} файлов / {FormatByteCount(telemetryStatus.PendingBytes)}");
-        lines.Add($"Последняя выгрузка: {(telemetryUpload.LastSuccessfulUploadUtc is { } lastUpload ? lastUpload.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") : "ещё не было")}");
-        if (telemetryUpload.NextAttemptUtc is { } nextUpload)
-            lines.Add($"Следующая попытка: {nextUpload.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-        if (telemetryUpload.ConsecutiveFailures > 0)
-            lines.Add($"Неудачных попыток подряд: {telemetryUpload.ConsecutiveFailures}");
-        lines.Add($"Карантин: {telemetryStatus.RejectedFiles} файлов / {FormatByteCount(telemetryStatus.RejectedBytes)}");
-
-        if (state.LastAuthUtc is { } lastAuth)
-            lines.Add($"Последняя Wi-Fi авторизация: {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-        if (state.ExpectedExpiryUtc is { } expiry)
-            lines.Add($"Ожидаемое окончание окна: {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-        if (!string.IsNullOrWhiteSpace(state.LastResult))
-            lines.Add($"Последний результат: {FormatRuntimeResultForUi(state.LastResult)}");
-        if (state.AutomaticStepOneAttempts > 0)
-            lines.Add($"Автоматические попытки: {state.AutomaticStepOneAttempts}/{app.Settings.MaxAutomaticStepOneAttempts}");
-        lines.Add($"Требуется действие пользователя: {(state.UserActionRequired ? "да" : "нет")}");
-
-        lines.Add(string.Empty);
-        lines.Add("=== Пути ===");
-        lines.Add($"Данные приложения: {app.Paths.Root}");
-        lines.Add($"Диагностический журнал: {app.Paths.DiagnosticLogFile}");
-        return lines;
     }
 
     private static async Task<bool> CheckForUpdatesFromMenuAsync(
@@ -2531,113 +2465,28 @@ internal static class Program
         return $"{bytes / (1024d * 1024d):0.0} МБ";
     }
 
-    private static InteractiveStatusSnapshot GetInteractiveStatusSnapshot(bool? internetOverride = null)
-    {
-        using var app = ApplicationRuntime.Create(ProductVersion);
-        return BuildInteractiveStatusSnapshot(app, internetOverride);
-    }
+    private static StatusService CreateStatusService() =>
+        new(ProductVersion, new AppPaths(), new JsonFileStore());
 
-    private static InteractiveStatusSnapshot ReadLocalInteractiveStatusSnapshot()
-    {
-        // Polling the open menu must not construct API/portal clients or perform
-        // network checks. All values below come from local state or Windows.
-        var paths = new AppPaths();
-        var json = new JsonFileStore();
-        return BuildInteractiveStatusSnapshot(
-            paths,
-            json,
-            new SettingsStore(paths, json).Load(),
-            new DpapiSecretStore(paths).Load(),
-            new SessionMetadataStore(paths, json).Load(),
-            new RuntimeStateStore(paths, json).Load(),
-            internetOverride: null);
-    }
+    private static InteractiveStatusSnapshot GetInteractiveStatusSnapshot(bool? internetOverride = null) =>
+        CreateStatusService().ReadLocalSnapshot(internetOverride);
+
+    private static InteractiveStatusSnapshot ReadLocalInteractiveStatusSnapshot() =>
+        CreateStatusService().ReadLocalSnapshot();
 
     private static async Task<InteractiveStatusSnapshot> RefreshInteractiveStatusAsync()
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
-        var updateTask = TryCheckForUpdatesIfDueAsync(app);
-        bool? online;
-        try
-        {
-            var probe = await app.Internet.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-            online = probe.Online;
-        }
-        catch
-        {
-            online = null;
-        }
-
-        try
-        {
-            await updateTask.ConfigureAwait(false);
-        }
-        catch
-        {
-            // Update discovery is best-effort and must never block the main UI.
-        }
-        return BuildInteractiveStatusSnapshot(app, online);
-    }
-
-    private static InteractiveStatusSnapshot BuildInteractiveStatusSnapshot(
-        ApplicationRuntime app,
-        bool? internetOverride) => BuildInteractiveStatusSnapshot(
-            app.Paths,
-            app.Json,
-            app.Settings,
-            app.Secrets.Load(),
-            app.Session.Load(),
-            app.RuntimeState.Load(),
-            internetOverride);
-
-    private static InteractiveStatusSnapshot BuildInteractiveStatusSnapshot(
-        AppPaths paths,
-        JsonFileStore json,
-        AppSettings settings,
-        StoredSecrets? secrets,
-        SessionMetadata? session,
-        RuntimeState runtime,
-        bool? internetOverride)
-    {
-        var installation = new ProgramInstallation();
-        var automatic = installation.IsInstalled && new WindowsAutostartService().IsEnabledFor(installation.ExecutablePath);
-        var agentRunning = AgentProcessControl.IsAgentRunning();
-        var displayedSsid = GetDisplayedWifiSsid();
-        var wifiNetwork = SsidPolicy.IsTarget(displayedSsid)
-            ? WifiNetworkState.Campus
-            : displayedSsid is not null
-                ? WifiNetworkState.Other
-                : WifiNetworkState.Unknown;
-        var internet = internetOverride ?? runtime.InternetConfirmed;
-        var updateMaintenance = new UpdateMaintenanceService(ProductVersion, paths, json, new DiagnosticLogger(paths));
-        var updateState = updateMaintenance.LoadState();
-        return new InteractiveStatusSnapshot(
-            Installed: installation.IsInstalled,
-            Registered: secrets is not null,
-            InternetAvailable: internet,
-            WifiNetwork: wifiNetwork,
-            WifiSsid: displayedSsid,
-            AuthorizationExpectedExpiryUtc: runtime.ExpectedExpiryUtc,
-            AuthorizationAlreadyActive: string.Equals(runtime.LastResult, "already-authorized", StringComparison.Ordinal),
-            NetworkCheckIgnored: settings.IgnoreNetworkCheck,
-            DirectNetworkMode: settings.DirectNetworkAdapterId switch
+        var statusService = new StatusService(ProductVersion, app.Paths, app.Json);
+        return await statusService.RefreshNetworkSnapshotAsync(
+            async cancellationToken =>
             {
-                null => "автоматически",
-                PhysicalAdapterSelection.SystemRoute => "системный",
-                _ => "вручную"
+                var probe = await app.Internet.ProbeAsync(
+                    TimeSpan.FromSeconds(3),
+                    cancellationToken).ConfigureAwait(false);
+                return probe.Online;
             },
-            AnonymousStatisticsConsent: settings.AnonymousStatisticsConsent,
-            AutomaticUpdates: settings.AutomaticUpdates,
-            IncludePrereleaseUpdates: updateMaintenance.IncludePrereleases(settings),
-            AvailableUpdateVersion: updateState.AvailableVersion,
-            LastUpdateCheckUtc: updateState.LastCheckedUtc,
-            AutomaticAuthorizationEnabled: automatic,
-            AgentRunning: agentRunning,
-            NotificationMode: FormatNotificationMode(settings.NotificationMode),
-            MaskedPhone: MaskPhone(secrets?.Phone),
-            ApiSessionEnd: FormatSessionEnd(session?.AccessEnd),
-            LastResult: FormatRuntimeResultForUi(runtime.LastResult),
-            Version: ProductVersion);
+            _ => TryCheckForUpdatesIfDueAsync(app)).ConfigureAwait(false);
     }
 
     private static string? GetDisplayedWifiSsid()
@@ -2646,59 +2495,13 @@ internal static class Program
         return connectedSsids.FirstOrDefault(SsidPolicy.IsTarget) ?? connectedSsids.FirstOrDefault();
     }
 
-    private static WifiAuthorizationState GetWifiAuthorizationState(RuntimeState runtime) =>
-        runtime.ExpectedExpiryUtc switch
-        {
-            { } expiry when expiry > DateTimeOffset.UtcNow => WifiAuthorizationState.Active,
-            { } => WifiAuthorizationState.Expired,
-            _ => WifiAuthorizationState.Unknown
-        };
+    private static string FormatWifiNetwork(string? ssid) => StatusService.FormatWifiNetwork(ssid);
 
-    private static string FormatWifiNetwork(string? ssid) => ssid switch
-    {
-        null => "не определена ○",
-        _ when SsidPolicy.IsTarget(ssid) => $"{ssid} ●",
-        _ => $"{ssid} ○"
-    };
+    private static string FormatWifiAuthorization(RuntimeState state) =>
+        StatusService.FormatWifiAuthorization(state);
 
-    private static string FormatWifiAuthorization(RuntimeState state)
-    {
-        if (state.ExpectedExpiryUtc is { } expiry && expiry > DateTimeOffset.UtcNow)
-        {
-            var remaining = expiry - DateTimeOffset.UtcNow;
-            var totalMinutes = Math.Max(0, (int)Math.Floor(remaining.TotalMinutes));
-            return $"до следующей ~{totalMinutes / 60:00}:{totalMinutes % 60:00} ●";
-        }
-
-        if (string.Equals(state.LastResult, "already-authorized", StringComparison.Ordinal))
-        {
-            return "уже активна ●";
-        }
-
-        return GetWifiAuthorizationState(state) switch
-        {
-            WifiAuthorizationState.Expired => "срок истёк ○",
-            _ => "ещё не выполнялась ○"
-        };
-    }
-
-    private static string FormatRuntimeResultForUi(string? result) => result switch
-    {
-        null or "" => "—",
-        "success" => "успешно",
-        "already-authorized" => "уже авторизован",
-        "step-one-sent" => "авторизация начата",
-        "step-one-retryable-error" or "pre-step-retryable-error" => "временная ошибка",
-        "automatic-step-one-limit" => "нужно действие",
-        "bearer-invalid" => "API-сессия отклонена",
-        "step-two-ambiguous" => "результат неясен",
-        "step-two-rejected" => "код отклонён",
-        "step-one-rate-limited" => "слишком много попыток",
-        "step-one-rejected" => "запрос отклонён",
-        "unexpected-step-one-redirect" => "неожиданный ответ портала",
-        "cancelled" => "отменено",
-        _ => "ошибка авторизации"
-    };
+    private static string FormatRuntimeResultForUi(string? result) =>
+        StatusService.FormatRuntimeResultForUi(result);
 
     private static async Task CompleteRegistrationTelemetryAsync(
         ApplicationRuntime app,
@@ -3002,38 +2805,14 @@ internal static class Program
         ReportMenuBatchProgress(progress, "Фоновый режим запущен с новой настройкой");
     }
 
-    private static string FormatAnonymousStatisticsConsent(AnonymousStatisticsConsent consent) => consent switch
-    {
-        AnonymousStatisticsConsent.Allowed => "включена",
-        AnonymousStatisticsConsent.Declined => "выключена",
-        _ => "не выбрано"
-    };
+    private static string FormatAnonymousStatisticsConsent(AnonymousStatisticsConsent consent) =>
+        StatusService.FormatAnonymousStatisticsConsent(consent);
 
-    private static string FormatNotificationMode(NotificationMode mode) => mode switch
-    {
-        NotificationMode.All => "все",
-        NotificationMode.Off => "выкл",
-        _ => "важные"
-    };
+    private static string FormatNotificationMode(NotificationMode mode) =>
+        StatusService.FormatNotificationMode(mode);
 
-    private static string FormatSessionEnd(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return "—";
-        }
-
-        if (DateTimeOffset.TryParse(
-                value,
-                System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.AllowWhiteSpaces,
-                out var parsed))
-        {
-            return "до " + parsed.ToLocalTime().ToString("dd.MM.yyyy HH:mm", System.Globalization.CultureInfo.InvariantCulture);
-        }
-
-        return "до " + value.Trim();
-    }
+    private static string FormatSessionEnd(string? value) =>
+        StatusService.FormatSessionEnd(value);
 
     private static void OpenAvailableUpdateReleasePage()
     {
@@ -3429,10 +3208,7 @@ internal static class Program
         return digits;
     }
 
-    private static string MaskPhone(string? phone) =>
-        phone is { Length: 10 }
-            ? $"+7 *** ***-{phone.Substring(6, 2)}-{phone.Substring(8, 2)}"
-            : "-";
+    private static string MaskPhone(string? phone) => StatusService.MaskPhone(phone);
 
     private static void LogRegistrationFailure(
         DiagnosticLogger logger, string stage, Is74ApiFailure failure, TimeSpan? elapsed)

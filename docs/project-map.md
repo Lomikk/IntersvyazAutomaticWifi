@@ -12,8 +12,9 @@
 | Что меняем | Где сейчас владелец поведения | Проверка |
 |---|---|---|
 | Запуск, CLI, меню, регистрация, вызов действий | `App/Program.cs`; создание/освобождение сервисов — `App/ApplicationRuntime.cs` | App; при изменении сценариев/сервисов Full |
-| Компоновка и сессия терминала | `App/InteractiveTerminalUi.cs`; примитивы кадра — `App/Ui/TerminalCanvas.cs`, геометрия — `App/Ui/TerminalLayout.cs`, framebuffer/diff/вывод — `App/Ui/TerminalOutput.cs`; общая геометрия больших списков — `App/Ui/ListWindow.cs`; история — `InteractiveActionHistory.cs`, снимок статуса — `InteractiveStatusSnapshot.cs` | App + ручная проверка затронутого экрана |
+| Компоновка и сессия терминала | `App/InteractiveTerminalUi.cs`; примитивы кадра — `App/Ui/TerminalCanvas.cs`, геометрия — `App/Ui/TerminalLayout.cs`, framebuffer/diff/вывод — `App/Ui/TerminalOutput.cs`; общая геометрия больших списков — `App/Ui/ListWindow.cs`; история — `InteractiveActionHistory.cs` | App + ручная проверка затронутого экрана |
 | Выбор сетевого адаптера | `App/Ui/AdapterSelectionScreen.cs` — пункты, selection/scroll, клавиши и кадр; `InteractiveTerminalUi.cs` — единственный reader клавиатуры и compact fallback; перечисление/сохранение остаются в `Program.cs`/Core | App + ручная проверка экрана |
+| Снимок состояния и подробный отчёт | `App/StatusService.cs` — локальный snapshot, явное сетевое refresh и сбор строк отчёта; модель — `InteractiveStatusSnapshot.cs`; `Program.cs` только подключает probe/update и открывает готовый файл | App (`status-service` + Python live-status) |
 | Экран скорости/рейтинга | `App/InteractiveTerminalUi.SpeedTools.cs` (partial того же UI; пока содержит и действия, и состояние) | App; бизнес-правила/запросы — Full + Backend |
 | Прогресс ручной авторизации | `App/ManualAuthorizationRunner.cs`, подключение в `Program.cs` | App: исполняемый контракт runner + структурная проверка подключения |
 | Авторизация и polling | `Core/AuthorizationFlow.cs`, `PushPollingEngine.cs`, `AuthorizationStateManager.cs`; инварианты — `ProtocolContract.cs` | Core |
@@ -40,6 +41,7 @@
   Явный режим «системный маршрут» отключает этот connector.
   **CachedDnsConnector + HostAddressCache** — другой, старый persisted cached-IP-first
   эксперимент: код и тесты остались, в runtime он не подключён.
+- Локальный `StatusService.ReadLocalSnapshot()` не выполняет HTTP и не создаёт `ApplicationRuntime`, но сохраняет прежние локальные нормализации: `SettingsStore.Load()` может создать default `settings.json`, а `UpdateMaintenanceService.LoadState()` — очистить и сохранить устаревшее состояние доступного обновления. Сетевые побочные эффекты находятся только в явно переданных delegate для `RefreshNetworkSnapshotAsync`/подробного отчёта.
 - Авторизация не должна зависеть от скорости отрисовки: callback кладёт прогресс
   в очередь, App читает её отдельно. Не добавлять Console/HTTP/disk I/O в callback.
 - Согласие на анонимную статистику и явное участие в публичном рейтинге — разные
