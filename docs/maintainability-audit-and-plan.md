@@ -390,7 +390,7 @@ git diff --check
 | Этап | Статус | Результат/commit и проверки |
 |---|---|---|
 | S0 | Выполнен | Карта `project-map.md`, `checks.md`, AGENTS, исправление F8, `scripts/check.ps1` и CI filters. Release build; 21 C# группа; Python static/UI; PS 5.1/7; Node 14 + 18 сценариев; wrapper fail-fast/skip/filter contracts. Приватный сервер проверен локально, deployment/NativeAOT/ручной UI в S0 не выполнялись. |
-| U1 | Не начат | |
+| U1 | Реализован; Windows build/manual smoke ожидают внешней проверки | `Ui/TerminalCanvas.cs`, `TerminalLayout.cs`, `TerminalOutput.cs`; App подключён к contract tests через `InternalsVisibleTo`; добавлены проверки 80×30/120×30, narrow layout, wrap, повторного кадра и resize/invalidation; App-check запускает новую `terminal-ui` группу. Python static/UI и `git diff --check` проходят; `dotnet`/`pwsh` отсутствуют в Infra-контейнере, поэтому C# suite, check-runner и ручной Windows terminal smoke здесь не выполнялись. |
 | U2 | Не начат | |
 | A1 | Не начат | |
 | A2 | Выполнен отдельно от структурного рефакторинга | Queue-backed App runner, C# поведенческие тесты + проверка подключения в Program; см. F2/F9 |

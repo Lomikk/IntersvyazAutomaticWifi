@@ -16,10 +16,10 @@ function Invoke-Runner([string[]]$RunnerArguments) {
 }
 
 $app = Invoke-Runner @('-Mode', 'App', '-List')
-Assert-Contract ($app.Code -eq 0 -and $app.Text.Contains('--filter=manual-authorization-progress') -and $app.Text.Contains('UI live-status contracts')) 'App must build and check the UI/helper.'
+Assert-Contract ($app.Code -eq 0 -and $app.Text.Contains('--filter=manual-authorization-progress') -and $app.Text.Contains('--filter=terminal-ui') -and $app.Text.Contains('UI live-status contracts')) 'App must build and check the UI/helper.'
 Assert-Contract (-not $app.Text.Contains('Backend:')) 'App must not silently include backend work.'
 $core = Invoke-Runner @('-Mode', 'Core', '-List', '-NoRestore')
-Assert-Contract ($core.Code -eq 0 -and $core.Text.Contains('--no-restore') -and -not $core.Text.Contains('--filter=') -and -not $core.Text.Contains('Build App:')) 'Core must run the entire C# suite without starting/building App.'
+Assert-Contract ($core.Code -eq 0 -and $core.Text.Contains('--no-restore') -and -not $core.Text.Contains('--filter=') -and -not $core.Text.Contains('Build App:')) 'Core must run the entire C# suite without a separate App build or UI-only filter.'
 $full = Invoke-Runner @('-Mode', 'Full', '-SkipBackend', '-List', '-Configuration', 'Release')
 Assert-Contract ($full.Code -eq 0 -and $full.Text.Contains('SKIPPED: private backend') -and $full.Text.Contains('powershell.exe') -and $full.Text.Contains('Syntax: server_ingestion_contract.cjs')) 'Public Full must explicitly report the backend skip and retain reference/syntax checks.'
 $backend = Invoke-Runner @('-Mode', 'Backend', '-ServerPath', $fixture, '-List')

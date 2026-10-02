@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Text;
 using IS74Wifi.Core;
 
+using static IS74Wifi.App.TerminalCanvas;
+
 namespace IS74Wifi.App;
 
 // Native IS74 LibreSpeed measurement and the opt-in campus leaderboard are

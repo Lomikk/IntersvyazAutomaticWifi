@@ -9,8 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\IS74Wifi.Core\IS74Wifi.Core.csproj" />
-    <!-- Exercise the actual App helper without starting/building the interactive EXE. -->
-    <Compile Include="..\..\src\IS74Wifi.App\ManualAuthorizationRunner.cs" Link="App\ManualAuthorizationRunner.cs" />
+    <ProjectReference Include="..\..\src\IS74Wifi.App\IS74Wifi.App.csproj" />
     <None Include="..\fixtures\queued-speedtest.json" Link="fixtures\queued-speedtest.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\backend-rate-limited.json" Link="fixtures\backend-rate-limited.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\backend-events.json" Link="fixtures\backend-events.json" CopyToOutputDirectory="PreserveNewest" />

@@ -12,7 +12,7 @@
 | Что меняем | Где сейчас владелец поведения | Проверка |
 |---|---|---|
 | Запуск, CLI, меню, регистрация, вызов действий | `App/Program.cs`; создание/освобождение сервисов — `App/ApplicationRuntime.cs` | App; при изменении сценариев/сервисов Full |
-| Компоновка, кадр, клавиши, выбор адаптера | `App/InteractiveTerminalUi.cs`; история — `InteractiveActionHistory.cs`, снимок статуса — `InteractiveStatusSnapshot.cs` | App + ручная проверка затронутого экрана |
+| Компоновка, кадр, клавиши, выбор адаптера | `App/InteractiveTerminalUi.cs`; примитивы кадра — `App/Ui/TerminalCanvas.cs`, геометрия — `App/Ui/TerminalLayout.cs`, framebuffer/diff/вывод — `App/Ui/TerminalOutput.cs`; история — `InteractiveActionHistory.cs`, снимок статуса — `InteractiveStatusSnapshot.cs` | App + ручная проверка затронутого экрана |
 | Экран скорости/рейтинга | `App/InteractiveTerminalUi.SpeedTools.cs` (partial того же UI; пока содержит и действия, и состояние) | App; бизнес-правила/запросы — Full + Backend |
 | Прогресс ручной авторизации | `App/ManualAuthorizationRunner.cs`, подключение в `Program.cs` | App: исполняемый контракт runner + структурная проверка подключения |
 | Авторизация и polling | `Core/AuthorizationFlow.cs`, `PushPollingEngine.cs`, `AuthorizationStateManager.cs`; инварианты — `ProtocolContract.cs` | Core |
@@ -26,8 +26,9 @@
 | Приём событий, Sheets, рейтинг и лимиты | Приватный `IntersvyazAutomaticWifi_SERVER/Code.gs`; его README — происхождение исходника и rollout | Backend; при изменении JSON также Core |
 
 `Program.cs` пока большой: карта обозначает существующие обязанности, а не утверждает,
-что они уже разделены. Новые `TerminalCanvas`, `AdapterSelectionScreen` и контроллеры
-из [плана](maintainability-audit-and-plan.md) ещё не выделены. Для небольшой задачи
+что они уже разделены. Базовые `TerminalCanvas` / `TerminalLayout` / `TerminalOutput` уже
+выделены на U1; `AdapterSelectionScreen` и последующие контроллеры из
+[плана](maintainability-audit-and-plan.md) ещё не выделены. Для небольшой задачи
 достаточно её строки в таблице, связанных тестов и соответствующего контракта ниже.
 
 ## Границы, которые легко перепутать

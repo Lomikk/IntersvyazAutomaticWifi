@@ -1,17 +1,15 @@
 using System.Diagnostics;
 using System.Text;
 using IS74Wifi.Core;
+using static IS74Wifi.App.TerminalCanvas;
 
 namespace IS74Wifi.App;
 
 internal sealed partial class InteractiveTerminalUi
 {
-    private const int MinimumTerminalWidth = 80;
-    private const int MinimumCanvasWidth = 79;
-    private const int PreferredCanvasWidth = 116;
-    private const int CanvasHeight = 30;
-    private const int PaneY = 14;
-    private const int PaneHeight = 14;
+    private const int CanvasHeight = TerminalLayout.CanvasHeight;
+    private const int PaneY = TerminalLayout.PaneY;
+    private const int PaneHeight = TerminalLayout.PaneHeight;
     private static readonly TimeSpan LocalStatusRefreshInterval = TimeSpan.FromSeconds(2);
 
     private static readonly string[] Banner =
@@ -33,27 +31,25 @@ internal sealed partial class InteractiveTerminalUi
     private const string Subtitle = "InterSvyaz Wi-Fi Auth";
 
     private readonly string productVersion;
-    private readonly bool ansi;
+    private readonly TerminalOutput terminalOutput;
     private InteractiveStatusSnapshot? status;
     private int selected;
     private MenuPage menuPage = MenuPage.Main;
     private bool menuSelectionInitialized;
-    private int canvasWidth = MinimumCanvasWidth;
-    private int renderLeft;
-    private int leftPaneX = 1;
-    private int rightPaneX = 41;
-    private int paneWidth = 37;
-    private bool compactLayout;
+    private TerminalLayout layout = TerminalLayout.Fallback;
+    private int canvasWidth => layout.CanvasWidth;
+    private int renderLeft => layout.RenderLeft;
+    private int leftPaneX => layout.LeftPaneX;
+    private int rightPaneX => layout.RightPaneX;
+    private int paneWidth => layout.PaneWidth;
+    private bool compactLayout => layout.Compact;
     private DateTimeOffset nextAmbientSweepUtc = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(14);
     private DateTimeOffset? ambientSweepStartedUtc;
-    private Cell[,]? lastRenderedCanvas;
-    private int lastRenderedLeft = -1;
-    private int lastRenderedTerminalWidth = -1;
 
     public InteractiveTerminalUi(string productVersion)
     {
         this.productVersion = productVersion;
-        ansi = ConsoleSession.SupportsVirtualTerminal;
+        terminalOutput = new TerminalOutput(ConsoleSession.SupportsVirtualTerminal);
     }
 
     public void OpenUpdatesPage() => NavigateTo(MenuPage.Updates);
@@ -69,7 +65,7 @@ internal sealed partial class InteractiveTerminalUi
 
             try
             {
-                return Console.WindowWidth >= 30 && Console.WindowHeight >= CanvasHeight;
+                return TerminalLayout.Calculate(Console.WindowWidth, Console.WindowHeight).SupportsInteractiveSession;
             }
             catch
             {
@@ -89,7 +85,7 @@ internal sealed partial class InteractiveTerminalUi
 
             try
             {
-                return Console.WindowWidth >= MinimumTerminalWidth && Console.WindowHeight >= CanvasHeight;
+                return TerminalLayout.Calculate(Console.WindowWidth, Console.WindowHeight).SupportsRichLayout;
             }
             catch
             {
@@ -124,7 +120,7 @@ internal sealed partial class InteractiveTerminalUi
         // Keep the previous framebuffer between menu/workflow calls. This lets
         // the diff renderer restore only cells that actually changed instead
         // of clearing and repainting the whole terminal on every return.
-        PrepareInteractiveConsole(clear: lastRenderedCanvas is null);
+        PrepareInteractiveConsole(clear: !terminalOutput.HasRenderedFrame);
         try
         {
             if (showReveal && CanUseRichLayout)
@@ -1916,82 +1912,6 @@ internal sealed partial class InteractiveTerminalUi
         Put(canvas, x + 6, y, Truncate(text, Math.Max(1, paneWidth - 10)), isSelected ? Palette.Bright : Palette.Text);
     }
 
-    private static void DrawBox(Cell[,] canvas, int x, int y, int width, int height, string title)
-    {
-        Put(canvas, x, y, "┌" + new string('─', width - 2) + "┐", Palette.Border);
-        for (var row = 1; row < height - 1; row++)
-        {
-            Put(canvas, x, y + row, "│", Palette.Border);
-            Put(canvas, x + width - 1, y + row, "│", Palette.Border);
-        }
-        Put(canvas, x, y + height - 1, "└" + new string('─', width - 2) + "┘", Palette.Border);
-
-        var caption = $" {title} ";
-        var captionX = x + Math.Max(2, (width - caption.Length) / 2);
-        Put(canvas, captionX, y, Truncate(caption, width - 4), Palette.Highlight);
-    }
-
-    private static void PutWrapped(Cell[,] canvas, int x, int y, int width, string text, Palette color)
-    {
-        var lines = WrapText(text, Math.Max(1, width));
-        for (var index = 0; index < lines.Count; index++)
-        {
-            Put(canvas, x, y + index, lines[index], color);
-        }
-    }
-
-    private static List<string> WrapText(string? text, int width)
-    {
-        width = Math.Max(1, width);
-        var value = string.IsNullOrWhiteSpace(text) ? "—" : text.Trim();
-        var words = value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        var result = new List<string>();
-        var line = new StringBuilder();
-
-        foreach (var word in words)
-        {
-            if (line.Length > 0 && line.Length + 1 + word.Length > width)
-            {
-                result.Add(line.ToString());
-                line.Clear();
-            }
-
-            var remaining = word;
-            while (remaining.Length > width)
-            {
-                if (line.Length > 0)
-                {
-                    result.Add(line.ToString());
-                    line.Clear();
-                }
-                result.Add(remaining[..width]);
-                remaining = remaining[width..];
-            }
-
-            if (remaining.Length == 0)
-            {
-                continue;
-            }
-
-            if (line.Length > 0)
-            {
-                line.Append(' ');
-            }
-            line.Append(remaining);
-        }
-
-        if (line.Length > 0)
-        {
-            result.Add(line.ToString());
-        }
-
-        if (result.Count == 0)
-        {
-            result.Add("—");
-        }
-        return result;
-    }
-
     private static int BannerWidth => Banner.Max(line => line.Length);
 
     private static void DrawBanner(Cell[,] canvas, int top, BannerMode mode, double head)
@@ -2037,276 +1957,19 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
-    private Cell[,] CreateCanvas()
-    {
-        var canvas = new Cell[CanvasHeight, canvasWidth];
-        for (var y = 0; y < CanvasHeight; y++)
-        {
-            for (var x = 0; x < canvasWidth; x++)
-            {
-                canvas[y, x] = new Cell(' ', Palette.Text);
-            }
-        }
-        return canvas;
-    }
+    private Cell[,] CreateCanvas() => TerminalCanvas.Create(canvasWidth, CanvasHeight);
 
-    private static void Center(Cell[,] canvas, int row, string text, Palette color)
-    {
-        Put(canvas, Math.Max(0, (canvas.GetLength(1) - text.Length) / 2), row, text, color);
-    }
-
-    private static void Put(Cell[,] canvas, int x, int y, string text, Palette color)
-    {
-        var height = canvas.GetLength(0);
-        var width = canvas.GetLength(1);
-        if (y < 0 || y >= height) return;
-        for (var i = 0; i < text.Length; i++)
-        {
-            var targetX = x + i;
-            if (targetX < 0 || targetX >= width) continue;
-            canvas[y, targetX] = new Cell(text[i], color);
-        }
-    }
-
-    private static void PutRightAligned(
-        Cell[,] canvas,
-        int minimumX,
-        int rightExclusive,
-        int row,
-        string? value,
-        Palette color)
-    {
-        var available = Math.Max(1, rightExclusive - minimumX);
-        var text = Truncate(value, available);
-        var x = Math.Max(minimumX, rightExclusive - text.Length);
-        Put(canvas, x, row, text, color);
-    }
-
-    private void Render(Cell[,] canvas)
-    {
-        if (ansi)
-        {
-            RenderAnsi(canvas);
-        }
-        else
-        {
-            RenderConsoleColors(canvas);
-        }
-    }
-
-    private void RenderAnsi(Cell[,] canvas)
-    {
-        var width = canvas.GetLength(1);
-        var height = canvas.GetLength(0);
-        var terminalWidth = GetWindowWidthSafe();
-        var fullRender = lastRenderedCanvas is null ||
-                         lastRenderedCanvas.GetLength(0) != height ||
-                         lastRenderedCanvas.GetLength(1) != width ||
-                         lastRenderedLeft != renderLeft ||
-                         lastRenderedTerminalWidth != terminalWidth;
-
-        var output = new StringBuilder(height * (fullRender ? width + 48 : 32));
-        Palette? active = null;
-
-        if (fullRender)
-        {
-            for (var y = 0; y < height; y++)
-            {
-                output.Append("\u001b[").Append(y + 1).Append(";1H\u001b[2K");
-                output.Append("\u001b[").Append(y + 1).Append(';').Append(renderLeft + 1).Append('H');
-                active = null;
-                for (var x = 0; x < width; x++)
-                {
-                    var cell = canvas[y, x];
-                    if (active != cell.Color)
-                    {
-                        output.Append(ToAnsi(cell.Color));
-                        active = cell.Color;
-                    }
-                    output.Append(cell.Character);
-                }
-            }
-        }
-        else
-        {
-            // Only repaint cells that actually changed. Redrawing and clearing the
-            // complete banner at 60 FPS made static glyphs appear to shimmer in
-            // Windows Terminal even though their coordinates never moved.
-            for (var y = 0; y < height; y++)
-            {
-                for (var x = 0; x < width; x++)
-                {
-                    var cell = canvas[y, x];
-                    if (cell.Equals(lastRenderedCanvas![y, x]))
-                    {
-                        continue;
-                    }
-
-                    output.Append("\u001b[").Append(y + 1).Append(';').Append(renderLeft + x + 1).Append('H');
-                    if (active != cell.Color)
-                    {
-                        output.Append(ToAnsi(cell.Color));
-                        active = cell.Color;
-                    }
-                    output.Append(cell.Character);
-                }
-            }
-        }
-
-        output.Append("\u001b[0m");
-        Console.Write(output.ToString());
-        RememberRenderedCanvas(canvas, terminalWidth);
-    }
-
-    private void RenderConsoleColors(Cell[,] canvas)
-    {
-        var width = canvas.GetLength(1);
-        var height = canvas.GetLength(0);
-        var terminalWidth = GetWindowWidthSafe();
-        var fullRender = lastRenderedCanvas is null ||
-                         lastRenderedCanvas.GetLength(0) != height ||
-                         lastRenderedCanvas.GetLength(1) != width ||
-                         lastRenderedLeft != renderLeft ||
-                         lastRenderedTerminalWidth != terminalWidth;
-
-        if (fullRender)
-        {
-            for (var y = 0; y < height; y++)
-            {
-                try
-                {
-                    Console.SetCursorPosition(0, y);
-                    Console.Write(new string(' ', Math.Max(1, terminalWidth - 1)));
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        Palette? active = null;
-        for (var y = 0; y < height; y++)
-        {
-            for (var x = 0; x < width; x++)
-            {
-                var cell = canvas[y, x];
-                if (!fullRender && cell.Equals(lastRenderedCanvas![y, x]))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    Console.SetCursorPosition(renderLeft + x, y);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                if (active != cell.Color)
-                {
-                    Console.ForegroundColor = ToConsoleColor(cell.Color);
-                    active = cell.Color;
-                }
-                Console.Write(cell.Character);
-            }
-        }
-        Console.ResetColor();
-        RememberRenderedCanvas(canvas, terminalWidth);
-    }
-
-    private void RememberRenderedCanvas(Cell[,] canvas, int terminalWidth)
-    {
-        lastRenderedCanvas = (Cell[,])canvas.Clone();
-        lastRenderedLeft = renderLeft;
-        lastRenderedTerminalWidth = terminalWidth;
-    }
-
-    private static int GetWindowWidthSafe()
-    {
-        try
-        {
-            return Console.WindowWidth;
-        }
-        catch
-        {
-            return MinimumTerminalWidth;
-        }
-    }
-
-    private static string ToAnsi(Palette color) => color switch
-    {
-        Palette.Border => "\u001b[38;2;18;54;75m",
-        Palette.BrandDim => "\u001b[38;2;26;91;126m",
-        Palette.Brand => "\u001b[38;2;42;151;202m",
-        Palette.BrandBright => "\u001b[38;2;88;190;235m",
-        Palette.Highlight => "\u001b[38;2;132;220;255m",
-        Palette.Bright => "\u001b[38;2;238;250;255m",
-        Palette.Good => "\u001b[38;2;104;207;174m",
-        Palette.Warning => "\u001b[38;2;255;205;96m",
-        Palette.Error => "\u001b[38;2;255;116;116m",
-        Palette.Dim => "\u001b[38;2;92;122;139m",
-        _ => "\u001b[38;2;166;194;208m"
-    };
-
-    private static ConsoleColor ToConsoleColor(Palette color) => color switch
-    {
-        Palette.Border => ConsoleColor.DarkBlue,
-        Palette.BrandDim => ConsoleColor.DarkCyan,
-        Palette.Brand => ConsoleColor.Blue,
-        Palette.BrandBright => ConsoleColor.Cyan,
-        Palette.Highlight => ConsoleColor.Cyan,
-        Palette.Bright => ConsoleColor.White,
-        Palette.Good => ConsoleColor.Green,
-        Palette.Warning => ConsoleColor.Yellow,
-        Palette.Error => ConsoleColor.Red,
-        Palette.Dim => ConsoleColor.DarkGray,
-        _ => ConsoleColor.Gray
-    };
-
-    private static string Truncate(string? value, int maxLength)
-    {
-        var text = string.IsNullOrWhiteSpace(value) ? "—" : value;
-        if (text.Length <= maxLength) return text;
-        if (maxLength <= 1) return text[..maxLength];
-        return text[..(maxLength - 1)] + "…";
-    }
+    private void Render(Cell[,] canvas) => terminalOutput.Render(canvas, renderLeft);
 
     private void UpdateLayout()
     {
         try
         {
-            var terminalWidth = Console.WindowWidth;
-            compactLayout = terminalWidth < MinimumTerminalWidth;
-
-            if (compactLayout)
-            {
-                canvasWidth = Math.Max(20, terminalWidth - 1);
-                renderLeft = 0;
-                paneWidth = Math.Max(18, canvasWidth - 2);
-                leftPaneX = 1;
-                rightPaneX = 1;
-                return;
-            }
-
-            var drawableWidth = Math.Max(MinimumCanvasWidth, terminalWidth - 1);
-            canvasWidth = Math.Min(PreferredCanvasWidth, drawableWidth);
-            renderLeft = Math.Max(0, (terminalWidth - canvasWidth) / 2);
-
-            var gap = canvasWidth >= 100 ? 4 : 3;
-            paneWidth = Math.Max(30, (canvasWidth - 2 - gap) / 2);
-            leftPaneX = 1;
-            rightPaneX = leftPaneX + paneWidth + gap;
+            layout = TerminalLayout.Calculate(Console.WindowWidth, Console.WindowHeight);
         }
         catch
         {
-            compactLayout = false;
-            canvasWidth = MinimumCanvasWidth;
-            renderLeft = 0;
-            paneWidth = 37;
-            leftPaneX = 1;
-            rightPaneX = 41;
+            layout = TerminalLayout.Fallback;
         }
     }
 
@@ -2329,12 +1992,7 @@ internal sealed partial class InteractiveTerminalUi
         Console.Clear();
     }
 
-    private void InvalidateRenderedFrame()
-    {
-        lastRenderedCanvas = null;
-        lastRenderedLeft = -1;
-        lastRenderedTerminalWidth = -1;
-    }
+    private void InvalidateRenderedFrame() => terminalOutput.Invalidate();
 
     private static void RestoreConsole(bool showCursor = true)
     {
@@ -2370,23 +2028,6 @@ internal sealed partial class InteractiveTerminalUi
         InteractiveActionLineKind Kind,
         string Text,
         bool ShowSymbol);
-
-    private readonly record struct Cell(char Character, Palette Color);
-
-    private enum Palette
-    {
-        Border,
-        BrandDim,
-        Brand,
-        BrandBright,
-        Highlight,
-        Bright,
-        Good,
-        Warning,
-        Error,
-        Dim,
-        Text
-    }
 
     private enum BannerMode
     {

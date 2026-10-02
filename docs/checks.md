@@ -28,8 +28,8 @@
 
 | Режим | Проверки |
 |---|---|
-| App | Сборка App и contract tests; исполняемый `manual-authorization-progress`; Python static/UI |
-| Core | Сборка Core через contract project; весь C# suite, включая сериализацию и общие JSON fixtures |
+| App | Сборка App и contract tests; исполняемые `manual-authorization-progress` и `terminal-ui`; Python static/UI |
+| Core | Сборка contract project (он с U1 ссылается и на App для тестов internal UI); весь C# suite, включая Core-сценарии, сериализацию и общие JSON fixtures |
 | Backend | `leaderboard_server_contract.cjs`, затем `server_ingestion_contract.cjs` с явным приватным исходником |
 | Full | App + весь C# suite + Python + wrapper; parse/import/critical-path PowerShell reference на 7 и 5.1; синтаксис Node suites; Backend, кроме явно указанного пропуска |
 

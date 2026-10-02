@@ -18,6 +18,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("captive-portal", TestCaptivePortalAsync),
     ("authorization-flow", AuthorizationFlowContractTests.RunAsync),
     ("manual-authorization-progress", ManualAuthorizationProgressContractTests.RunAsync),
+    ("terminal-ui", TerminalUiContractTests.RunAsync),
     ("telemetry-local-first", TelemetryContractTests.RunAsync),
     ("backend-wire-format", BackendWireContractTests.RunAsync),
     ("speedtest-is74-librespeed", SpeedTestContractTests.RunAsync),

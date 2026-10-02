@@ -150,10 +150,15 @@ assert 'www.msftconnecttest.com' not in csharp_internet_probe, 'Microsoft Connec
 # C# terminal UI stays a real console renderer rather than a web/TUI dependency.
 csharp_ui = (root / 'src' / 'IS74Wifi.App' / 'InteractiveTerminalUi.cs').read_text(encoding='utf-8')
 csharp_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8')
-assert 'private const int MinimumCanvasWidth = 79;' in csharp_ui, 'terminal UI must retain an 80-column-safe layout'
-assert 'private const int PreferredCanvasWidth = 116;' in csharp_ui, 'terminal UI wide layout target changed'
-assert 'private const int CanvasHeight = 30;' in csharp_ui, 'terminal UI height contract changed'
-assert 'Console.WindowWidth' in csharp_ui and 'UpdateLayout()' in csharp_ui, 'terminal UI must adapt to the current terminal width'
+terminal_canvas = (root / 'src' / 'IS74Wifi.App' / 'Ui' / 'TerminalCanvas.cs').read_text(encoding='utf-8')
+terminal_layout = (root / 'src' / 'IS74Wifi.App' / 'Ui' / 'TerminalLayout.cs').read_text(encoding='utf-8')
+terminal_output = (root / 'src' / 'IS74Wifi.App' / 'Ui' / 'TerminalOutput.cs').read_text(encoding='utf-8')
+assert 'MinimumCanvasWidth = 79;' in terminal_layout, 'terminal UI must retain an 80-column-safe layout'
+assert 'PreferredCanvasWidth = 116;' in terminal_layout, 'terminal UI wide layout target changed'
+assert 'CanvasHeight = 30;' in terminal_layout, 'terminal UI height contract changed'
+assert 'Console.' not in terminal_layout and 'TerminalLayout Calculate(int terminalWidth, int terminalHeight)' in terminal_layout, 'terminal layout must stay a pure calculation over supplied window dimensions'
+assert 'Console.WindowWidth' in csharp_ui and 'UpdateLayout()' in csharp_ui and 'TerminalLayout.Calculate' in csharp_ui, 'terminal UI must adapt to the current terminal width'
+assert 'Cell' in terminal_canvas and 'Palette' in terminal_canvas and 'WrapText' in terminal_canvas and 'DrawBox' in terminal_canvas, 'terminal canvas primitives must have one owner'
 assert 'ConsoleKey.UpArrow' in csharp_ui and 'ConsoleKey.DownArrow' in csharp_ui and 'ConsoleKey.Enter' in csharp_ui
 assert "new MenuItem('1', \"Авторизовать Wi-Fi сейчас\"" in csharp_ui, 'terminal UI numeric hotkeys missing'
 assert "new MenuItem('0', \"Выход\"" in csharp_ui, 'terminal UI exit hotkey missing'
@@ -178,8 +183,10 @@ assert "new MenuItem('3', \"Состояние и подробный отчёт\
 assert "new MenuItem('2', \"Скорость и рейтинг\", InteractiveMenuAction.SpeedTools)" in csharp_ui, 'speed/leaderboard submenu entry missing'
 assert 'TargetView' not in csharp_ui, 'rich UI must not reintroduce speculative submenu navigation'
 assert 'PromptDigitsAsync' in csharp_ui and 'ConsoleKey.Escape' in csharp_ui, 'interactive registration input must be cancellable in-pane'
-assert 'lastRenderedCanvas' in csharp_ui and 'cell.Equals(lastRenderedCanvas' in csharp_ui, 'terminal renderer must diff frames to avoid full-screen shimmer'
-assert 'PrepareInteractiveConsole(clear: lastRenderedCanvas is null)' in csharp_ui, 'menu/workflow transitions must preserve the framebuffer for diff rendering'
+assert 'lastRenderedCanvas' in terminal_output and 'cell.Equals(lastRenderedCanvas' in terminal_output, 'terminal renderer must diff frames to avoid full-screen shimmer'
+assert 'PrepareInteractiveConsole(clear: !terminalOutput.HasRenderedFrame)' in csharp_ui, 'menu/workflow transitions must preserve the framebuffer for diff rendering'
+for forbidden in ('InteractiveMenuAction', 'CampusSpeedToolsService', 'AuthorizationFlow', 'SettingsStore'):
+    assert forbidden not in terminal_output, f'terminal output must not know application actions: {forbidden}'
 assert 'private bool menuSelectionInitialized;' in csharp_ui and 'selected = hotkeyIndex;' in csharp_ui, 'menu selection must survive actions and direct numeric hotkeys'
 assert 'CanUseInteractiveSession' in csharp_ui and 'compactLayout' in csharp_ui, 'terminal UI must recover after temporary narrow resize'
 assert 'PrepareForAction(' not in csharp_program, 'menu actions must stay inside the terminal panes instead of reopening the legacy action screen'

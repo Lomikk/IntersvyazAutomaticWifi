@@ -59,10 +59,15 @@ try {
     if ($Mode -in @('App', 'Core', 'Full')) {
         $buildArgs = @('build', $testProject, '-c', $Configuration, '-o', (Join-Path $outputRoot 'tests'))
         if ($NoRestore) { $buildArgs += '--no-restore' }
-        Add-Step 'Build Core contract tests' 'dotnet' $buildArgs
-        $testArgs = @((Join-Path $outputRoot 'tests/IS74Wifi.ContractTests.dll'))
-        if ($Mode -eq 'App') { $testArgs += '--filter=manual-authorization-progress' }
-        Add-Step 'C# contracts' 'dotnet' $testArgs
+        Add-Step 'Build contract tests' 'dotnet' $buildArgs
+        $contractAssembly = Join-Path $outputRoot 'tests/IS74Wifi.ContractTests.dll'
+        if ($Mode -eq 'App') {
+            Add-Step 'C# contract: manual authorization progress' 'dotnet' @($contractAssembly, '--filter=manual-authorization-progress')
+            Add-Step 'C# contract: terminal UI' 'dotnet' @($contractAssembly, '--filter=terminal-ui')
+        }
+        else {
+            Add-Step 'C# contracts' 'dotnet' @($contractAssembly)
+        }
     }
     if ($Mode -in @('App', 'Full')) {
         Add-Step 'Static source contracts' 'python' @((Join-Path $repoRoot 'tests/static_checks.py'))
