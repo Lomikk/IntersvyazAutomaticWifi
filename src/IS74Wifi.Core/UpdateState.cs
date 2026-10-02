@@ -8,6 +8,7 @@ public sealed record UpdateState
     public string? AvailableReleasePageUrl { get; init; }
     public string? LastNotifiedVersion { get; init; }
     public string? PendingInstalledNotificationVersion { get; init; }
+    public DateTimeOffset? GitHubRateLimitResetUtc { get; init; }
     public int ConsecutiveFailures { get; init; }
     public string? LastError { get; init; }
 }
@@ -30,6 +31,7 @@ public sealed class UpdateStateStore(AppPaths paths, JsonFileStore json)
 public static class UpdatePolicy
 {
     public static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
+    public static readonly TimeSpan UnknownRateLimitBackoff = TimeSpan.FromHours(1);
 
     public static bool IncludePrereleases(AppSettings settings, string currentVersion) =>
         settings.IncludePrereleaseUpdates ??

@@ -49,7 +49,7 @@ internal sealed class UpdateMaintenanceService(
     }
 
     public async Task<UpdateCheckResult> CheckAsync(
-        GitHubUpdateClient updater,
+        UpdateClient updater,
         bool force,
         Action<UpdateProgressStage>? progress = null,
         CancellationToken cancellationToken = default)
@@ -64,11 +64,16 @@ internal sealed class UpdateMaintenanceService(
         try
         {
             var settings = settingsStore.Load();
-            var update = await updater.CheckForUpdateAsync(
+            var discovery = await updater.CheckForUpdateAsync(
                 currentVersion,
                 IncludePrereleases(settings),
+                state.GitHubRateLimitResetUtc,
                 progress,
                 cancellationToken).ConfigureAwait(false);
+            var update = discovery.Descriptor;
+            var activeRateLimitReset = state.GitHubRateLimitResetUtc is { } reset && reset > now
+                ? reset
+                : null;
 
             var updatedState = state with
             {
@@ -80,11 +85,34 @@ internal sealed class UpdateMaintenanceService(
                                       string.Equals(state.AvailableVersion, update.TagName, StringComparison.Ordinal)
                     ? state.LastNotifiedVersion
                     : null,
+                GitHubRateLimitResetUtc = discovery.Source == UpdateMetadataSource.GitHub
+                    ? null
+                    : activeRateLimitReset,
                 ConsecutiveFailures = 0,
                 LastError = null
             };
             stateStore.Save(updatedState);
+            logger.Write(DiagnosticLevel.Info,
+                $"update.check source={discovery.Source.ToString().ToLowerInvariant()} available={update?.TagName ?? "none"}");
             return new UpdateCheckResult(update, updatedState, PerformedNetworkCheck: true);
+        }
+        catch (GitHubUpdateRateLimitException ex)
+        {
+            var failures = state.ConsecutiveFailures + 1;
+            var resetUtc = ex.ResetUtc ?? now + UpdatePolicy.UnknownRateLimitBackoff;
+            if (resetUtc <= now) resetUtc = now + UpdatePolicy.UnknownRateLimitBackoff;
+            var failedState = state with
+            {
+                LastCheckedUtc = now,
+                NextCheckUtc = now + UpdatePolicy.FailureBackoff(failures),
+                GitHubRateLimitResetUtc = resetUtc,
+                ConsecutiveFailures = failures,
+                LastError = nameof(GitHubUpdateRateLimitException)
+            };
+            stateStore.Save(failedState);
+            logger.Write(DiagnosticLevel.Warn,
+                $"update.github-rate-limit resetAt={resetUtc:O} retryAt={failedState.NextCheckUtc:O}");
+            throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {

@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using IS74Wifi.Core;
+using IS74Wifi.App;
 
 internal static class UpdateContractTests
 {
@@ -13,6 +14,12 @@ internal static class UpdateContractTests
         TestUpdatePolicy();
         TestUpdateStateStore();
         TestChecksumParser();
+        await TestManifestPrimaryAndChannelSelectionAsync();
+        await TestManifestFallbackAsync();
+        await TestInvalidManifestRejectedAsync();
+        await TestRateLimitPersistenceAndSuppressionAsync();
+        await TestGitHub429RetryAfterAsync();
+        await TestManifestChecksumMismatchAsync();
         await TestReleaseChannelSelectionAsync();
         await TestDirectExecutableSelectionAndVerifiedDownloadAsync();
         await TestOversizedReleaseAndPackageAsync();
@@ -132,6 +139,7 @@ internal static class UpdateContractTests
             AvailableReleasePageUrl = "https://github.test/releases/alpha19",
             LastNotifiedVersion = "v0.1.0-alpha.19",
             PendingInstalledNotificationVersion = "v0.1.0-alpha.18",
+            GitHubRateLimitResetUtc = new DateTimeOffset(2026, 9, 21, 19, 0, 0, TimeSpan.Zero),
             ConsecutiveFailures = 2,
             LastError = "HttpRequestException"
         };
@@ -155,6 +163,247 @@ internal static class UpdateContractTests
         catch (InvalidDataException)
         {
         }
+    }
+
+    private static async Task TestManifestPrimaryAndChannelSelectionAsync()
+    {
+        var hash = new string('a', 64);
+        var githubCalls = 0;
+        using var client = new HttpClient(new UpdateHandler(request =>
+        {
+            if (request.RequestUri!.Host == "script.example.test")
+            {
+                Assert(request.RequestUri.Query.Contains("route=update", StringComparison.Ordinal),
+                    "manifest request lost the update route");
+                if (request.RequestUri.Query.Contains("channel=stable", StringComparison.Ordinal))
+                {
+                    return TextResponse(ManifestJson("stable", "v0.1.0", hash), "application/json");
+                }
+                return TextResponse(ManifestJson("prerelease", "v0.1.1-alpha.1", hash), "application/json");
+            }
+            if (request.RequestUri.Host == "api.github.com")
+            {
+                githubCalls++;
+                return TextResponse("[]", "application/json");
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+        var updater = new UpdateClient(client, new Uri("https://script.example.test/exec?deployment=test"));
+
+        var stable = await updater.CheckForUpdateAsync("v0.1.0-alpha.26", includePrerelease: false);
+        Assert(stable.Source == UpdateMetadataSource.Manifest && stable.Descriptor?.TagName == "v0.1.0",
+            "stable manifest channel did not preserve release selection");
+
+        var prerelease = await updater.CheckForUpdateAsync("v0.1.0", includePrerelease: true);
+        Assert(prerelease.Source == UpdateMetadataSource.Manifest && prerelease.Descriptor?.TagName == "v0.1.1-alpha.1",
+            "prerelease manifest channel did not preserve release selection");
+
+        var current = await updater.CheckForUpdateAsync("v0.1.1-alpha.1", includePrerelease: true);
+        Assert(current.Source == UpdateMetadataSource.Manifest && current.Descriptor is null,
+            "current manifest version was offered as an update");
+        Assert(githubCalls == 0, "valid manifest still consumed anonymous GitHub API budget");
+    }
+
+    private static async Task TestManifestFallbackAsync()
+    {
+        var githubCalls = 0;
+        var releasesJson = """
+        [
+          {
+            "tag_name":"v0.1.0-alpha.27",
+            "draft":false,
+            "prerelease":true,
+            "html_url":"https://github.test/releases/alpha27",
+            "assets":[
+              {"name":"IS74Wifi-v0.1.0-alpha.27-win-x64.exe","browser_download_url":"https://download.test/alpha27.exe"},
+              {"name":"IS74Wifi-v0.1.0-alpha.27-win-x64.exe.sha256","browser_download_url":"https://download.test/alpha27.exe.sha256"}
+            ]
+          }
+        ]
+        """;
+
+        using var client = new HttpClient(new UpdateHandler(request =>
+        {
+            if (request.RequestUri!.Host == "script.example.test")
+                return TextResponse("{\"ok\":false,\"error\":\"invalid_route\"}", "application/json");
+            if (request.RequestUri.Host == "api.github.com")
+            {
+                githubCalls++;
+                return TextResponse(releasesJson, "application/json");
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+        var updater = new UpdateClient(client, new Uri("https://script.example.test/exec"));
+        var result = await updater.CheckForUpdateAsync("v0.1.0-alpha.26", includePrerelease: true);
+
+        Assert(result.Source == UpdateMetadataSource.GitHub && result.Descriptor?.TagName == "v0.1.0-alpha.27",
+            "unavailable manifest did not fall back to GitHub releases");
+        Assert(githubCalls == 1, "manifest fallback made an unexpected number of GitHub calls");
+    }
+
+    private static async Task TestInvalidManifestRejectedAsync()
+    {
+        using var client = new HttpClient(new UpdateHandler(request =>
+        {
+            if (request.RequestUri!.Host == "script.example.test")
+            {
+                return TextResponse(
+                    "{\"channel\":\"prerelease\",\"version\":\"v0.1.0-alpha.27\",\"url\":\"https://evil.example/update.exe\",\"sha256\":\"" + new string('a', 64) + "\"}",
+                    "application/json");
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+
+        try
+        {
+            await new UpdateManifestClient(client, new Uri("https://script.example.test/exec"))
+                .CheckForUpdateAsync("v0.1.0-alpha.26", includePrerelease: true);
+            throw new InvalidOperationException("invalid manifest package URL was accepted");
+        }
+        catch (UpdateManifestUnavailableException)
+        {
+        }
+    }
+
+    private static async Task TestRateLimitPersistenceAndSuppressionAsync()
+    {
+        using var temp = TempDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var json = new JsonFileStore();
+        var logger = new DiagnosticLogger(paths);
+        var now = new DateTimeOffset(2026, 10, 2, 12, 0, 0, TimeSpan.Zero);
+        var resetUtc = now.AddHours(1);
+        var clock = new MutableTimeProvider(now);
+        var githubCalls = 0;
+        var manifestCalls = 0;
+        var manifestAvailable = false;
+        var hash = new string('b', 64);
+
+        using var http = new HttpClient(new UpdateHandler(request =>
+        {
+            if (request.RequestUri!.Host == "script.example.test")
+            {
+                manifestCalls++;
+                return manifestAvailable
+                    ? TextResponse(ManifestJson("prerelease", "v0.1.0-alpha.27", hash), "application/json")
+                    : new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            }
+            if (request.RequestUri.Host == "api.github.com")
+            {
+                githubCalls++;
+                var response = new HttpResponseMessage(HttpStatusCode.Forbidden);
+                response.Headers.TryAddWithoutValidation("X-RateLimit-Remaining", "0");
+                response.Headers.TryAddWithoutValidation(
+                    "X-RateLimit-Reset",
+                    resetUtc.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture));
+                return response;
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+
+        var updater = new UpdateClient(http, new Uri("https://script.example.test/exec"), clock);
+        var maintenance = new UpdateMaintenanceService(
+            "v0.1.0-alpha.26", paths, json, logger, clock);
+
+        try
+        {
+            await maintenance.CheckAsync(updater, force: true);
+            throw new InvalidOperationException("GitHub rate limit was not surfaced");
+        }
+        catch (GitHubUpdateRateLimitException)
+        {
+        }
+
+        var limited = new UpdateStateStore(paths, json).Load();
+        Assert(limited.GitHubRateLimitResetUtc == resetUtc,
+            "GitHub reset time was not persisted after a 403 rate limit");
+        Assert(githubCalls == 1 && manifestCalls == 1,
+            "initial manifest/fallback request count changed");
+
+        clock.Set(now.AddMinutes(16));
+        try
+        {
+            await maintenance.CheckAsync(updater, force: false);
+            throw new InvalidOperationException("manifest failure during known GitHub limit unexpectedly succeeded");
+        }
+        catch (UpdateMetadataUnavailableException)
+        {
+        }
+        Assert(githubCalls == 1,
+            "background retry called GitHub before the persisted reset time");
+
+        manifestAvailable = true;
+        var manual = await maintenance.CheckAsync(updater, force: true);
+        Assert(manual.Descriptor?.TagName == "v0.1.0-alpha.27",
+            "manual check did not use the manifest during GitHub rate limit");
+        Assert(githubCalls == 1,
+            "manual force bypassed the known GitHub rate-limit window");
+        Assert(manual.State.GitHubRateLimitResetUtc == resetUtc,
+            "manifest success cleared an active GitHub rate-limit window too early");
+    }
+
+    private static async Task TestGitHub429RetryAfterAsync()
+    {
+        var now = new DateTimeOffset(2026, 10, 2, 14, 0, 0, TimeSpan.Zero);
+        var clock = new MutableTimeProvider(now);
+        using var client = new HttpClient(new UpdateHandler(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMinutes(2));
+            return response;
+        }));
+
+        try
+        {
+            await new GitHubUpdateClient(client, clock).CheckForUpdateAsync("v0.1.0-alpha.26", true);
+            throw new InvalidOperationException("GitHub 429 was not treated as rate limit");
+        }
+        catch (GitHubUpdateRateLimitException ex)
+        {
+            Assert(ex.ResetUtc == now.AddMinutes(2), "Retry-After was not converted into reset time");
+        }
+    }
+
+    private static async Task TestManifestChecksumMismatchAsync()
+    {
+        var expectedHash = new string('c', 64);
+        var checksumRequests = 0;
+        var githubApiCalls = 0;
+        using var client = new HttpClient(new UpdateHandler(request =>
+        {
+            if (request.RequestUri!.Host == "script.example.test")
+                return TextResponse(ManifestJson("prerelease", "v0.1.0-alpha.27", expectedHash), "application/json");
+            if (request.RequestUri.Host == "api.github.com")
+            {
+                githubApiCalls++;
+                return TextResponse("[]", "application/json");
+            }
+            if (request.RequestUri.AbsoluteUri.EndsWith(".sha256", StringComparison.Ordinal))
+            {
+                checksumRequests++;
+                return TextResponse(expectedHash, "text/plain");
+            }
+            if (request.RequestUri.Host == "github.com")
+                return BytesResponse(Encoding.UTF8.GetBytes("tampered-package"), "application/octet-stream");
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+
+        var updater = new UpdateClient(client, new Uri("https://script.example.test/exec"));
+        var discovery = await updater.CheckForUpdateAsync("v0.1.0-alpha.26", true);
+        Assert(discovery.Source == UpdateMetadataSource.Manifest && discovery.Descriptor is not null,
+            "valid manifest was not selected before checksum test");
+        try
+        {
+            await updater.DownloadAndVerifyAsync(discovery.Descriptor!);
+            throw new InvalidOperationException("manifest SHA-256 mismatch did not block update");
+        }
+        catch (InvalidDataException)
+        {
+        }
+        Assert(checksumRequests == 0,
+            "inline manifest SHA-256 unexpectedly downloaded a separate checksum asset");
+        Assert(githubApiCalls == 0,
+            "manifest-backed package verification unexpectedly called GitHub API");
     }
 
     private static async Task TestReleaseChannelSelectionAsync()
@@ -314,6 +563,20 @@ internal static class UpdateContractTests
         var leftBehind = Directory.GetDirectories(Path.GetTempPath(), "IS74Wifi-update-*")
             .Where(path => !workBefore.Contains(path)).ToArray();
         Assert(leftBehind.Length == 0, "oversized update left a temporary work directory");
+    }
+
+    private static string ManifestJson(string channel, string version, string sha256)
+    {
+        var package = $"IS74Wifi-{version}-win-x64.exe";
+        var url = $"https://github.com/{GitHubUpdateClient.Repository}/releases/download/{version}/{package}";
+        return $"{{\"channel\":\"{channel}\",\"version\":\"{version}\",\"url\":\"{url}\",\"sha256\":\"{sha256}\"}}";
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        private DateTimeOffset current = utcNow;
+        public override DateTimeOffset GetUtcNow() => current;
+        public void Set(DateTimeOffset value) => current = value;
     }
 
     private static HttpResponseMessage TextResponse(string value, string mediaType) =>

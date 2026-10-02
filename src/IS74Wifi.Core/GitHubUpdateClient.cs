@@ -10,8 +10,9 @@ public sealed record UpdateDescriptor(
     string ReleasePageUrl,
     string PackageAssetName,
     Uri PackageDownloadUrl,
-    string ChecksumAssetName,
-    Uri ChecksumDownloadUrl);
+    string? ChecksumAssetName = null,
+    Uri? ChecksumDownloadUrl = null,
+    string? ExpectedSha256 = null);
 
 public sealed record PreparedUpdate(
     UpdateDescriptor Descriptor,
@@ -49,8 +50,9 @@ internal sealed record GitHubReleaseAssetDocument(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("browser_download_url")] string BrowserDownloadUrl);
 
-public sealed class GitHubUpdateClient(HttpClient httpClient)
+public sealed class GitHubUpdateClient(HttpClient httpClient, TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     public const string Repository = "Lomikk/IntersvyazAutomaticWifi";
     // Release JSON is normally <100 KiB, checksum ~100 bytes, and the current
     // NativeAOT executable is ~11 MiB. These limits leave room for growth but
@@ -77,6 +79,10 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
         ReportProgress(progress, UpdateProgressStage.RequestingReleases);
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
+        if (TryGetRateLimitReset(response, out var rateLimitResetUtc))
+        {
+            throw new GitHubUpdateRateLimitException(response.StatusCode, rateLimitResetUtc);
+        }
         response.EnsureSuccessStatusCode();
 
         var releaseBytes = await BoundedHttpContent.ReadBytesAsync(
@@ -132,7 +138,6 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
         var work = Path.Combine(Path.GetTempPath(), "IS74Wifi-update-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(work);
         var packagePath = Path.Combine(work, descriptor.PackageAssetName);
-        var checksumPath = Path.Combine(work, descriptor.ChecksumAssetName);
 
         try
         {
@@ -145,18 +150,35 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
                 transferProgress,
                 cancellationToken).ConfigureAwait(false);
             ReportProgress(progress, UpdateProgressStage.PackageDownloaded);
-            ReportProgress(progress, UpdateProgressStage.DownloadingChecksum);
-            await DownloadFileAsync(
-                descriptor.ChecksumDownloadUrl,
-                checksumPath,
-                UpdateProgressStage.DownloadingChecksum,
-                MaximumChecksumBytes,
-                transferProgress,
-                cancellationToken).ConfigureAwait(false);
-            ReportProgress(progress, UpdateProgressStage.ChecksumDownloaded);
+
+            string expected;
+            if (!string.IsNullOrWhiteSpace(descriptor.ExpectedSha256))
+            {
+                expected = NormalizeExpectedSha256(descriptor.ExpectedSha256);
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(descriptor.ChecksumAssetName) || descriptor.ChecksumDownloadUrl is null)
+                {
+                    throw new InvalidDataException("Для обновления не задан SHA-256 или файл контрольной суммы.");
+                }
+
+                var checksumPath = Path.Combine(work, descriptor.ChecksumAssetName);
+                ReportProgress(progress, UpdateProgressStage.DownloadingChecksum);
+                await DownloadFileAsync(
+                    descriptor.ChecksumDownloadUrl,
+                    checksumPath,
+                    UpdateProgressStage.DownloadingChecksum,
+                    MaximumChecksumBytes,
+                    transferProgress,
+                    cancellationToken).ConfigureAwait(false);
+                ReportProgress(progress, UpdateProgressStage.ChecksumDownloaded);
+                expected = ParseChecksum(
+                    await File.ReadAllTextAsync(checksumPath, cancellationToken).ConfigureAwait(false),
+                    descriptor.PackageAssetName);
+            }
 
             ReportProgress(progress, UpdateProgressStage.VerifyingChecksum);
-            var expected = ParseChecksum(await File.ReadAllTextAsync(checksumPath, cancellationToken).ConfigureAwait(false), descriptor.PackageAssetName);
             var actual = await ComputeSha256Async(packagePath, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
             {
@@ -268,6 +290,62 @@ public sealed class GitHubUpdateClient(HttpClient httpClient)
             throw new InvalidDataException("SHA-256 относится к другому файлу релиза.");
 
         return parts[0].ToLowerInvariant();
+    }
+
+
+    private bool TryGetRateLimitReset(HttpResponseMessage response, out DateTimeOffset? resetUtc)
+    {
+        resetUtc = null;
+        // This endpoint is public and requires no authorization. A 403 from the
+        // anonymous Releases API is therefore not actionable by the user and, in
+        // practice, represents primary/secondary rate limiting or abuse protection.
+        // Treat it like 429 even when GitHub omits reset headers so a shared NAT is
+        // not hammered by repeated forced checks.
+        var rateLimited = response.StatusCode is
+            System.Net.HttpStatusCode.TooManyRequests or
+            System.Net.HttpStatusCode.Forbidden;
+
+        if (!rateLimited) return false;
+
+        var now = clock.GetUtcNow();
+        DateTimeOffset? retryAfterUtc = response.Headers.RetryAfter?.Date;
+        if (response.Headers.RetryAfter?.Delta is { } delta)
+        {
+            retryAfterUtc = now + delta;
+        }
+
+        DateTimeOffset? githubResetUtc = null;
+        if (response.Headers.TryGetValues("X-RateLimit-Reset", out var resetValues))
+        {
+            var raw = resetValues.FirstOrDefault();
+            if (long.TryParse(raw, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out var unixSeconds))
+            {
+                try
+                {
+                    githubResetUtc = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    githubResetUtc = null;
+                }
+            }
+        }
+
+        resetUtc = retryAfterUtc is null ? githubResetUtc
+            : githubResetUtc is null ? retryAfterUtc
+            : retryAfterUtc > githubResetUtc ? retryAfterUtc : githubResetUtc;
+        return true;
+    }
+
+    private static string NormalizeExpectedSha256(string value)
+    {
+        var hash = value.Trim();
+        if (hash.Length != 64 || !hash.All(Uri.IsHexDigit))
+        {
+            throw new InvalidDataException("Некорректный SHA-256 в метаданных обновления.");
+        }
+        return hash.ToLowerInvariant();
     }
 
     private static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)

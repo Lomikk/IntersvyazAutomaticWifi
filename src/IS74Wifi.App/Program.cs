@@ -824,12 +824,15 @@ internal static class Program
         return true;
     }
 
+    private static UpdateClient CreateUpdateClient(HttpClient http, AppSettings settings) =>
+        new(http, ApplicationRuntime.ResolveTelemetryEndpoint(settings));
+
     private static async Task<int> CheckForUpdatesAsync()
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
         var maintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-        var updater = new GitHubUpdateClient(http);
+        var updater = CreateUpdateClient(http, app.Settings);
         var result = await maintenance.CheckAsync(updater, force: true).ConfigureAwait(false);
         var update = result.Descriptor;
 
@@ -862,7 +865,7 @@ internal static class Program
         using var app = ApplicationRuntime.Create(ProductVersion);
         var maintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-        var updater = new GitHubUpdateClient(http);
+        var updater = CreateUpdateClient(http, app.Settings);
         var update = (await maintenance.CheckAsync(
             updater,
             force: true,
@@ -900,7 +903,7 @@ internal static class Program
     }
 
     private static async Task<bool> PrepareAndScheduleUpdateAsync(
-        GitHubUpdateClient updater,
+        UpdateClient updater,
         UpdateDescriptor update,
         bool restartMenu,
         bool quiet,
@@ -2255,7 +2258,7 @@ internal static class Program
         bool offerInstall = true)
     {
         var history = new InteractiveActionHistory();
-        history.Start("Запрашиваю список GitHub Releases...");
+        history.Start("Проверяю доступные версии...");
         ui.ShowActionProgress("ОБНОВЛЕНИЯ", history, currentStatus);
         var progressTitle = "ОБНОВЛЕНИЯ";
 
@@ -2266,7 +2269,7 @@ internal static class Program
             updateRuntime.Json,
             updateRuntime.Logger);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-        var updater = new GitHubUpdateClient(http);
+        var updater = CreateUpdateClient(http, updateRuntime.Settings);
 
         void RenderProgress() => ui.ShowActionProgress(
             progressTitle,
@@ -2280,7 +2283,7 @@ internal static class Program
                 case UpdateProgressStage.RequestingReleases:
                     break;
                 case UpdateProgressStage.ReleasesLoaded:
-                    history.CompleteActive("Список GitHub Releases получен");
+                    history.CompleteActive("Метаданные обновлений получены");
                     history.Start("Сравниваю доступные версии...");
                     break;
                 case UpdateProgressStage.DownloadingPackage:
@@ -2847,7 +2850,7 @@ internal static class Program
     {
         var maintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        var updater = new GitHubUpdateClient(http);
+        var updater = CreateUpdateClient(http, app.Settings);
         try
         {
             _ = await maintenance.CheckAsync(updater, force: false).ConfigureAwait(false);
@@ -2881,7 +2884,7 @@ internal static class Program
         }
 
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        var updater = new GitHubUpdateClient(http);
+        var updater = CreateUpdateClient(http, app.Settings);
         try
         {
             var result = await maintenance.CheckAsync(
@@ -3016,7 +3019,7 @@ internal static class Program
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-            var updater = new GitHubUpdateClient(http);
+            var updater = CreateUpdateClient(http, app.Settings);
             var update = (await maintenance.CheckAsync(updater, force: true).ConfigureAwait(false)).Descriptor;
             if (update is null)
             {
