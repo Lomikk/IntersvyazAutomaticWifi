@@ -130,6 +130,8 @@ internal static class TerminalUiContractTests
         var compactFrame = screen.BuildFrame(compact);
         Assert(compactFrame.GetLength(1) == compact.CanvasWidth, "adapter frame ignored compact width");
         Assert(Flatten(compactFrame).Contains('…'), "long adapter name must be clipped in a narrow frame");
+        Assert(Flatten(compactFrame).Contains("текущий", StringComparison.Ordinal),
+            "current adapter marker must survive clipping in a compact frame");
 
         var selectedBeforeResize = screen.SelectedIndex;
         var wide = TerminalLayout.Calculate(120, 30);

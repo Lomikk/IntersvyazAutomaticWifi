@@ -214,7 +214,13 @@ internal sealed class AdapterSelectionScreen
     {
         Put(canvas, x, y, isSelected ? "› " : "  ", isSelected ? Palette.Highlight : Palette.Text);
         Put(canvas, x + 2, y, $"[{option.Shortcut}]", Palette.Dim);
-        Put(canvas, x + 7, y, Truncate(option.DisplayLabel, Math.Max(1, width - 7)),
-            isSelected ? Palette.Bright : Palette.Text);
+
+        var labelWidth = Math.Max(1, width - 7);
+        const string currentSuffix = " · текущий";
+        var visibleLabel = option.IsCurrent && labelWidth > currentSuffix.Length
+            ? Truncate(option.Label, labelWidth - currentSuffix.Length) + currentSuffix
+            : Truncate(option.DisplayLabel, labelWidth);
+
+        Put(canvas, x + 7, y, visibleLabel, isSelected ? Palette.Bright : Palette.Text);
     }
 }
