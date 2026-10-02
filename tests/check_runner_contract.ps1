@@ -21,9 +21,9 @@ Assert-Contract (-not $app.Text.Contains('Backend:')) 'App must not silently inc
 $core = Invoke-Runner @('-Mode', 'Core', '-List', '-NoRestore')
 Assert-Contract ($core.Code -eq 0 -and $core.Text.Contains('--no-restore') -and -not $core.Text.Contains('--filter=') -and -not $core.Text.Contains('Build App:')) 'Core must run the entire C# suite without a separate App build or UI-only filter.'
 $full = Invoke-Runner @('-Mode', 'Full', '-SkipBackend', '-List', '-Configuration', 'Release')
-Assert-Contract ($full.Code -eq 0 -and $full.Text.Contains('SKIPPED: private backend') -and $full.Text.Contains('powershell.exe') -and $full.Text.Contains('Syntax: server_ingestion_contract.cjs')) 'Public Full must explicitly report the backend skip and retain reference/syntax checks.'
+Assert-Contract ($full.Code -eq 0 -and $full.Text.Contains('SKIPPED: private backend') -and $full.Text.Contains('powershell.exe') -and $full.Text.Contains('Syntax: server_ingestion_contract.cjs') -and $full.Text.Contains('Syntax: update_manifest_server_contract.cjs')) 'Public Full must explicitly report the backend skip and retain reference/syntax checks.'
 $backend = Invoke-Runner @('-Mode', 'Backend', '-ServerPath', $fixture, '-List')
-Assert-Contract ($backend.Code -eq 0 -and $backend.Text.Contains('Backend: leaderboard_server_contract.cjs') -and $backend.Text.Contains('Backend: server_ingestion_contract.cjs') -and -not $backend.Text.Contains('dotnet')) 'Backend must run both suites with no .NET dependency.'
+Assert-Contract ($backend.Code -eq 0 -and $backend.Text.Contains('Backend: leaderboard_server_contract.cjs') -and $backend.Text.Contains('Backend: server_ingestion_contract.cjs') -and $backend.Text.Contains('Backend: update_manifest_server_contract.cjs') -and -not $backend.Text.Contains('dotnet')) 'Backend must run both suites with no .NET dependency.'
 foreach ($arguments in @(
     @('-Mode', 'Full', '-List'),
     @('-Mode', 'Backend', '-List'),

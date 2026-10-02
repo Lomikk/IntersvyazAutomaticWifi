@@ -35,6 +35,7 @@ public sealed class GitHubUpdateRateLimitException(
 
 internal sealed record UpdateManifestDocument(
     [property: JsonPropertyName("channel")] string? Channel,
+    [property: JsonPropertyName("available")] bool? Available,
     [property: JsonPropertyName("version")] string? Version,
     [property: JsonPropertyName("url")] string? Url,
     [property: JsonPropertyName("sha256")] string? Sha256);
@@ -76,6 +77,10 @@ public sealed class UpdateManifestClient(HttpClient httpClient, Uri endpoint)
             if (!string.Equals(document.Channel, channel, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException("Manifest обновлений вернул другой канал.");
+            }
+            if (document.Available is false)
+            {
+                return null;
             }
             if (string.IsNullOrWhiteSpace(document.Version) ||
                 !SemanticVersion.TryParse(document.Version, out var available))

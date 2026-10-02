@@ -215,3 +215,90 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "gh release create failed: $LASTEXITCODE"
           }
+
+      - name: Publish update manifest
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.release.outputs.tag }}'
+          $exeHash = '${{ steps.package.outputs.exe_sha256 }}'
+          $isPrerelease = '${{ steps.release.outputs.prerelease }}' -eq 'true'
+          $manifestPath = Join-Path $PWD 'update-manifest.json'
+
+          if (Test-Path $manifestPath) {
+            $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json -AsHashtable
+          }
+          else {
+            $manifest = @{ schema = 1; stable = $null; prerelease = $null }
+          }
+
+          if ([int]$manifest.schema -ne 1) {
+            throw "Unsupported update manifest schema: $($manifest.schema)"
+          }
+
+          function Parse-ReleaseVersion([string]$value) {
+            $m = [regex]::Match($value, '^v(?<major>\d+)[.](?<minor>\d+)[.](?<patch>\d+)(?:-alpha[.](?<alpha>\d+))?$')
+            if (-not $m.Success) { throw "Unsupported manifest version: $value" }
+            [pscustomobject]@{
+              Major = [int]$m.Groups['major'].Value
+              Minor = [int]$m.Groups['minor'].Value
+              Patch = [int]$m.Groups['patch'].Value
+              Alpha = if ($m.Groups['alpha'].Success) { [int]$m.Groups['alpha'].Value } else { $null }
+            }
+          }
+
+          function Compare-ReleaseVersion([string]$left, [string]$right) {
+            $a = Parse-ReleaseVersion $left
+            $b = Parse-ReleaseVersion $right
+            foreach ($name in @('Major', 'Minor', 'Patch')) {
+              if ($a.$name -lt $b.$name) { return -1 }
+              if ($a.$name -gt $b.$name) { return 1 }
+            }
+            if ($null -eq $a.Alpha -and $null -eq $b.Alpha) { return 0 }
+            if ($null -eq $a.Alpha) { return 1 }
+            if ($null -eq $b.Alpha) { return -1 }
+            return [Math]::Sign($a.Alpha - $b.Alpha)
+          }
+
+          $entry = [ordered]@{
+            version = $tag
+            sha256 = $exeHash
+          }
+
+          if (-not $isPrerelease) {
+            $manifest.stable = $entry
+          }
+
+          # The prerelease-enabled channel means "stable + prerelease". Keep
+          # whichever allowed release is actually newest by our SemVer rules.
+          if (
+            $null -eq $manifest.prerelease -or
+            (Compare-ReleaseVersion $tag ([string]$manifest.prerelease.version)) -gt 0
+          ) {
+            $manifest.prerelease = $entry
+          }
+
+          $json = $manifest | ConvertTo-Json -Depth 5
+          [IO.File]::WriteAllText($manifestPath, $json + "`n", [Text.UTF8Encoding]::new($false))
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- update-manifest.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'Update manifest already matches this release.'
+            exit 0
+          }
+
+          git commit -m "chore: publish update manifest for $tag"
+          if ($LASTEXITCODE -ne 0) {
+            throw "git commit failed: $LASTEXITCODE"
+          }
+
+          git pull --rebase origin main
+          if ($LASTEXITCODE -ne 0) {
+            throw "git pull --rebase failed: $LASTEXITCODE"
+          }
+          git push origin HEAD:main
+          if ($LASTEXITCODE -ne 0) {
+            throw "git push failed: $LASTEXITCODE"
+          }

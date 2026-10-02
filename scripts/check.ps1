@@ -80,12 +80,12 @@ try {
             Add-Step "PowerShell reference contracts ($shell)" $shell @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $repoRoot 'tests/powershell_reference_contract.ps1'))
         }
         # Public CI can check the Node suites' syntax without the private source.
-        foreach ($suite in @('leaderboard_server_contract.cjs', 'server_ingestion_contract.cjs')) {
+        foreach ($suite in @('leaderboard_server_contract.cjs', 'server_ingestion_contract.cjs', 'update_manifest_server_contract.cjs')) {
             Add-Step "Syntax: $suite" 'node' @('--check', (Join-Path $repoRoot "tests/$suite"))
         }
     }
     if ($checkBackend) {
-        foreach ($suite in @('leaderboard_server_contract.cjs', 'server_ingestion_contract.cjs')) {
+        foreach ($suite in @('leaderboard_server_contract.cjs', 'server_ingestion_contract.cjs', 'update_manifest_server_contract.cjs')) {
             Add-Step "Backend: $suite" 'node' @((Join-Path $repoRoot "tests/$suite"), $ServerPath)
         }
     }

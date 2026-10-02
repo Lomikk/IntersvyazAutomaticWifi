@@ -15,6 +15,7 @@ internal static class UpdateContractTests
         TestUpdateStateStore();
         TestChecksumParser();
         await TestManifestPrimaryAndChannelSelectionAsync();
+        await TestManifestEmptyStableChannelAsync();
         await TestManifestFallbackAsync();
         await TestInvalidManifestRejectedAsync();
         await TestRateLimitPersistenceAndSuppressionAsync();
@@ -202,6 +203,28 @@ internal static class UpdateContractTests
         Assert(current.Source == UpdateMetadataSource.Manifest && current.Descriptor is null,
             "current manifest version was offered as an update");
         Assert(githubCalls == 0, "valid manifest still consumed anonymous GitHub API budget");
+    }
+
+    private static async Task TestManifestEmptyStableChannelAsync()
+    {
+        var githubCalls = 0;
+        using var client = new HttpClient(new UpdateHandler(request =>
+        {
+            if (request.RequestUri!.Host == "script.example.test")
+                return TextResponse("{\"channel\":\"stable\",\"available\":false}", "application/json");
+            if (request.RequestUri.Host == "api.github.com")
+            {
+                githubCalls++;
+                return TextResponse("[]", "application/json");
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+
+        var updater = new UpdateClient(client, new Uri("https://script.example.test/exec"));
+        var result = await updater.CheckForUpdateAsync("v0.1.0-alpha.26", includePrerelease: false);
+        Assert(result.Source == UpdateMetadataSource.Manifest && result.Descriptor is null,
+            "empty stable manifest channel did not behave like no available release");
+        Assert(githubCalls == 0, "empty but valid stable manifest unexpectedly used GitHub fallback");
     }
 
     private static async Task TestManifestFallbackAsync()
