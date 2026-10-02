@@ -71,7 +71,7 @@ internal sealed class UpdateMaintenanceService(
                 progress,
                 cancellationToken).ConfigureAwait(false);
             var update = discovery.Descriptor;
-            var activeRateLimitReset = state.GitHubRateLimitResetUtc is { } reset && reset > now
+            DateTimeOffset? activeRateLimitReset = state.GitHubRateLimitResetUtc is { } reset && reset > now
                 ? reset
                 : null;
 
