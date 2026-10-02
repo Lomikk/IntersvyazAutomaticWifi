@@ -396,12 +396,11 @@ internal sealed partial class InteractiveTerminalUi
         string? currentId,
         CancellationToken cancellationToken = default)
     {
-        var options = BuildNetworkAdapterOptions(adapters, currentId);
-        var selectedIndex = Math.Max(0, options.FindIndex(option => AdapterIdsEqual(option.Id, currentId)));
+        var screen = new AdapterSelectionScreen(adapters, currentId);
 
         if (!CanUseInteractiveSession)
         {
-            return ChooseNetworkAdapterCompact(options, cancellationToken);
+            return ChooseNetworkAdapterCompact(screen, currentId, cancellationToken);
         }
 
         UpdateLayout();
@@ -414,8 +413,7 @@ internal sealed partial class InteractiveTerminalUi
                 cancellationToken.ThrowIfCancellationRequested();
                 UpdateLayout();
                 UpdateAmbientSweepState();
-                var visibleRows = GetExpandedNetworkAdapterVisibleRowCount();
-                RenderNetworkAdapterFrame(options, selectedIndex, visibleRows);
+                Render(screen.BuildFrame(layout));
 
                 var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
                 if (completed != keyTask)
@@ -424,53 +422,15 @@ internal sealed partial class InteractiveTerminalUi
                 }
 
                 var key = await keyTask.ConfigureAwait(false);
-                if (key.Key == ConsoleKey.UpArrow)
+                var result = screen.HandleKey(key, screen.GetVisibleRowCount(layout));
+                if (result.Outcome == AdapterSelectionOutcome.Confirmed)
                 {
-                    selectedIndex = (selectedIndex - 1 + options.Count) % options.Count;
+                    return (true, result.SelectedId);
                 }
-                else if (key.Key == ConsoleKey.DownArrow)
-                {
-                    selectedIndex = (selectedIndex + 1) % options.Count;
-                }
-                else if (key.Key == ConsoleKey.PageUp)
-                {
-                    selectedIndex = Math.Max(0, selectedIndex - visibleRows);
-                }
-                else if (key.Key == ConsoleKey.PageDown)
-                {
-                    selectedIndex = Math.Min(options.Count - 1, selectedIndex + visibleRows);
-                }
-                else if (key.Key == ConsoleKey.Home)
-                {
-                    selectedIndex = 0;
-                }
-                else if (key.Key == ConsoleKey.End)
-                {
-                    selectedIndex = options.Count - 1;
-                }
-                else if (key.Key == ConsoleKey.Escape)
+
+                if (result.Outcome == AdapterSelectionOutcome.Cancelled)
                 {
                     return (false, currentId);
-                }
-                else if (key.Key == ConsoleKey.Enter)
-                {
-                    return (true, options[selectedIndex].Id);
-                }
-                else if (key.Key == ConsoleKey.S)
-                {
-                    return (true, PhysicalAdapterSelection.SystemRoute);
-                }
-                else if (key.KeyChar == '0')
-                {
-                    return (true, null);
-                }
-                else if (key.KeyChar is >= '1' and <= '9')
-                {
-                    var adapterIndex = key.KeyChar - '1';
-                    if (adapterIndex < adapters.Count)
-                    {
-                        return (true, adapters[adapterIndex].Id);
-                    }
                 }
 
                 keyTask = ReadKeyAsync();
@@ -482,62 +442,29 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
-    private static List<NetworkAdapterOption> BuildNetworkAdapterOptions(
-        IReadOnlyList<PhysicalAdapter> adapters,
-        string? currentId)
-    {
-        var options = new List<NetworkAdapterOption>
-        {
-            new("0", "Автоматически — выбрать физический адаптер", null),
-            new("S", "Системный маршрут — без обхода VPN", PhysicalAdapterSelection.SystemRoute)
-        };
-
-        for (var i = 0; i < adapters.Count; i++)
-        {
-            var adapter = adapters[i];
-            var state = adapter.CanConnect ? "доступен" : "не подключён";
-            var ssid = string.IsNullOrWhiteSpace(adapter.Ssid) ? "" : $" · {adapter.Ssid}";
-            var virtualMark = adapter.LooksVirtual ? " · виртуальный" : "";
-            options.Add(new NetworkAdapterOption(
-                (i + 1).ToString(),
-                $"{adapter.Name}{ssid}{virtualMark} — {state}",
-                adapter.Id));
-        }
-
-        for (var i = 0; i < options.Count; i++)
-        {
-            if (AdapterIdsEqual(options[i].Id, currentId))
-            {
-                options[i] = options[i] with { Label = options[i].Label + " · текущий" };
-            }
-        }
-
-        return options;
-    }
-
-    private static bool AdapterIdsEqual(string? left, string? right) =>
-        string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-
     private static (bool Confirmed, string? SelectedId) ChooseNetworkAdapterCompact(
-        IReadOnlyList<NetworkAdapterOption> options,
+        AdapterSelectionScreen screen,
+        string? currentId,
         CancellationToken cancellationToken)
     {
         Console.Clear();
         Console.WriteLine("IS74W — адаптер для авторизации");
         Console.WriteLine();
-        foreach (var option in options)
+        foreach (var option in screen.Items)
         {
-            Console.WriteLine($"[{option.Shortcut}] {option.Label}");
+            Console.WriteLine($"[{option.Shortcut}] {option.DisplayLabel}");
         }
         Console.WriteLine();
         Console.WriteLine("Пустой ввод — отмена.");
         Console.Write("Выбор: ");
         cancellationToken.ThrowIfCancellationRequested();
         var input = Console.ReadLine()?.Trim();
-        if (string.IsNullOrEmpty(input)) return (false, null);
-        var selectedOption = options.FirstOrDefault(candidate =>
+        if (string.IsNullOrEmpty(input)) return (false, currentId);
+        var selectedOption = screen.Items.FirstOrDefault(candidate =>
             string.Equals(candidate.Shortcut, input, StringComparison.OrdinalIgnoreCase));
-        return string.IsNullOrEmpty(selectedOption.Shortcut) ? (false, null) : (true, selectedOption.Id);
+        return string.IsNullOrEmpty(selectedOption.Shortcut)
+            ? (false, currentId)
+            : (true, selectedOption.Id);
     }
 
     private static bool ConfirmRegistrationCompact()
@@ -1297,80 +1224,6 @@ internal sealed partial class InteractiveTerminalUi
         Render(canvas);
     }
 
-    private void RenderNetworkAdapterFrame(
-        IReadOnlyList<NetworkAdapterOption> options,
-        int selectedIndex,
-        int visibleRows)
-    {
-        var canvas = CreateCanvas();
-        var boxY = 1;
-        var boxHeight = Math.Max(8, CanvasHeight - 3);
-        var boxX = compactLayout ? 1 : Math.Max(1, (canvasWidth - Math.Min(canvasWidth - 2, 112)) / 2);
-        var boxWidth = compactLayout ? Math.Max(20, canvasWidth - 2) : Math.Min(canvasWidth - 2, 112);
-
-        DrawBox(canvas, boxX, boxY, boxWidth, boxHeight, "АДАПТЕР ДЛЯ АВТОРИЗАЦИИ");
-
-        var contentX = boxX + 3;
-        var contentY = boxY + 2;
-        var contentWidth = Math.Max(1, boxWidth - 6);
-        Put(canvas, contentX, contentY,
-            Truncate("Выберите маршрут запросов к порталу Интерсвязи", contentWidth), Palette.Text);
-
-        var firstOptionRow = contentY + 2;
-        var offset = Math.Clamp(selectedIndex - visibleRows + 1, 0, Math.Max(0, options.Count - visibleRows));
-        var count = Math.Min(visibleRows, options.Count - offset);
-        for (var row = 0; row < count; row++)
-        {
-            var optionIndex = offset + row;
-            DrawNetworkAdapterOption(
-                canvas,
-                contentX,
-                firstOptionRow + row,
-                contentWidth,
-                options[optionIndex],
-                optionIndex == selectedIndex);
-        }
-
-        var first = options.Count == 0 ? 0 : offset + 1;
-        var last = options.Count == 0 ? 0 : offset + count;
-        Put(
-            canvas,
-            contentX,
-            boxY + boxHeight - 2,
-            Truncate(
-                $"Пункты {first}–{last} / {options.Count}   Выбрано: [{options[selectedIndex].Shortcut}] {options[selectedIndex].Label}",
-                contentWidth),
-            Palette.Dim);
-
-        Center(
-            canvas,
-            CanvasHeight - 1,
-            "↑↓ выбрать   PgUp/PgDn страница   Home/End край   Enter применить   Esc назад",
-            Palette.Dim);
-        Render(canvas);
-    }
-
-    private static int GetExpandedNetworkAdapterVisibleRowCount()
-    {
-        var boxHeight = Math.Max(8, CanvasHeight - 3);
-        // One instruction row, one summary row and box padding.
-        return Math.Max(1, boxHeight - 6);
-    }
-
-    private static void DrawNetworkAdapterOption(
-        Cell[,] canvas,
-        int x,
-        int y,
-        int width,
-        NetworkAdapterOption option,
-        bool isSelected)
-    {
-        Put(canvas, x, y, isSelected ? "› " : "  ", isSelected ? Palette.Highlight : Palette.Text);
-        Put(canvas, x + 2, y, $"[{option.Shortcut}]", Palette.Dim);
-        Put(canvas, x + 7, y, Truncate(option.Label, Math.Max(1, width - 7)),
-            isSelected ? Palette.Bright : Palette.Text);
-    }
-
     private void RenderActionHistoryFrame(
         string title,
         IReadOnlyList<InteractiveActionLine> lines,
@@ -2010,11 +1863,6 @@ internal sealed partial class InteractiveTerminalUi
         char Hotkey,
         string Label,
         InteractiveMenuAction Action);
-
-    private readonly record struct NetworkAdapterOption(
-        string Shortcut,
-        string Label,
-        string? Id);
 
     private enum MenuPage
     {

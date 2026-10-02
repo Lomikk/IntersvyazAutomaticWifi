@@ -807,12 +807,10 @@ internal sealed partial class InteractiveTerminalUi
             UpdateLayout();
 
             var visibleRows = GetExpandedLeaderboardVisibleRowCount();
-            scrollOffset = Math.Clamp(
-                scrollOffset,
-                0,
-                Math.Max(0, speedLeaderboardRows.Count - visibleRows));
+            var window = ListWindow.FromOffset(speedLeaderboardRows.Count, scrollOffset, visibleRows);
+            scrollOffset = window.Offset;
 
-            RenderExpandedLeaderboardFrame(scrollOffset, visibleRows);
+            RenderExpandedLeaderboardFrame(window);
 
             var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
             if (completed != keyTask)
@@ -877,7 +875,7 @@ internal sealed partial class InteractiveTerminalUi
         Render(canvas);
     }
 
-    private void RenderExpandedLeaderboardFrame(int scrollOffset, int visibleRows)
+    private void RenderExpandedLeaderboardFrame(ListWindow window)
     {
         var canvas = CreateCanvas();
         var boxY = 1;
@@ -899,9 +897,9 @@ internal sealed partial class InteractiveTerminalUi
         }
         else
         {
-            for (var rowIndex = 0; rowIndex < visibleRows; rowIndex++)
+            for (var rowIndex = 0; rowIndex < window.Count; rowIndex++)
             {
-                var sourceIndex = scrollOffset + rowIndex;
+                var sourceIndex = window.Offset + rowIndex;
                 if (sourceIndex >= speedLeaderboardRows.Count)
                 {
                     break;
@@ -911,10 +909,8 @@ internal sealed partial class InteractiveTerminalUi
             }
         }
 
-        var first = speedLeaderboardRows.Count == 0 ? 0 : scrollOffset + 1;
-        var last = speedLeaderboardRows.Count == 0
-            ? 0
-            : Math.Min(speedLeaderboardRows.Count, scrollOffset + visibleRows);
+        var first = window.FirstDisplayIndex;
+        var last = window.LastDisplayIndex;
         Put(
             canvas,
             x,
@@ -1109,7 +1105,7 @@ internal sealed partial class InteractiveTerminalUi
     {
         var boxHeight = Math.Max(8, CanvasHeight - 3);
         // Two rows for header/separator, one summary row at the bottom and box padding.
-        return Math.Max(1, boxHeight - 6);
+        return ListWindow.VisibleRowsForBox(boxHeight, reservedRows: 6);
     }
 
     private static void DrawLargeSpeedMetric(
@@ -1288,13 +1284,14 @@ internal sealed partial class InteractiveTerminalUi
         {
             Console.Clear();
             var visible = Math.Max(3, Console.WindowHeight - 8);
-            offset = Math.Clamp(offset, 0, Math.Max(0, speedLeaderboardRows.Count - visible));
+            var window = ListWindow.FromOffset(speedLeaderboardRows.Count, offset, visible);
+            offset = window.Offset;
 
             Console.WriteLine("IS74W — Лидеры кампуса");
             Console.WriteLine();
             Console.WriteLine("#  Ник              ↓      ↑   Ping  Jit");
             Console.WriteLine(new string('-', 43));
-            foreach (var row in speedLeaderboardRows.Skip(offset).Take(visible))
+            foreach (var row in speedLeaderboardRows.Skip(window.Offset).Take(window.Count))
             {
                 Console.WriteLine($"{row.Rank,-2} {Truncate(row.Nickname, 14),-14} {row.DownloadMbps,6} {row.UploadMbps,6} {row.PingMs,6} {row.JitterMs,4}");
             }

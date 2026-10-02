@@ -1,4 +1,7 @@
+using System.Net;
+using System.Net.NetworkInformation;
 using IS74Wifi.App;
+using IS74Wifi.Core;
 using static IS74Wifi.App.TerminalCanvas;
 
 internal static class TerminalUiContractTests
@@ -11,6 +14,11 @@ internal static class TerminalUiContractTests
         LongTextWrapsInMemory();
         RepeatedFrameProducesNoCellWrites();
         ResizeAndInvalidationForceFullRender();
+        AdapterScreenHasAutomaticAndSystemWithoutAdapters();
+        AdapterScreenHandlesLongNamesAndResize();
+        AdapterScreenNavigatesLargeLists();
+        AdapterScreenFastKeysAndEscape();
+        SharedListWindowKeepsLargeListsVisible();
         return Task.CompletedTask;
     }
 
@@ -99,6 +107,144 @@ internal static class TerminalUiContractTests
         output.Invalidate();
         var invalidated = output.BuildAnsiFrame(canvas, renderLeft: 0, terminalWidth: 81);
         Assert(Count(invalidated, "\u001b[2K") == 3, "explicit invalidation must force a full render");
+    }
+
+
+    private static void AdapterScreenHasAutomaticAndSystemWithoutAdapters()
+    {
+        var screen = new AdapterSelectionScreen([], currentId: null);
+        Assert(screen.Items.Count == 2, "empty adapter list must still expose automatic and system choices");
+        Assert(screen.Items[0].Shortcut == "0" && screen.Items[0].Id is null,
+            "automatic adapter option changed");
+        Assert(screen.Items[1].Shortcut == "S" && screen.Items[1].Id == PhysicalAdapterSelection.SystemRoute,
+            "system-route adapter option changed");
+        Assert(screen.Items[0].IsCurrent, "automatic mode must be marked current when no adapter override is stored");
+    }
+
+    private static void AdapterScreenHandlesLongNamesAndResize()
+    {
+        var adapter = Adapter("wifi-long", new string('A', 120), "Campus Wi-Fi");
+        var screen = new AdapterSelectionScreen([adapter], adapter.Id);
+
+        var compact = TerminalLayout.Calculate(50, 30);
+        var compactFrame = screen.BuildFrame(compact);
+        Assert(compactFrame.GetLength(1) == compact.CanvasWidth, "adapter frame ignored compact width");
+        Assert(Flatten(compactFrame).Contains('…'), "long adapter name must be clipped in a narrow frame");
+
+        var selectedBeforeResize = screen.SelectedIndex;
+        var wide = TerminalLayout.Calculate(120, 30);
+        var wideFrame = screen.BuildFrame(wide);
+        Assert(wideFrame.GetLength(1) == wide.CanvasWidth, "adapter frame ignored wide terminal width");
+        Assert(screen.SelectedIndex == selectedBeforeResize, "terminal resize must not change adapter selection");
+        Assert(Flatten(wideFrame).Contains("текущий", StringComparison.Ordinal),
+            "current adapter marker disappeared after resize");
+    }
+
+    private static void AdapterScreenNavigatesLargeLists()
+    {
+        var adapters = Enumerable.Range(1, 25)
+            .Select(index => Adapter($"wifi-{index}", $"Adapter {index}", index == 1 ? "Campus Wi-Fi" : null))
+            .ToArray();
+        var screen = new AdapterSelectionScreen(adapters, currentId: null);
+        var visibleRows = screen.GetVisibleRowCount(TerminalLayout.Calculate(80, 30));
+        Assert(visibleRows == 21, "adapter list page size changed");
+        Assert(screen.Items.Count == 27, "large adapter list lost automatic/system entries");
+
+        _ = screen.HandleKey(Key(ConsoleKey.End), visibleRows);
+        Assert(screen.SelectedIndex == 26, "End must select the last adapter option");
+        var endWindow = ListWindow.AroundSelection(screen.Items.Count, screen.SelectedIndex, visibleRows);
+        Assert(endWindow.Offset == 6 && endWindow.Count == 21, "selected adapter must stay in the visible list window");
+
+        _ = screen.HandleKey(Key(ConsoleKey.PageUp), visibleRows);
+        Assert(screen.SelectedIndex == 5, "PageUp must move by one visible page");
+        _ = screen.HandleKey(Key(ConsoleKey.PageDown), visibleRows);
+        Assert(screen.SelectedIndex == 26, "PageDown must move by one visible page");
+        _ = screen.HandleKey(Key(ConsoleKey.Home), visibleRows);
+        Assert(screen.SelectedIndex == 0, "Home must select the first option");
+        _ = screen.HandleKey(Key(ConsoleKey.UpArrow), visibleRows);
+        Assert(screen.SelectedIndex == 26, "Up on the first option must wrap to the end");
+        _ = screen.HandleKey(Key(ConsoleKey.DownArrow), visibleRows);
+        Assert(screen.SelectedIndex == 0, "Down on the last option must wrap to the start");
+    }
+
+    private static void AdapterScreenFastKeysAndEscape()
+    {
+        var adapters = new[]
+        {
+            Adapter("wifi-1", "First", "Campus Wi-Fi"),
+            Adapter("wifi-2", "Second", null)
+        };
+        var visibleRows = 21;
+
+        var system = new AdapterSelectionScreen(adapters, adapters[1].Id)
+            .HandleKey(Key(ConsoleKey.S, 's'), visibleRows);
+        Assert(system.Outcome == AdapterSelectionOutcome.Confirmed &&
+               system.SelectedId == PhysicalAdapterSelection.SystemRoute,
+            "S fast key must confirm the system route");
+
+        var automatic = new AdapterSelectionScreen(adapters, adapters[1].Id)
+            .HandleKey(Key(ConsoleKey.D0, '0'), visibleRows);
+        Assert(automatic.Outcome == AdapterSelectionOutcome.Confirmed && automatic.SelectedId is null,
+            "0 fast key must confirm automatic adapter selection");
+
+        var first = new AdapterSelectionScreen(adapters, adapters[1].Id)
+            .HandleKey(Key(ConsoleKey.D1, '1'), visibleRows);
+        Assert(first.Outcome == AdapterSelectionOutcome.Confirmed && first.SelectedId == adapters[0].Id,
+            "numeric fast key must select the matching adapter");
+
+        var enterScreen = new AdapterSelectionScreen(adapters, currentId: null);
+        _ = enterScreen.HandleKey(Key(ConsoleKey.DownArrow), visibleRows);
+        _ = enterScreen.HandleKey(Key(ConsoleKey.DownArrow), visibleRows);
+        var enter = enterScreen.HandleKey(Key(ConsoleKey.Enter, '\r'), visibleRows);
+        Assert(enter.Outcome == AdapterSelectionOutcome.Confirmed && enter.SelectedId == adapters[0].Id,
+            "Enter must confirm the highlighted adapter");
+
+        var escapeScreen = new AdapterSelectionScreen(adapters, adapters[1].Id);
+        _ = escapeScreen.HandleKey(Key(ConsoleKey.Home), visibleRows);
+        var escape = escapeScreen.HandleKey(Key(ConsoleKey.Escape, '\u001b'), visibleRows);
+        Assert(escape.Outcome == AdapterSelectionOutcome.Cancelled && escape.SelectedId == adapters[1].Id,
+            "Esc must cancel without replacing the stored adapter selection");
+    }
+
+    private static void SharedListWindowKeepsLargeListsVisible()
+    {
+        var adapterWindow = ListWindow.AroundSelection(itemCount: 27, selectedIndex: 26, visibleRows: 21);
+        var leaderboardWindow = ListWindow.FromOffset(itemCount: 260, requestedOffset: 999, visibleRows: 21);
+        Assert(adapterWindow.Offset == 6 && adapterWindow.LastDisplayIndex == 27,
+            "selection window geometry changed");
+        Assert(leaderboardWindow.Offset == 239 && leaderboardWindow.FirstDisplayIndex == 240 &&
+               leaderboardWindow.LastDisplayIndex == 260,
+            "scroll window geometry must clamp a large leaderboard to its final page");
+    }
+
+    private static PhysicalAdapter Adapter(string id, string name, string? ssid) =>
+        new(
+            id,
+            name,
+            NetworkInterfaceType.Wireless80211,
+            IsUp: true,
+            IPv4Index: 12,
+            SourceIPv4: IPAddress.Parse("10.0.0.10"),
+            DnsServers: [IPAddress.Parse("10.0.0.1")],
+            HasGateway: true,
+            Ssid: ssid);
+
+    private static ConsoleKeyInfo Key(ConsoleKey key, char keyChar = '\0') =>
+        new(keyChar, key, shift: false, alt: false, control: false);
+
+    private static string Flatten(Cell[,] canvas)
+    {
+        var chars = new char[canvas.GetLength(0) * canvas.GetLength(1)];
+        var index = 0;
+        for (var y = 0; y < canvas.GetLength(0); y++)
+        {
+            for (var x = 0; x < canvas.GetLength(1); x++)
+            {
+                chars[index++] = canvas[y, x].Character;
+            }
+        }
+
+        return new string(chars);
     }
 
     private static string Row(Cell[,] canvas, int row)
