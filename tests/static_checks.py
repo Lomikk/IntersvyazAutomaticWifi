@@ -221,6 +221,7 @@ assert 'network.failure route=' in (root / 'src' / 'IS74Wifi.Core' / 'HttpTransp
 action_history = (root / 'src' / 'IS74Wifi.App' / 'InteractiveActionHistory.cs').read_text(encoding='utf-8')
 assert 'InteractiveActionHistory' in action_history and 'InteractiveActionLineKind.Active' in action_history
 assert 'ShowActionProgress' in csharp_ui and 'ShowActionHistoryAsync' in csharp_ui, 'terminal action journal rendering missing'
+assert "InteractiveActionLineKind.Success => '+'" in csharp_ui and "InteractiveActionLineKind.Success => '✓'" not in csharp_ui, 'success action marker must stay ASCII-safe for Windows consoles'
 assert 'UpdateProgressStage.VerifyingChecksum' in csharp_program and 'UpdateApplyProgressStage.ValidatingExecutable' in csharp_program, 'update workflow must expose package verification/apply history'
 assert 'history: history' in csharp_program, 'registration prompts must preserve prior action history'
 assert 'BuildActionHistoryRows' in csharp_ui and 'WrapText(line.Text' in csharp_ui, 'action history must wrap to the current pane width'

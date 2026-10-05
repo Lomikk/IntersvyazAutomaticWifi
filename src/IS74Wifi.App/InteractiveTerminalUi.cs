@@ -1290,7 +1290,7 @@ internal sealed partial class InteractiveTerminalUi
     private static char ActionLineSymbol(InteractiveActionLineKind kind) => kind switch
     {
         InteractiveActionLineKind.Active => '›',
-        InteractiveActionLineKind.Success => '✓',
+        InteractiveActionLineKind.Success => '+',
         InteractiveActionLineKind.Warning => '!',
         InteractiveActionLineKind.Error => '×',
         _ => '·'
