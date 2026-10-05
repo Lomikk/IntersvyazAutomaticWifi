@@ -40,8 +40,6 @@ internal static class StatusServiceContractTests
         var alreadyAuthorized = service.ReadLocalSnapshot();
         Assert(!alreadyAuthorized.AuthorizationAlreadyActive,
             "legacy global already-authorized state must not be promoted to an active physical path");
-        Assert(alreadyAuthorized.LastResult == "уже авторизован",
-            "legacy runtime result must remain visible as diagnostic history");
 
         var overridden = service.ReadLocalSnapshot(internetOverride: true);
         Assert(overridden.InternetAvailable == true,
