@@ -101,8 +101,8 @@ internal sealed class StatusService
             string.Empty,
             "=== Состояние ===",
             $"Интернет: {(internet == true ? "доступен" : "не подтверждён")}",
-            $"Сеть: {(settings.IgnoreNetworkCheck ? "проверка отключена ○" : FormatWifiNetwork(machine.WifiSsid))}",
-            $"Авторизация: {FormatWifiAuthorization(state)}",
+            $"Физические пути: {local.CurrentPaths.Count}",
+            $"Авторизация: {FormatPathAuthorizationSummary(local.PathState, local.CurrentPaths)}",
             $"Регистрация: {(local.Secrets is null ? "нет" : "сохранена")}",
             $"Телефон: {MaskPhone(local.Secrets?.Phone)}",
             $"Автовход: {(machine.AutomaticAuthorizationEnabled ? "включён" : "выключен")}",
@@ -135,18 +135,31 @@ internal sealed class StatusService
             lines.Add($"Неудачных попыток подряд: {telemetryUpload.ConsecutiveFailures}");
         lines.Add($"Карантин: {telemetryStatus.RejectedFiles} файлов / {FormatByteCount(telemetryStatus.RejectedBytes)}");
 
-        if (state.LastAuthUtc is { } lastAuth)
-            lines.Add($"Последняя Wi-Fi авторизация: {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-        if (state.ExpectedExpiryUtc is { } expiry)
-            lines.Add($"Ожидаемое окончание окна: {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-        if (!string.IsNullOrWhiteSpace(state.LastResult))
-            lines.Add($"Последний результат: {FormatRuntimeResultForUi(state.LastResult)}");
-        if (state.AutomaticStepOneAttempts > 0)
-            lines.Add($"Автоматические попытки: {state.AutomaticStepOneAttempts}/{settings.MaxAutomaticStepOneAttempts}");
-        lines.Add($"Требуется действие пользователя: {(state.UserActionRequired ? "да" : "нет")}");
+        lines.Add(string.Empty);
+        lines.Add("=== Сетевые пути ===");
+        if (local.CurrentPaths.Count == 0)
+        {
+            lines.Add("Активные физические пути не обнаружены.");
+        }
+        else
+        {
+            foreach (var path in local.CurrentPaths)
+            {
+                var pathState = local.PathState.Paths.FirstOrDefault(item => SamePathIdentity(item.Identity, path.Identity));
+                var label = path.Ssid is null ? path.Name : $"{path.Name} · {path.Ssid}";
+                lines.Add($"{label}: {FormatPathStatus(pathState?.Status ?? PathAuthorizationStatus.Unknown)}");
+                lines.Add($"  IPv4: {path.SourceIPv4?.ToString() ?? "—"}; gateway: {path.GatewayIPv4?.ToString() ?? "—"}; ifIndex: {path.InterfaceIndex}");
+                if (pathState?.ExpectedExpiryUtc is { } pathExpiry)
+                    lines.Add($"  Ожидаемая граница: {pathExpiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+                if (pathState?.LastSuccessfulAuthUtc is { } pathAuth)
+                    lines.Add($"  Последняя авторизация: {pathAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+                if (pathState?.UserActionRequired == true)
+                    lines.Add("  Требуется действие пользователя: да");
+            }
+        }
 
         lines.Add(string.Empty);
-        lines.Add("=== Пути ===");
+        lines.Add("=== Пути файлов ===");
         lines.Add($"Данные приложения: {paths.Root}");
         lines.Add($"Диагностический журнал: {paths.DiagnosticLogFile}");
         return lines;
@@ -162,11 +175,15 @@ internal sealed class StatusService
         var logger = new DiagnosticLogger(paths);
         var updateMaintenance = new UpdateMaintenanceService(currentVersion, paths, json, logger);
         var updateState = updateMaintenance.LoadState();
+        var pathState = new PathAuthorizationStateStore(paths, json).Load();
+        var currentPaths = new NetworkPathEnumerator().EnumerateAutomaticCandidates();
         return new LocalStatusState(
             settings,
             new DpapiSecretStore(paths).Load(),
             new SessionMetadataStore(paths, json).Load(),
             new RuntimeStateStore(paths, json).Load(),
+            pathState,
+            currentPaths,
             updateState,
             updateMaintenance.IncludePrereleases(settings),
             readMachineState());
@@ -179,7 +196,25 @@ internal sealed class StatusService
             : local.Machine.WifiSsid is not null
                 ? WifiNetworkState.Other
                 : WifiNetworkState.Unknown;
-        var internet = internetOverride ?? local.Runtime.InternetConfirmed;
+        var activeStates = local.CurrentPaths
+            .Select(path => local.PathState.Paths.FirstOrDefault(state => SamePathIdentity(state.Identity, path.Identity)))
+            .Where(state => state is not null)
+            .Cast<PathAuthorizationState>()
+            .ToArray();
+        var internetPathCount = activeStates.Count(state => state.Status == PathAuthorizationStatus.Internet);
+        var captivePathCount = activeStates.Count(state => state.Status == PathAuthorizationStatus.Captive);
+        var problemPathCount = Math.Max(0, local.CurrentPaths.Count - internetPathCount - captivePathCount);
+        var internet = internetOverride ?? (internetPathCount > 0 ? true : local.Runtime.InternetConfirmed);
+        var nextExpiry = activeStates
+            .Where(state => state.ExpectedExpiryUtc is not null)
+            .Select(state => state.ExpectedExpiryUtc!.Value)
+            .OrderBy(value => value)
+            .Cast<DateTimeOffset?>()
+            .FirstOrDefault();
+        var latestPathResult = activeStates
+            .Where(state => !string.IsNullOrWhiteSpace(state.LastResult))
+            .OrderByDescending(state => state.LastAttemptUtc ?? DateTimeOffset.MinValue)
+            .FirstOrDefault();
 
         return new InteractiveStatusSnapshot(
             Installed: local.Machine.Installed,
@@ -187,9 +222,9 @@ internal sealed class StatusService
             InternetAvailable: internet,
             WifiNetwork: wifiNetwork,
             WifiSsid: local.Machine.WifiSsid,
-            AuthorizationExpectedExpiryUtc: local.Runtime.ExpectedExpiryUtc,
-            AuthorizationAlreadyActive: string.Equals(local.Runtime.LastResult, "already-authorized", StringComparison.Ordinal),
-            NetworkCheckIgnored: local.Settings.IgnoreNetworkCheck,
+            AuthorizationExpectedExpiryUtc: nextExpiry,
+            AuthorizationAlreadyActive: activeStates.Any(state => string.Equals(state.LastResult, "already-authorized", StringComparison.Ordinal)),
+            NetworkCheckIgnored: false,
             DirectNetworkMode: local.Settings.DirectNetworkAdapterId switch
             {
                 null => "автоматически",
@@ -206,8 +241,12 @@ internal sealed class StatusService
             NotificationMode: FormatNotificationMode(local.Settings.NotificationMode),
             MaskedPhone: MaskPhone(local.Secrets?.Phone),
             ApiSessionEnd: FormatSessionEnd(local.Session?.AccessEnd),
-            LastResult: FormatRuntimeResultForUi(local.Runtime.LastResult),
-            Version: currentVersion);
+            LastResult: FormatRuntimeResultForUi(latestPathResult?.LastResult ?? local.Runtime.LastResult),
+            Version: currentVersion,
+            ActivePhysicalPathCount: local.CurrentPaths.Count,
+            InternetPathCount: internetPathCount,
+            CaptivePathCount: captivePathCount,
+            ProblemPathCount: problemPathCount);
     }
 
     private static StatusMachineState ReadDefaultMachineState()
@@ -273,6 +312,33 @@ internal sealed class StatusService
         _ => "ошибка авторизации"
     };
 
+    internal static string FormatPathStatus(PathAuthorizationStatus status) => status switch
+    {
+        PathAuthorizationStatus.Internet => "Интернет доступен",
+        PathAuthorizationStatus.Captive => "требуется авторизация",
+        PathAuthorizationStatus.Unreachable => "недоступен",
+        PathAuthorizationStatus.Ambiguous => "состояние неясно",
+        PathAuthorizationStatus.Disconnected => "отключён",
+        _ => "ещё не проверен"
+    };
+
+    private static string FormatPathAuthorizationSummary(
+        PathAuthorizationStateDocument document,
+        IReadOnlyList<NetworkPathSnapshot> currentPaths)
+    {
+        if (currentPaths.Count == 0) return "нет активных физических путей";
+        var states = currentPaths
+            .Select(path => document.Paths.FirstOrDefault(state => SamePathIdentity(state.Identity, path.Identity)))
+            .Where(state => state is not null)
+            .Cast<PathAuthorizationState>()
+            .ToArray();
+        var captive = states.Count(state => state.Status == PathAuthorizationStatus.Captive);
+        if (captive > 0) return $"требуют авторизацию: {captive}";
+        var internet = states.Count(state => state.Status == PathAuthorizationStatus.Internet);
+        if (internet > 0) return $"Internet: {internet}/{currentPaths.Count}";
+        return "ожидает проверки";
+    }
+
     internal static string FormatAnonymousStatisticsConsent(AnonymousStatisticsConsent consent) => consent switch
     {
         AnonymousStatisticsConsent.Allowed => "включена",
@@ -318,11 +384,18 @@ internal sealed class StatusService
         return $"{bytes / (1024d * 1024d):0.0} МБ";
     }
 
+    private static bool SamePathIdentity(NetworkPathIdentity left, NetworkPathIdentity right) =>
+        left.InterfaceType == right.InterfaceType &&
+        string.Equals(left.AdapterId, right.AdapterId, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.NetworkDiscriminator, right.NetworkDiscriminator, StringComparison.OrdinalIgnoreCase);
+
     private sealed record LocalStatusState(
         AppSettings Settings,
         StoredSecrets? Secrets,
         SessionMetadata? Session,
         RuntimeState Runtime,
+        PathAuthorizationStateDocument PathState,
+        IReadOnlyList<NetworkPathSnapshot> CurrentPaths,
         UpdateState UpdateState,
         bool IncludePrereleases,
         StatusMachineState Machine);

@@ -347,13 +347,41 @@ internal static class Program
         var secrets = app.Secrets.Load() ?? throw new InvalidOperationException("Устройство не зарегистрировано. Сначала выполните register.");
         var deviceId = app.DeviceIdentity.GetOrCreate();
 
-        return await app.Authorization.RunAsync(new AuthorizationRequest(
-            secrets.Token,
-            secrets.Phone,
-            deviceId,
-            AuthorizationAttemptReason.Manual,
-            Force: true,
-            Progress: progress)).ConfigureAwait(false);
+        var diagnostics = await app.NetworkPathDiagnostics
+            .InspectAsync(TimeSpan.FromSeconds(2))
+            .ConfigureAwait(false);
+        var captive = diagnostics.FirstOrDefault(item => item.Status == NetworkPathProbeStatus.Captive);
+        if (captive is null)
+        {
+            if (diagnostics.Any(item => item.Status == NetworkPathProbeStatus.Internet))
+            {
+                return new AuthorizationOutcome(
+                    AuthorizationOutcomeKind.AlreadyOnline,
+                    InternetConfirmed: true,
+                    AuthorizedAtUtc: null,
+                    RetryAfter: null,
+                    Timing: null);
+            }
+
+            return new AuthorizationOutcome(
+                AuthorizationOutcomeKind.RetryableBeforeStepOne,
+                InternetConfirmed: false,
+                AuthorizedAtUtc: null,
+                RetryAfter: null,
+                Timing: null);
+        }
+
+        app.Logger.Write(DiagnosticLevel.Info,
+            $"manual.path-selected adapter={captive.Path.Name.Replace('\r', ' ').Replace('\n', ' ')} preferred={captive.Preferred}");
+        return await app.PathAuthorization.RunAsync(
+            captive.Path,
+            new AuthorizationRequest(
+                secrets.Token,
+                secrets.Phone,
+                deviceId,
+                AuthorizationAttemptReason.Manual,
+                Force: true,
+                Progress: progress)).ConfigureAwait(false);
     }
 
     private static int PrintAuthorizationOutcome(AuthorizationOutcome outcome)
@@ -407,8 +435,10 @@ internal static class Program
         app.Logger.Write(DiagnosticLevel.Info, "cli.start command=status runtime=csharp");
         var secrets = app.Secrets.Load();
         var session = app.Session.Load();
-        var state = app.RuntimeState.Load();
-        var internet = await app.Internet.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        var pathDiagnostics = await app.NetworkPathDiagnostics
+            .InspectAsync(TimeSpan.FromSeconds(3))
+            .ConfigureAwait(false);
+        var internetAvailable = pathDiagnostics.Any(item => item.Status == NetworkPathProbeStatus.Internet);
 
         Console.WriteLine();
         Console.WriteLine("=== IS74 Automatic Wi-Fi ===");
@@ -447,33 +477,25 @@ internal static class Program
             Console.WriteLine($"Последняя проверка обновлений: {lastUpdateCheck.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
         }
         Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
-        Console.WriteLine($"Интернет                     : {(internet.Online ? "доступен" : "не подтверждён")}");
-        var displayedSsid = GetDisplayedWifiSsid();
-        Console.WriteLine($"Сеть                         : {(app.Settings.IgnoreNetworkCheck ? "проверка отключена ○" : FormatWifiNetwork(displayedSsid))}");
-        Console.WriteLine($"Авторизация                  : {FormatWifiAuthorization(state)}");
+        Console.WriteLine($"Интернет                     : {(internetAvailable ? "доступен" : "не подтверждён")}");
+        Console.WriteLine($"Физические пути              : {pathDiagnostics.Count}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
         {
             Console.WriteLine($"API-сессия  : до {session.AccessEnd}");
         }
-        if (state.LastAuthUtc is { } lastAuth)
+        if (pathDiagnostics.Count > 0)
         {
-            Console.WriteLine($"Последняя Wi-Fi авторизация : {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-        }
-        if (state.ExpectedExpiryUtc is { } expiry)
-        {
-            Console.WriteLine($"Ожидаемое окончание окна    : {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-        }
-        if (!string.IsNullOrWhiteSpace(state.LastResult))
-        {
-            Console.WriteLine($"Последний результат          : {FormatRuntimeResultForUi(state.LastResult)}");
-        }
-        if (state.AutomaticStepOneAttempts > 0)
-        {
-            Console.WriteLine($"Автоматические попытки       : {state.AutomaticStepOneAttempts}/{app.Settings.MaxAutomaticStepOneAttempts}");
-        }
-        if (state.UserActionRequired)
-        {
-            Console.WriteLine("Требуется действие           : да — автоматические попытки остановлены");
+            Console.WriteLine("Сетевые пути:");
+            foreach (var item in pathDiagnostics)
+            {
+                var path = item.Path;
+                var label = path.Ssid is null ? path.Name : $"{path.Name} · {path.Ssid}";
+                Console.WriteLine($"  {(item.Preferred ? ">" : "-")} {label}: {StatusService.FormatPathStatus(item.State.Status)}");
+                if (item.State.ExpectedExpiryUtc is { } pathExpiry)
+                    Console.WriteLine($"      ожидаемая граница: {pathExpiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+                if (item.State.LastSuccessfulAuthUtc is { } pathAuth)
+                    Console.WriteLine($"      последняя авторизация: {pathAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+            }
         }
         var telemetryStatus = app.TelemetryQueue.GetStatus();
         var telemetryUpload = new TelemetryUploadStateStore(app.Paths, app.Json).Load();
@@ -1639,9 +1661,7 @@ internal static class Program
                     case InteractiveMenuAction.Connect:
                     {
                         var history = new InteractiveActionHistory();
-                        history.Start(initialStatus.NetworkCheckIgnored
-                            ? "Проверка сети отключена — начинаю авторизацию..."
-                            : "Проверяю подключение к сети Интерсвязи...");
+                        history.Start("Ищу физический путь, которому требуется авторизация...");
                         ui.ShowActionProgress("АВТОРИЗАЦИЯ WI-FI", history, initialStatus);
 
                         var stepTwoAccepted = false;
@@ -1650,9 +1670,7 @@ internal static class Program
                             switch (stage)
                             {
                                 case AuthorizationProgressStage.NetworkGatePassed:
-                                    history.CompleteActive(initialStatus.WifiNetwork == WifiNetworkState.Campus
-                                        ? "Подключение к сети Интерсвязи подтверждено"
-                                        : "Проверка сети пропущена по настройке");
+                                    history.CompleteActive("Captive-путь найден и закреплён за авторизацией");
                                     history.Start("Получаю состояние push-очереди...");
                                     break;
                                 case AuthorizationProgressStage.BaselineLoaded:
@@ -1779,8 +1797,8 @@ internal static class Program
                     case InteractiveMenuAction.DiagnoseDirectNetwork:
                     {
                         var history = new InteractiveActionHistory();
-                        history.Start("Проверяю прямой маршрут без авторизации...");
-                        ui.ShowActionProgress("ДИАГНОСТИКА СЕТИ", history, initialStatus);
+                        history.Start("Проверяю все физические сетевые пути...");
+                        ui.ShowActionProgress("СЕТЬ И ДИАГНОСТИКА", history, initialStatus);
                         try
                         {
                             var report = await CollectDirectNetworkDiagnosticsAsync().ConfigureAwait(false);
@@ -1792,7 +1810,7 @@ internal static class Program
                             history.FailActive("Проверка прервана");
                             history.AddError(ex.Message);
                         }
-                        await ui.ShowActionHistoryAsync("ДИАГНОСТИКА СЕТИ", history,
+                        await ui.ShowActionHistoryAsync("СЕТЬ И ДИАГНОСТИКА", history,
                             GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                         break;
                     }
@@ -2655,111 +2673,50 @@ internal static class Program
 
     private static async Task<IReadOnlyList<string>> CollectDirectNetworkDiagnosticsAsync()
     {
-        var settings = new SettingsStore(new AppPaths(), new JsonFileStore()).Load();
-        if (string.Equals(settings.DirectNetworkAdapterId, PhysicalAdapterSelection.SystemRoute,
-            StringComparison.OrdinalIgnoreCase))
-        {
-            return ["Выбран системный маршрут: прямой обход VPN отключён. Измените адаптер в настройках."];
-        }
-        var adapter = PhysicalAdapterSelection.Select(
-            PhysicalAdapterSelection.Enumerate(), settings.DirectNetworkAdapterId);
-        if (adapter is null)
-        {
-            return ["Физический адаптер недоступен. Выберите работающий адаптер в настройках.",
-                "Никаких попыток авторизации не отправлено."];
-        }
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        var diagnostics = await app.NetworkPathDiagnostics
+            .InspectAsync(TimeSpan.FromSeconds(3))
+            .ConfigureAwait(false);
+
         var result = new List<string>
         {
-            $"Адаптер: {adapter.Name} ({adapter.Ssid ?? "SSID неизвестен"})",
-            $"IPv4: {(adapter.SourceIPv4 is null ? "нет" : "назначен")}; DNS: {adapter.DnsServers.Count} серверов"
+            "Физические сетевые пути",
+            "VPN/виртуальные адаптеры не являются путями captive-авторизации."
         };
-        var direct = new DirectNetworkConnector(PhysicalAdapterSelection.Enumerate,
-            settings.DirectNetworkAdapterId);
-        async Task<bool> DiagnoseDnsAsync(string host)
+
+        if (diagnostics.Count == 0)
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try
+            result.Add("Активные физические пути с IPv4 не обнаружены.");
+            result.Add("Диагностика не отправляет stepOne/stepTwo и не расходует SMS-попытки.");
+            return result;
+        }
+
+        foreach (var item in diagnostics)
+        {
+            var path = item.Path;
+            var preferred = item.Preferred ? " · основной" : string.Empty;
+            var network = string.IsNullOrWhiteSpace(path.Ssid) ? path.Name : $"{path.Name} · {path.Ssid}";
+            result.Add(string.Empty);
+            result.Add($"{network}{preferred}");
+            result.Add($"  Состояние: {StatusService.FormatPathStatus(item.State.Status)}");
+            result.Add($"  IPv4: {path.SourceIPv4?.ToString() ?? "—"}; gateway: {path.GatewayIPv4?.ToString() ?? "—"}; ifIndex: {path.InterfaceIndex}");
+            if (item.State.ExpectedExpiryUtc is { } expiry)
             {
-                var resolved = await direct.ResolveHostForDiagnosticsAsync(host, cts.Token).ConfigureAwait(false);
-                var source = resolved.Source == DnsAddressSource.AdapterDns
-                    ? "DNS физического адаптера" : "резервный системный DNS (только адрес)";
-                result.Add($"{host} / DNS: {source}{(resolved.FromCache ? ", кэш" : "")}");
-                return true;
+                result.Add($"  Ожидаемая граница: {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
             }
-            catch (Exception ex) when (ex is IOException or OperationCanceledException)
+            if (item.State.LastSuccessfulAuthUtc is { } lastAuth)
             {
-                result.Add($"{host} / DNS: недоступен ({(ex is OperationCanceledException ? "timeout" : "DnsUnavailable")})");
-                return false;
+                result.Add($"  Последняя авторизация: {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+            }
+            if (item.State.UserActionRequired)
+            {
+                result.Add("  Автоавторизация: остановлена до действия пользователя");
             }
         }
 
-        async Task<bool> DiagnoseTcpAsync(string host, int port)
-        {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
-            try
-            {
-                await using var connection = await direct.ConnectHostAsync(host, port, cts.Token)
-                    .ConfigureAwait(false);
-                result.Add($"{host}:{port} / TCP: доступен через выбранный адаптер");
-                return true;
-            }
-            catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or OperationCanceledException)
-            {
-                var reason = ex is OperationCanceledException ? "timeout" :
-                    ex is CachedDnsUnavailableException ? "DnsUnavailable" : "маршрут/TCP (возможно VPN kill switch)";
-                result.Add($"{host}:{port} / TCP: недоступен ({reason})");
-                return false;
-            }
-        }
-
-        if (await DiagnoseDnsAsync("w.is74.ru").ConfigureAwait(false))
-        {
-            // A TCP/80 handshake does not touch stepOne, stepTwo or auth budgets.
-            var portalTcp = await DiagnoseTcpAsync("w.is74.ru", 80).ConfigureAwait(false);
-            if (portalTcp)
-            {
-                using var http = HttpClientProfiles.CreatePortalClient(direct);
-                using var request = new HttpRequestMessage(HttpMethod.Get, "http://w.is74.ru/");
-                var response = await new HttpTransport(http).SendAsync(request,
-                    TimeSpan.FromSeconds(4), readBody: false).ConfigureAwait(false);
-                result.Add(response.TransportSucceeded
-                    ? $"w.is74.ru / HTTP: {(int)response.Response!.StatusCode}"
-                    : $"w.is74.ru / HTTP: {response.FailureKind}");
-            }
-        }
-        if (await DiagnoseDnsAsync("api.is74.ru").ConfigureAwait(false))
-        {
-            if (await DiagnoseTcpAsync("api.is74.ru", 443).ConfigureAwait(false))
-            {
-                using var http = HttpClientProfiles.CreateApiClient(direct);
-                var transport = new HttpTransport(http);
-                using var request = new HttpRequestMessage(HttpMethod.Get,
-                    "https://api.is74.ru/mobile/pushmessages?page=1&pageSize=1");
-                var response = await transport.SendAsync(request, TimeSpan.FromSeconds(5),
-                    readBody: false).ConfigureAwait(false);
-                if (response.TransportSucceeded)
-                {
-                    result.Add("api.is74.ru / TLS: проверка сертификата успешна");
-                    result.Add($"api.is74.ru / HTTP: {(int)response.Response!.StatusCode} (401 без токена — ожидаемо)");
-                }
-                else
-                {
-                    result.Add($"api.is74.ru / TLS/HTTP: {response.FailureKind}");
-                }
-            }
-        }
-        if (await DiagnoseDnsAsync("online.susu.ru").ConfigureAwait(false))
-        {
-            using var http = HttpClientProfiles.CreateInternetProbeClient(direct);
-            var probe = new InternetConnectivityProbe(new HttpTransport(http));
-            var answer = await probe.ProbeAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-            result.Add(answer.Online
-                ? "online.susu.ru: Интернет через выбранный адаптер доступен"
-                : answer.HttpResponseReceived
-                    ? $"online.susu.ru: HTTP {(int)answer.StatusCode!.Value} (возможен captive portal)"
-                    : $"online.susu.ru: {answer.FailureKind} (доступность не подтверждена)");
-        }
-        result.Add("Диагностика не расходует попытки stepOne и не отключает VPN.");
+        result.Add(string.Empty);
+        result.Add("Диагностика использует bound probe каждого пути, не меняет default route и не отключает VPN.");
+        result.Add("Никаких stepOne/stepTwo/SMS-запросов не отправлено.");
         return result;
     }
 

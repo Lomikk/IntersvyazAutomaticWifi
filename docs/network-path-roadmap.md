@@ -1,6 +1,6 @@
 # Дорожная карта: авторизация по физическим сетевым путям
 
-Статус: **проект следующей функциональной работы; runtime пока не изменён**.
+Статус: **N1–N7 реализованы поэтапно; N4/N5 подтверждены полевым Windows-тестом, N6/N7 проходят release-checkpoint.**
 
 Этот документ появился после полевых экспериментов с USB-tethering Android и Windows
 Mobile Hotspot. Он не продолжает maintainability-рефакторинг и не требует выполнения
@@ -298,7 +298,7 @@ bound HTTP probes к IS74/SUSU успешно прошли независимо 
 
 ### N3 — `PathAuthorizationStateStore`
 
-**Статус: durable store реализован; production Agent пока продолжает использовать legacy global state.**
+**Статус: реализован и используется production path-aware Agent.**
 
 - Ввести per-path durable state и schema/version migration.
 - `expected_expiry_utc` хранить только после подтверждённого Internet успеха данного
@@ -312,12 +312,13 @@ change, stale state, corrupt state, disconnected/reappeared.
 
 ### N4 — path-aware agent scheduling
 
-**Статус: production wiring реализован; требуется Windows build/field checkpoint.**
+**Статус: production wiring реализован и подтверждён Windows build/field test.**
 
 - Агент перечисляет все eligible physical path'ы.
 - New/changed/reappeared path -> immediate bound probe.
 - Каждый path имеет собственный next-check/expiry schedule.
-- На expiry всегда probe first; captive -> auth candidate, internet -> reschedule.
+- Для background/non-preferred path на expiry сначала bound probe; captive -> auth candidate, internet -> reschedule.
+- Для текущего preferred physical path сохранён latency-first timer shot на известной ~24h границе; это единственное исключение из probe-first и сохраняет прежнюю скорость восстановления основного канала.
 - Один unreachable path не блокирует остальные.
 - Ограничить concurrency: не запускать несколько SMS authorization flows одновременно;
   очередь/arbitration должна быть детерминированной.
@@ -327,7 +328,7 @@ internet, network-change до expiry, resume после нескольких exp
 
 ### N5 — привязать authorization flow к path snapshot
 
-**Статус: production wiring реализован; требуется Windows build/field checkpoint.**
+**Статус: production wiring реализован и подтверждён Windows build/field test.**
 
 - `AuthorizationFlow` получает явный immutable path snapshot/connector.
 - baseline API, `stepOne`, polling API, `stepTwo` и post-auth probe работают через
@@ -342,7 +343,14 @@ Contracts: path change до stepOne, после stepOne, после fresh code, 
 
 Windows field check: реально переключить USB <-> Wi-Fi во время контролируемой попытки.
 
+Полевой тест 2026-10-06: одновременно `USB Android -> Internet` и прямой
+`Campus Wi-Fi -> captive`. Новый агент обнаружил оба path независимо, отправил ровно
+один authorization flow через Campus, после чего оба bound-probe дали normal `302`.
+`fresh code -> stepTwo start` сохранил latency-first поведение (~3 ms между событиями).
+
 ### N6 — заменить SSID gate на captive/path policy
+
+**Статус: реализован для automatic и manual authorization flow.**
 
 - Удалить `Campus Wi-Fi*` как обязательный runtime gate для normal auto mode.
 - Direct Campus SSID остаётся diagnostic confidence signal.
@@ -356,6 +364,8 @@ Windows field check: реально переключить USB <-> Wi-Fi во в
 тихо переписаны заранее.
 
 ### N7 — UI «Сеть и диагностика»
+
+**Статус: реализован; старые network-check/adapter controls скрыты из normal UI.**
 
 - Заменить старую пользовательскую модель «Проверка сети» на список path'ов и их
   фактический status.

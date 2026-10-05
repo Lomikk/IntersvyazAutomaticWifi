@@ -33,6 +33,9 @@ internal sealed class ApplicationRuntime : IDisposable
         RegistrationTelemetryRecorder registrationTelemetry,
         TelemetryUploader telemetryUploader,
         CampusSpeedToolsService campusSpeedTools,
+        PathAuthorizationStateStore pathState,
+        NetworkPathDiagnosticsService networkPathDiagnostics,
+        IPathAuthorizationRunner pathAuthorization,
         HttpClient apiHttp,
         HttpClient portalHttp,
         HttpClient internetHttp,
@@ -58,6 +61,9 @@ internal sealed class ApplicationRuntime : IDisposable
         RegistrationTelemetry = registrationTelemetry;
         TelemetryUploader = telemetryUploader;
         CampusSpeedTools = campusSpeedTools;
+        PathState = pathState;
+        NetworkPathDiagnostics = networkPathDiagnostics;
+        PathAuthorization = pathAuthorization;
         this.apiHttp = apiHttp;
         this.portalHttp = portalHttp;
         this.internetHttp = internetHttp;
@@ -84,6 +90,9 @@ internal sealed class ApplicationRuntime : IDisposable
     public RegistrationTelemetryRecorder RegistrationTelemetry { get; }
     public TelemetryUploader TelemetryUploader { get; }
     public CampusSpeedToolsService CampusSpeedTools { get; }
+    public PathAuthorizationStateStore PathState { get; }
+    public NetworkPathDiagnosticsService NetworkPathDiagnostics { get; }
+    public IPathAuthorizationRunner PathAuthorization { get; }
 
     public static ApplicationRuntime Create(string appVersion = "dev")
     {
@@ -184,6 +193,12 @@ internal sealed class ApplicationRuntime : IDisposable
             settings,
             logger,
             telemetryRecorder);
+        var networkPathDiagnostics = new NetworkPathDiagnosticsService(
+            pathEnumerator.EnumerateAutomaticCandidates,
+            pathState,
+            pathProbe,
+            preferredPath,
+            logger);
         var pathAwareAgent = new PathAwareAgentCoordinator(
             secrets.Load,
             deviceIdentity.GetOrCreate,
@@ -227,6 +242,9 @@ internal sealed class ApplicationRuntime : IDisposable
             registrationTelemetry,
             telemetryUploader,
             campusSpeedTools,
+            pathState,
+            networkPathDiagnostics,
+            pathAuthorization,
             apiHttp,
             portalHttp,
             internetHttp,

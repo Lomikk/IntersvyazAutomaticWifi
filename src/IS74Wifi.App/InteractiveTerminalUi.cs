@@ -1581,16 +1581,10 @@ internal sealed partial class InteractiveTerminalUi
             new MenuItem('2', $"Уведомления: {snapshot?.NotificationMode ?? "важные"}", InteractiveMenuAction.CycleNotifications),
             new MenuItem(
                 '3',
-                $"Проверка сети: {(snapshot?.NetworkCheckIgnored == true ? "отключена" : "включена")}",
-                InteractiveMenuAction.ToggleNetworkCheck),
-            new MenuItem(
-                '4',
                 $"Анонимная статистика: {FormatStatisticsConsent(snapshot?.AnonymousStatisticsConsent ?? AnonymousStatisticsConsent.Unknown)}",
                 InteractiveMenuAction.ToggleAnonymousStatistics),
-            new MenuItem('5', "Обновления", InteractiveMenuAction.OpenUpdates),
-            new MenuItem('6', $"Адаптер для авторизации: {snapshot?.DirectNetworkMode ?? "автоматически"}",
-                InteractiveMenuAction.ChooseDirectNetworkAdapter),
-            new MenuItem('7', "Проверить прямое подключение", InteractiveMenuAction.DiagnoseDirectNetwork),
+            new MenuItem('4', "Обновления", InteractiveMenuAction.OpenUpdates),
+            new MenuItem('5', "Сеть и диагностика", InteractiveMenuAction.DiagnoseDirectNetwork),
             new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
     }
@@ -1660,7 +1654,7 @@ internal sealed partial class InteractiveTerminalUi
         DrawStatusLine(canvas, PaneY + 2, "Интернет", FormatInternet(s.InternetAvailable),
             s.InternetAvailable == true ? Palette.Good : s.InternetAvailable == false ? Palette.Dim : Palette.Highlight);
         var network = FormatNetworkStatus(s);
-        DrawStatusLine(canvas, PaneY + 3, "Сеть", network.Text, network.Color);
+        DrawStatusLine(canvas, PaneY + 3, "Пути", network.Text, network.Color);
         var authorization = FormatAuthorizationStatus(s);
         DrawStatusLine(canvas, PaneY + 4, "Авторизация", authorization.Text, authorization.Color);
         DrawStatusLine(canvas, PaneY + 5, "Автовход", s.AutomaticAuthorizationEnabled ? "включён ●" : "выключен ○",
@@ -1689,21 +1683,34 @@ internal sealed partial class InteractiveTerminalUi
 
     private static (string Text, Palette Color) FormatNetworkStatus(InteractiveStatusSnapshot s)
     {
-        if (s.NetworkCheckIgnored)
+        if (s.ActivePhysicalPathCount == 0)
         {
-            return ("проверка отключена ○", Palette.Dim);
+            return ("нет активных ○", Palette.Dim);
         }
-
-        return s.WifiNetwork switch
+        if (s.CaptivePathCount > 0)
         {
-            WifiNetworkState.Campus => ($"{s.WifiSsid} ●", Palette.Good),
-            WifiNetworkState.Other => ($"{s.WifiSsid} ○", Palette.Dim),
-            _ => ("не определена ○", Palette.Dim)
-        };
+            return ($"{s.ActivePhysicalPathCount}, captive {s.CaptivePathCount} ○", Palette.Highlight);
+        }
+        if (s.InternetPathCount > 0)
+        {
+            return ($"{s.ActivePhysicalPathCount}, Internet {s.InternetPathCount} ●", Palette.Good);
+        }
+        return ($"{s.ActivePhysicalPathCount}, проверяются ○", Palette.Dim);
     }
 
     private (string Text, Palette Color) FormatAuthorizationStatus(InteractiveStatusSnapshot s)
     {
+        if (s.CaptivePathCount > 0)
+        {
+            return ($"нужна для {s.CaptivePathCount} пути(ей) ○", Palette.Highlight);
+        }
+        if (s.ActivePhysicalPathCount > 0 && s.InternetPathCount == s.ActivePhysicalPathCount)
+        {
+            if (s.AuthorizationExpectedExpiryUtc is null)
+            {
+                return ("все пути online ●", Palette.Good);
+            }
+        }
         if (s.AuthorizationExpectedExpiryUtc is { } expiry)
         {
             var now = DateTimeOffset.UtcNow;

@@ -23,7 +23,11 @@ internal sealed record InteractiveStatusSnapshot(
     string MaskedPhone,
     string ApiSessionEnd,
     string LastResult,
-    string Version);
+    string Version,
+    int ActivePhysicalPathCount = 0,
+    int InternetPathCount = 0,
+    int CaptivePathCount = 0,
+    int ProblemPathCount = 0);
 
 internal enum WifiNetworkState
 {

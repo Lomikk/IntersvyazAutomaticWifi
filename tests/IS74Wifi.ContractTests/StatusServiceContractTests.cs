@@ -58,8 +58,8 @@ internal static class StatusServiceContractTests
             NotificationMode = NotificationMode.Off
         });
         var changedSettings = service.ReadLocalSnapshot();
-        Assert(changedSettings.NetworkCheckIgnored && changedSettings.DirectNetworkMode == "системный",
-            "changed network settings must be visible without rebuilding a runtime");
+        Assert(!changedSettings.NetworkCheckIgnored && changedSettings.DirectNetworkMode == "системный",
+            "legacy network-check setting must no longer affect the path-aware UI snapshot");
         Assert(changedSettings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Declined &&
                changedSettings.AutomaticUpdates && !changedSettings.IncludePrereleaseUpdates &&
                changedSettings.NotificationMode == "выкл",

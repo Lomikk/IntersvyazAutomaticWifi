@@ -142,7 +142,7 @@ csharp_dns = (root / 'src' / 'IS74Wifi.Core' / 'InterfaceDnsResolver.cs').read_t
 assert 'BindSocket(socket, adapter)' in csharp_dns and 'SystemFallback' in csharp_dns, 'adapter DNS and address-only fallback required'
 assert 'CanReachPortalAsync' in csharp_direct and 'ConnectHostAsync("w.is74.ru", 80' in csharp_direct, 'portal preflight must use HTTP port 80'
 csharp_diagnostic_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8')
-assert 'http://w.is74.ru/' in csharp_diagnostic_program and 'https://w.is74.ru/' not in csharp_diagnostic_program, 'portal diagnostic must use real HTTP endpoint'
+assert 'NetworkPathDiagnostics' in csharp_diagnostic_program and 'InspectAsync(TimeSpan.FromSeconds(3))' in csharp_diagnostic_program, 'network diagnostics must inspect all bound physical paths'
 assert 'http://online.susu.ru/' in csharp_internet_probe and 'https://online.susu.ru/' in csharp_internet_probe, 'local SUSU connectivity probe contract missing'
 assert 'readBody: false' in csharp_internet_probe, 'SUSU success probe must be headers-only'
 assert 'www.msftconnecttest.com' not in csharp_internet_probe, 'Microsoft Connect Test must not remain the primary C# probe'
@@ -171,7 +171,7 @@ assert 'IS74W_SKIP_REVEAL' in csharp_program, 'bootstrap must not replay the ful
 assert csharp_ui.count('GetCurrentItems()') >= 3, 'rich and compact menus must use the same action list router'
 assert 'var items = GetCurrentItems();' in csharp_ui and 'RunCompactSelection(GetCurrentItems())' in csharp_ui, 'rich/compact action list paths diverged'
 assert 'MenuPage.Settings => GetSettingsItems(status)' in csharp_ui and 'MenuPage.Maintenance => GetMaintenanceItems(status)' in csharp_ui and 'MenuPage.Updates => GetUpdateItems(status)' in csharp_ui and '_ => GetPrimaryItems(status)' in csharp_ui, 'state-aware action list router lost menu pages'
-assert 'DrawStatusLine(canvas, PaneY + 3, "Сеть"' in csharp_ui and 'DrawStatusLine(canvas, PaneY + 4, "Авторизация"' in csharp_ui, 'status pane must separate network from captive authorization state'
+assert 'DrawStatusLine(canvas, PaneY + 3, "Пути"' in csharp_ui and 'DrawStatusLine(canvas, PaneY + 4, "Авторизация"' in csharp_ui, 'status pane must separate physical-path state from captive authorization state'
 assert '"ещё не выполнялась ○"' in csharp_ui, 'unknown captive authorization state must not be presented as denied Wi-Fi access'
 csharp_wifi = (root / 'src' / 'IS74Wifi.Core' / 'WindowsWifiService.cs').read_text(encoding='utf-8')
 assert 'WlanConnectionProfileDetails' in csharp_wifi and 'GetConnectedSsid()' in csharp_wifi, 'SSID detection must use the Windows profile API'

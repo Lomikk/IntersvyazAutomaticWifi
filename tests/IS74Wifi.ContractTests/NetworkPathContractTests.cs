@@ -164,6 +164,38 @@ internal static class NetworkPathContractTests
         {
         }
         Assert(virtualProbeCalls == 0, "VPN candidate reached the bound probe implementation");
+
+        using (var temp = TestDirectory.Create())
+        {
+            var paths = new AppPaths(temp.Path);
+            var json = new JsonFileStore();
+            var pathStore = new PathAuthorizationStateStore(paths, json);
+            var diagnosticProbeCalls = new List<string>();
+            var diagnosticProbe = new NetworkPathProbe((path, _, _) =>
+            {
+                diagnosticProbeCalls.Add(path.AdapterId);
+                return Task.FromResult(path.AdapterId == campus.Id
+                    ? Probe(HttpStatusCode.OK, online: false)
+                    : Probe(HttpStatusCode.Found, online: true, location: InternetConnectivityProbe.ExpectedLocation));
+            });
+            var diagnostics = new NetworkPathDiagnosticsService(
+                () => [NetworkPathSnapshot.FromAdapter(vpn), campusPath, usbPath],
+                pathStore,
+                diagnosticProbe,
+                new PreferredNetworkPathResolver(_ => usbPath.Identity));
+
+            var inspected = await diagnostics.InspectAsync(TimeSpan.FromSeconds(1));
+            Assert(inspected.Count == 2 && inspected[0].Path.AdapterId == usb.Id && inspected[0].Preferred,
+                "network diagnostics must exclude VPN and put the preferred physical path first");
+            Assert(inspected[0].Status == NetworkPathProbeStatus.Internet &&
+                   inspected[1].Status == NetworkPathProbeStatus.Captive,
+                "network diagnostics must preserve independent bound probe results");
+            Assert(diagnosticProbeCalls.SequenceEqual([usb.Id, campus.Id]),
+                "network diagnostics did not probe physical paths in preferred-first order");
+            Assert(pathStore.Find(usbPath.Identity)?.Status == PathAuthorizationStatus.Internet &&
+                   pathStore.Find(campusPath.Identity)?.Status == PathAuthorizationStatus.Captive,
+                "network diagnostics did not persist per-path observations");
+        }
     }
 
     private static InternetProbeResult Probe(HttpStatusCode status, bool online, Uri? location = null) =>
