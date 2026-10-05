@@ -141,6 +141,30 @@ internal static class PathAuthorizationStateContractTests
         {
         }
 
+        var pathRuntime = new PathRuntimeStateStore(store, wifi);
+        pathRuntime.Save(new RuntimeState
+        {
+            LastAuthUtc = authorizedAt,
+            ExpectedExpiryUtc = expiry,
+            LastAttemptUtc = now.AddMinutes(5),
+            LastAttemptReason = "retry",
+            LastResult = "step-one-retryable-error",
+            InternetConfirmed = false,
+            AutomaticStepOneAttempts = 2,
+            PreStepFailureCount = 1,
+            NextAutomaticRetryUtc = now.AddMinutes(6),
+            UserActionRequired = false,
+            EdgeWatchActive = true
+        });
+        var restoredRuntime = pathRuntime.Load();
+        Assert(restoredRuntime.AutomaticStepOneAttempts == 2 &&
+               restoredRuntime.PreStepFailureCount == 1 &&
+               restoredRuntime.EdgeWatchActive &&
+               restoredRuntime.NextAutomaticRetryUtc == now.AddMinutes(6),
+            "per-path authorization cycle state did not round-trip through RuntimeState adapter");
+        Assert(store.Find(usb.Identity)?.AutomaticStepOneAttempts == 0,
+            "per-path authorization attempt budget leaked into another path");
+
         using var corruptTemp = TempDirectory.Create();
         var corruptPaths = new AppPaths(corruptTemp.Path);
         corruptPaths.EnsureDirectories();

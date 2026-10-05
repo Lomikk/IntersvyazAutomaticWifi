@@ -173,7 +173,26 @@ internal sealed class ApplicationRuntime : IDisposable
             ignoreNetworkCheck: settings.IgnoreNetworkCheck,
             preStepNetworkCheck: direct is null ? null :
                 token => direct.CanReachPortalAsync(TimeSpan.FromSeconds(4), token));
+
         var notifications = new WindowsNotificationService(settingsStore, logger);
+        var pathState = new PathAuthorizationStateStore(paths, json, runtimeState);
+        var pathEnumerator = new NetworkPathEnumerator();
+        var pathProbe = new NetworkPathProbe();
+        var pathAuthorization = new PathAuthorizationRunner(
+            pathState,
+            settings,
+            logger,
+            telemetryRecorder);
+        var pathAwareAgent = new PathAwareAgentCoordinator(
+            secrets.Load,
+            deviceIdentity.GetOrCreate,
+            pathEnumerator.EnumerateAutomaticCandidates,
+            pathState,
+            pathProbe,
+            pathAuthorization,
+            settings,
+            logger,
+            notifications: notifications);
         var agent = new AgentService(
             secrets,
             deviceIdentity,
@@ -183,7 +202,8 @@ internal sealed class ApplicationRuntime : IDisposable
             wifi,
             settings,
             logger,
-            notifications: notifications);
+            notifications: notifications,
+            pathAware: pathAwareAgent);
 
         return new ApplicationRuntime(
             paths,

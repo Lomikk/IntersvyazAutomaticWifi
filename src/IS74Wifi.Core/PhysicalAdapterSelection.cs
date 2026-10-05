@@ -22,6 +22,8 @@ public sealed record PhysicalAdapter(
     public bool IsWifi => Type == NetworkInterfaceType.Wireless80211;
     public bool IsCampus => IsWifi && Ssid is not null && SsidPolicy.IsTarget(Ssid);
     public IPAddress? GatewayIPv4 { get; init; }
+    public bool? HardwareInterface { get; init; }
+    public bool? ConnectorPresent { get; init; }
 }
 
 public static class PhysicalAdapterSelection
@@ -57,8 +59,9 @@ public static class PhysicalAdapterSelection
             return usable.FirstOrDefault(adapter =>
                 string.Equals(adapter.Id, preferredId, StringComparison.OrdinalIgnoreCase));
         }
-        return usable.Where(adapter => !adapter.LooksVirtual)
-            .OrderByDescending(adapter => adapter.IsCampus)
+        return usable.Where(adapter => !adapter.LooksVirtual && adapter.HardwareInterface != false)
+            .OrderByDescending(adapter => adapter.HardwareInterface == true)
+            .ThenByDescending(adapter => adapter.IsCampus)
             .ThenByDescending(adapter => adapter.HasGateway)
             .ThenByDescending(adapter => adapter.IsWifi)
             .ThenBy(adapter => adapter.Name, StringComparer.OrdinalIgnoreCase)
@@ -120,11 +123,16 @@ public static class PhysicalAdapterSelection
                 {
                     ssidsByAdapter.TryGetValue(guid, out ssid);
                 }
+                var hasHardwareSignal = WindowsInterfaceHardware.TryGet(index, out var hardwareInterface, out var connectorPresent);
+                var looksVirtual = !IsPhysicalCandidate(network.NetworkInterfaceType, network.Name, network.Description) ||
+                                   hasHardwareSignal && !hardwareInterface;
                 result.Add(new PhysicalAdapter(network.Id, network.Name, network.NetworkInterfaceType,
                     network.OperationalStatus == OperationalStatus.Up, index, ipv4, dns, gateway, ssid,
-                    LooksVirtual: !IsPhysicalCandidate(network.NetworkInterfaceType, network.Name, network.Description))
+                    LooksVirtual: looksVirtual)
                 {
-                    GatewayIPv4 = gatewayAddress
+                    GatewayIPv4 = gatewayAddress,
+                    HardwareInterface = hasHardwareSignal ? hardwareInterface : null,
+                    ConnectorPresent = hasHardwareSignal ? connectorPresent : null
                 });
             }
             catch (NetworkInformationException)

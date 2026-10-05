@@ -196,12 +196,18 @@ public sealed class AgentService(
     AppSettings settings,
     DiagnosticLogger logger,
     TimeProvider? timeProvider = null,
-    IAgentNotificationSink? notifications = null)
+    IAgentNotificationSink? notifications = null,
+    PathAwareAgentCoordinator? pathAware = null)
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private DateTimeOffset? notifiedExpiryUtc;
     public TimeSpan GetSleepDelay()
     {
+        if (pathAware is not null)
+        {
+            return pathAware.GetSleepDelay();
+        }
+
         var runtime = state.Load();
         var now = clock.GetUtcNow();
         // Avoid enumerating adapters throughout the ordinary 24-hour idle.
@@ -215,6 +221,11 @@ public sealed class AgentService(
 
     public bool CanUploadTelemetry()
     {
+        if (pathAware is not null)
+        {
+            return pathAware.CanUploadTelemetry();
+        }
+
         var runtime = state.Load();
         var now = clock.GetUtcNow();
         var checkNetwork = !runtime.UserActionRequired &&
@@ -226,6 +237,12 @@ public sealed class AgentService(
 
     public async Task TickAsync(CancellationToken cancellationToken = default)
     {
+        if (pathAware is not null)
+        {
+            await pathAware.TickAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var storedSecrets = secrets.Load();
         if (storedSecrets is null)
         {

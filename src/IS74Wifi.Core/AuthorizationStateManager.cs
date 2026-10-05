@@ -3,7 +3,7 @@ namespace IS74Wifi.Core;
 public sealed record StepOneBudgetDecision(bool Allowed, int Attempt, bool UserActionRequired);
 
 public sealed class AuthorizationStateManager(
-    RuntimeStateStore store,
+    IRuntimeStateStore store,
     AppSettings settings,
     TimeProvider? timeProvider = null)
 {

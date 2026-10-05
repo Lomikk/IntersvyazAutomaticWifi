@@ -24,7 +24,9 @@ public sealed record NetworkPathSnapshot(
     IPAddress? GatewayIPv4,
     IReadOnlyList<IPAddress> DnsServers,
     string? Ssid,
-    bool LooksVirtual)
+    bool LooksVirtual,
+    bool? HardwareInterface = null,
+    bool? ConnectorPresent = null)
 {
     public bool IsWifi => InterfaceType == NetworkInterfaceType.Wireless80211;
     public bool IsPhysicalCandidate =>
@@ -33,12 +35,26 @@ public sealed record NetworkPathSnapshot(
             NetworkInterfaceType.GigabitEthernet or NetworkInterfaceType.FastEthernetT or
             NetworkInterfaceType.FastEthernetFx;
 
+    public bool IsAutomaticAuthorizationCandidate =>
+        IsPhysicalCandidate && HardwareInterface == true;
+
     public bool CanProbe => IsPhysicalCandidate && IsUp && InterfaceIndex > 0 && SourceIPv4 is not null;
+    public bool CanAutomaticallyAuthorize => IsAutomaticAuthorizationCandidate && CanProbe;
 
     public NetworkPathIdentity Identity => new(
         AdapterId,
         InterfaceType,
         CreateNetworkDiscriminator(IsWifi, Ssid, GatewayIPv4));
+
+    public bool HasSameTransportBinding(NetworkPathSnapshot other) =>
+        other is not null &&
+        string.Equals(AdapterId, other.AdapterId, StringComparison.OrdinalIgnoreCase) &&
+        InterfaceType == other.InterfaceType &&
+        IsUp && other.IsUp &&
+        InterfaceIndex == other.InterfaceIndex &&
+        Equals(SourceIPv4, other.SourceIPv4) &&
+        Equals(GatewayIPv4, other.GatewayIPv4) &&
+        (!IsWifi || string.Equals(Ssid, other.Ssid, StringComparison.Ordinal));
 
     internal PhysicalAdapter ToPhysicalAdapter()
     {
@@ -59,7 +75,9 @@ public sealed record NetworkPathSnapshot(
             Ssid,
             LooksVirtual)
         {
-            GatewayIPv4 = GatewayIPv4
+            GatewayIPv4 = GatewayIPv4,
+            HardwareInterface = HardwareInterface,
+            ConnectorPresent = ConnectorPresent
         };
     }
 
@@ -73,7 +91,9 @@ public sealed record NetworkPathSnapshot(
         adapter.GatewayIPv4,
         adapter.DnsServers,
         adapter.Ssid,
-        adapter.LooksVirtual);
+        adapter.LooksVirtual,
+        adapter.HardwareInterface,
+        adapter.ConnectorPresent);
 
     internal static string CreateNetworkDiscriminator(bool isWifi, string? ssid, IPAddress? gateway)
     {
@@ -104,6 +124,9 @@ public sealed class NetworkPathEnumerator(Func<IReadOnlyList<PhysicalAdapter>>? 
 
     public IReadOnlyList<NetworkPathSnapshot> EnumeratePhysical() =>
         EnumerateAll().Where(path => path.IsPhysicalCandidate).ToArray();
+
+    public IReadOnlyList<NetworkPathSnapshot> EnumerateAutomaticCandidates() =>
+        EnumerateAll().Where(path => path.IsAutomaticAuthorizationCandidate).ToArray();
 }
 
 public sealed record SystemRouteSnapshot(

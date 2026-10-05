@@ -10,6 +10,7 @@ public sealed class LocalStateMaintenance(AppPaths paths)
                      paths.SessionMetaFile,
                      paths.DeviceMetadataFile,
                      paths.RuntimeStateFile,
+                     paths.PathAuthorizationStateFile,
                      paths.DeviceIdFile
                  })
         {

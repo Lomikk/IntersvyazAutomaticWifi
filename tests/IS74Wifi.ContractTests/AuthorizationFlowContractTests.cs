@@ -15,6 +15,8 @@ internal static class AuthorizationFlowContractTests
         await TestAutomaticStepOneBudgetAsync();
         await TestPreStepFailureDoesNotSpendBudgetAsync();
         await TestDirectNetworkBlockedDoesNotSpendBudgetAsync();
+        await TestPathChangeBeforeStepOneDoesNotSpendBudgetAsync();
+        await TestPathChangeBeforeStepTwoAbortsSafelyAsync();
         await TestWrongWifiStopsBeforeNetworkAsync();
         await TestIgnoredNetworkCheckAllowsAuthorizationAsync();
         await TestAlreadyAuthorizedStopsPollingAsync();
@@ -350,6 +352,51 @@ internal static class AuthorizationFlowContractTests
             "VPN block must not spend the stepOne attempt budget or post to captive portal");
     }
 
+    private static async Task TestPathChangeBeforeStepOneDoesNotSpendBudgetAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var portal = new ImmediatePortal();
+        var flow = CreateFlow(
+            temp,
+            CodeImmediatelyApi(),
+            portal,
+            new SequenceInternetProbe(false),
+            new AlwaysTargetWifi(),
+            pollOffsets: [1],
+            pathContinuityCheck: _ => Task.FromResult(false));
+
+        var outcome = await flow.RunAsync(Request(AuthorizationAttemptReason.Automatic));
+        var runtime = LoadState(temp);
+        Assert(outcome.Kind == AuthorizationOutcomeKind.RetryableBeforeStepOne,
+            "path change before stepOne was not treated as a safe pre-send retry");
+        Assert(portal.StepOneCalls == 0 && runtime.AutomaticStepOneAttempts == 0,
+            "path change before stepOne consumed the portal attempt budget");
+    }
+
+    private static async Task TestPathChangeBeforeStepTwoAbortsSafelyAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var portal = new ImmediatePortal();
+        var checks = 0;
+        var flow = CreateFlow(
+            temp,
+            CodeImmediatelyApi(),
+            portal,
+            new SequenceInternetProbe(false),
+            new AlwaysTargetWifi(),
+            pollOffsets: [1],
+            pathContinuityCheck: _ => Task.FromResult(++checks == 1));
+
+        var outcome = await flow.RunAsync(Request(AuthorizationAttemptReason.Automatic));
+        var runtime = LoadState(temp);
+        Assert(outcome.Kind == AuthorizationOutcomeKind.RetryableStepOne,
+            "path change after fresh code did not abort before stepTwo");
+        Assert(portal.StepOneCalls == 1 && portal.StepTwoCalls == 0,
+            "stepTwo crossed a path change boundary");
+        Assert(runtime.AutomaticStepOneAttempts == 1,
+            "stepOne that already reached the portal was incorrectly rolled back after path change");
+    }
+
     private static async Task TestWrongWifiStopsBeforeNetworkAsync()
     {
         using var temp = TestDirectory.Create();
@@ -481,7 +528,8 @@ internal static class AuthorizationFlowContractTests
         IEnumerable<int> pollOffsets,
         AuthorizationFlowOptions? options = null,
         bool ignoreNetworkCheck = false,
-        Func<CancellationToken, Task<bool>>? preStepNetworkCheck = null)
+        Func<CancellationToken, Task<bool>>? preStepNetworkCheck = null,
+        Func<CancellationToken, Task<bool>>? pathContinuityCheck = null)
     {
         var paths = new AppPaths(temp.Path);
         var json = new JsonFileStore();
@@ -492,7 +540,8 @@ internal static class AuthorizationFlowContractTests
         return new AuthorizationFlow(
             api, portal, internet, wifi, polling, state, logger, options ?? FastOptions(),
             ignoreNetworkCheck: ignoreNetworkCheck,
-            preStepNetworkCheck: preStepNetworkCheck);
+            preStepNetworkCheck: preStepNetworkCheck,
+            pathContinuityCheck: pathContinuityCheck);
     }
 
     private static AuthorizationFlowOptions FastOptions(int[]? lostStepTwo = null) => new()

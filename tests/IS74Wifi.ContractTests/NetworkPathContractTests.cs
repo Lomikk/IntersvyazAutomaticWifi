@@ -25,6 +25,14 @@ internal static class NetworkPathContractTests
             gateway: null,
             looksVirtual: true,
             name: "TAP-Windows Adapter V9");
+        var stealthVpn = Adapter(
+            id: "stealth-vpn",
+            type: NetworkInterfaceType.Ethernet,
+            source: "10.99.0.2",
+            gateway: null,
+            looksVirtual: false,
+            name: "Acme Adapter",
+            hardware: false);
         var disconnected = Adapter(
             id: "ethernet-guid",
             type: NetworkInterfaceType.Ethernet,
@@ -32,12 +40,17 @@ internal static class NetworkPathContractTests
             gateway: null,
             up: false);
 
-        var enumerator = new NetworkPathEnumerator(() => [vpn, campus, usb, disconnected]);
+        var enumerator = new NetworkPathEnumerator(() => [vpn, stealthVpn, campus, usb, disconnected]);
         var all = enumerator.EnumerateAll();
         var physical = enumerator.EnumeratePhysical();
-        Assert(all.Count == 4, "read-only path enumeration lost visible adapters");
-        Assert(physical.Select(path => path.AdapterId).SequenceEqual([campus.Id, usb.Id, disconnected.Id]),
-            "physical path enumeration must exclude the VPN candidate without hiding disconnected hardware");
+        var automatic = enumerator.EnumerateAutomaticCandidates();
+        Assert(all.Count == 5, "read-only path enumeration lost visible adapters");
+        Assert(physical.Select(path => path.AdapterId).SequenceEqual([stealthVpn.Id, campus.Id, usb.Id, disconnected.Id]),
+            "read-only physical-shape enumeration unexpectedly hid an unclassified Ethernet adapter");
+        Assert(automatic.Select(path => path.AdapterId).SequenceEqual([campus.Id, usb.Id, disconnected.Id]),
+            "automatic candidates must require the positive Windows hardware signal and exclude VPN");
+        Assert(PhysicalAdapterSelection.Select([stealthVpn, usb], preferredId: null)?.Id == usb.Id,
+            "automatic legacy adapter selection accepted an interface Windows marked non-hardware");
 
         var campusPath = NetworkPathSnapshot.FromAdapter(campus);
         var changedIfIndex = campusPath with
@@ -164,7 +177,8 @@ internal static class NetworkPathContractTests
         string? ssid = null,
         bool up = true,
         bool looksVirtual = false,
-        string? name = null)
+        string? name = null,
+        bool hardware = true)
     {
         var adapter = new PhysicalAdapter(
             id,
@@ -178,7 +192,9 @@ internal static class NetworkPathContractTests
             ssid,
             looksVirtual)
         {
-            GatewayIPv4 = gateway is null ? null : IPAddress.Parse(gateway)
+            GatewayIPv4 = gateway is null ? null : IPAddress.Parse(gateway),
+            HardwareInterface = hardware,
+            ConnectorPresent = hardware
         };
         return adapter;
     }

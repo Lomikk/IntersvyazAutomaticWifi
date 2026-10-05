@@ -267,6 +267,10 @@ Contracts:
 hardware-сигналом (эквивалентом `Get-NetAdapter -Physical` либо нативным IP Helper/NDIS
 признаком). N1 намеренно не меняет production selection policy.
 
+Реализация N4 добавляет нативный `GetIfEntry2/MIB_IF_ROW2.HardwareInterface`: автоматический
+path-aware агент принимает только интерфейсы с положительным hardware-сигналом; name-based
+markers остаются вторым консервативным фильтром и совместимостью для ручной диагностики.
+
 ### N2 — bound probe конкретного path
 
 **Статус: foundation реализован в Core, `stepOne` не подключён.**
@@ -308,6 +312,8 @@ change, stale state, corrupt state, disconnected/reappeared.
 
 ### N4 — path-aware agent scheduling
 
+**Статус: production wiring реализован; требуется Windows build/field checkpoint.**
+
 - Агент перечисляет все eligible physical path'ы.
 - New/changed/reappeared path -> immediate bound probe.
 - Каждый path имеет собственный next-check/expiry schedule.
@@ -320,6 +326,8 @@ Contracts: два истекающих path одновременно, один d
 internet, network-change до expiry, resume после нескольких expiry.
 
 ### N5 — привязать authorization flow к path snapshot
+
+**Статус: production wiring реализован; требуется Windows build/field checkpoint.**
 
 - `AuthorizationFlow` получает явный immutable path snapshot/connector.
 - baseline API, `stepOne`, polling API, `stepTwo` и post-auth probe работают через

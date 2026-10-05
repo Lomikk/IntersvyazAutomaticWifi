@@ -13,7 +13,8 @@ public sealed class AuthorizationFlow(
     AuthorizationFlowOptions? options = null,
     AuthorizationTelemetryRecorder? telemetry = null,
     bool ignoreNetworkCheck = false,
-    Func<CancellationToken, Task<bool>>? preStepNetworkCheck = null) : IAuthorizationRunner
+    Func<CancellationToken, Task<bool>>? preStepNetworkCheck = null,
+    Func<CancellationToken, Task<bool>>? pathContinuityCheck = null) : IAuthorizationRunner
 {
     private readonly AuthorizationFlowOptions options = options ?? new AuthorizationFlowOptions();
 
@@ -110,6 +111,17 @@ public sealed class AuthorizationFlow(
             return HandleBaselineFailure(baseline.Failure!, request.Reason);
         }
         ReportProgress(request, AuthorizationProgressStage.BaselineLoaded);
+
+        if (pathContinuityCheck is not null &&
+            !await pathContinuityCheck(cancellationToken).ConfigureAwait(false))
+        {
+            logger.Write(DiagnosticLevel.Warn,
+                "authorization.path-changed phase=before-step-one budget=unchanged");
+            var next = state.MarkPreStepFailure(request.Reason);
+            return new AuthorizationOutcome(
+                AuthorizationOutcomeKind.RetryableBeforeStepOne,
+                InternetConfirmed: null, AuthorizedAtUtc: null, RetryAfter: next, Timing: null);
+        }
 
         // Verify direct access to the captive portal before consuming a
         // crash-safe stepOne reservation; VPN kill switches are not auth errors.
@@ -283,6 +295,27 @@ public sealed class AuthorizationFlow(
             .FirstOrDefault();
 
         pollCts.Cancel();
+        if (pathContinuityCheck is not null &&
+            !await pathContinuityCheck(cancellationToken).ConfigureAwait(false))
+        {
+            stepOneCts.Cancel();
+            logger.Write(DiagnosticLevel.Warn,
+                "authorization.path-changed phase=before-step-two action=abort");
+            return MarkStepOneRetryable(request.Reason, new AuthorizationTiming(
+                preStepOneMilliseconds,
+                baselineId,
+                budget.Attempt == 0 ? null : budget.Attempt,
+                codeObservation is null
+                    ? null
+                    : codeObservation.Kind == PushPollKind.Fallback ? WifiCodeSource.Fallback : WifiCodeSource.Primary,
+                codeObservation?.TargetMilliseconds,
+                codeObservation?.StartMilliseconds,
+                codeObservation?.ObservedMilliseconds,
+                StepTwoStartMilliseconds: null,
+                StepTwoDoneMilliseconds: null,
+                Polls: pollResult.Observations));
+        }
+
         var stepTwoStartPreciseMilliseconds = criticalClock.Elapsed.TotalMilliseconds;
         var stepTwoStartMilliseconds = (int)Math.Max(0, Math.Round(stepTwoStartPreciseMilliseconds));
         var stepTwoStartedAt = DateTimeOffset.UtcNow;

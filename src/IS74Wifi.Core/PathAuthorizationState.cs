@@ -17,12 +17,22 @@ public sealed record PathAuthorizationState
     public required NetworkPathIdentity Identity { get; init; }
     public string? AdapterName { get; init; }
     public string? Ssid { get; init; }
+    public int InterfaceIndex { get; init; }
     public string? SourceIPv4 { get; init; }
     public string? GatewayIPv4 { get; init; }
     public DateTimeOffset? LastSeenUtc { get; init; }
     public DateTimeOffset? LastProbeUtc { get; init; }
     public DateTimeOffset? LastSuccessfulAuthUtc { get; init; }
     public DateTimeOffset? ExpectedExpiryUtc { get; init; }
+    public DateTimeOffset? LastAttemptUtc { get; init; }
+    public string? LastAttemptReason { get; init; }
+    public string? LastResult { get; init; }
+    public bool? InternetConfirmed { get; init; }
+    public int AutomaticStepOneAttempts { get; init; }
+    public int PreStepFailureCount { get; init; }
+    public DateTimeOffset? NextAutomaticRetryUtc { get; init; }
+    public bool UserActionRequired { get; init; }
+    public bool EdgeWatchActive { get; init; }
     public PathAuthorizationStatus Status { get; init; }
 }
 
@@ -37,7 +47,7 @@ public sealed record LegacyGlobalAuthorizationHint
 
 public sealed record PathAuthorizationStateDocument
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public LegacyGlobalAuthorizationHint? LegacyGlobalHint { get; init; }
@@ -133,9 +143,67 @@ public sealed class PathAuthorizationStateStore(
             LastProbeUtc = now,
             LastSuccessfulAuthUtc = authorizedAt,
             ExpectedExpiryUtc = expiry,
+            LastAttemptUtc = now,
+            LastAttemptReason = "success",
+            LastResult = "success",
+            InternetConfirmed = true,
+            AutomaticStepOneAttempts = 0,
+            PreStepFailureCount = 0,
+            NextAutomaticRetryUtc = null,
+            UserActionRequired = false,
+            EdgeWatchActive = false,
             Status = PathAuthorizationStatus.Internet
         });
     }
+
+
+    public RuntimeState LoadRuntime(NetworkPathSnapshot path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        EnsurePhysical(path);
+        var state = Find(path.Identity) ?? Observe(path);
+        return ToRuntimeState(state);
+    }
+
+    public void SaveRuntime(NetworkPathSnapshot path, RuntimeState runtime)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        ArgumentNullException.ThrowIfNull(runtime);
+        EnsurePhysical(path);
+        var now = clock.GetUtcNow().ToUniversalTime();
+        Mutate(path.Identity, previous => SnapshotState(path, previous, now) with
+        {
+            LastSuccessfulAuthUtc = runtime.LastAuthUtc?.ToUniversalTime(),
+            ExpectedExpiryUtc = runtime.ExpectedExpiryUtc?.ToUniversalTime(),
+            LastAttemptUtc = runtime.LastAttemptUtc?.ToUniversalTime(),
+            LastAttemptReason = runtime.LastAttemptReason,
+            LastResult = runtime.LastResult,
+            InternetConfirmed = runtime.InternetConfirmed,
+            AutomaticStepOneAttempts = runtime.AutomaticStepOneAttempts,
+            PreStepFailureCount = runtime.PreStepFailureCount,
+            NextAutomaticRetryUtc = runtime.NextAutomaticRetryUtc?.ToUniversalTime(),
+            UserActionRequired = runtime.UserActionRequired,
+            EdgeWatchActive = runtime.EdgeWatchActive,
+            Status = string.Equals(runtime.LastResult, "success", StringComparison.OrdinalIgnoreCase)
+                ? PathAuthorizationStatus.Internet
+                : previous?.Status ?? PathAuthorizationStatus.Unknown
+        });
+    }
+
+    public static RuntimeState ToRuntimeState(PathAuthorizationState state) => new()
+    {
+        LastAuthUtc = state.LastSuccessfulAuthUtc,
+        ExpectedExpiryUtc = state.ExpectedExpiryUtc,
+        LastAttemptUtc = state.LastAttemptUtc,
+        LastAttemptReason = state.LastAttemptReason,
+        LastResult = state.LastResult,
+        InternetConfirmed = state.InternetConfirmed,
+        AutomaticStepOneAttempts = state.AutomaticStepOneAttempts,
+        PreStepFailureCount = state.PreStepFailureCount,
+        NextAutomaticRetryUtc = state.NextAutomaticRetryUtc,
+        UserActionRequired = state.UserActionRequired,
+        EdgeWatchActive = state.EdgeWatchActive
+    };
 
     public void MarkMissingAsDisconnected(
         IReadOnlyCollection<NetworkPathIdentity> currentlyPresent)
@@ -236,12 +304,22 @@ public sealed class PathAuthorizationStateStore(
         Identity = path.Identity,
         AdapterName = path.Name,
         Ssid = path.Ssid,
+        InterfaceIndex = path.InterfaceIndex,
         SourceIPv4 = path.SourceIPv4?.ToString(),
         GatewayIPv4 = path.GatewayIPv4?.ToString(),
         LastSeenUtc = now,
         LastProbeUtc = previous?.LastProbeUtc,
         LastSuccessfulAuthUtc = previous?.LastSuccessfulAuthUtc,
         ExpectedExpiryUtc = previous?.ExpectedExpiryUtc,
+        LastAttemptUtc = previous?.LastAttemptUtc,
+        LastAttemptReason = previous?.LastAttemptReason,
+        LastResult = previous?.LastResult,
+        InternetConfirmed = previous?.InternetConfirmed,
+        AutomaticStepOneAttempts = previous?.AutomaticStepOneAttempts ?? 0,
+        PreStepFailureCount = previous?.PreStepFailureCount ?? 0,
+        NextAutomaticRetryUtc = previous?.NextAutomaticRetryUtc,
+        UserActionRequired = previous?.UserActionRequired ?? false,
+        EdgeWatchActive = previous?.EdgeWatchActive ?? false,
         Status = previous?.Status ?? PathAuthorizationStatus.Unknown
     };
 
