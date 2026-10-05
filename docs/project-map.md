@@ -59,6 +59,8 @@
 - [checks.md](checks.md) — воспроизводимая проверка, prerequisites, безопасные границы.
 - [protocol.md](protocol.md) — исследованные wire-инварианты авторизации.
 - [direct-network.md](direct-network.md) — нынешний маршрут C# и его ограничения.
+- [network-path-roadmap.md](network-path-roadmap.md) — следующая функциональная модель
+  multi-path: per-path probe/expiry, NAT и VPN; пока это план, а не текущий runtime.
 - [telemetry.md](telemetry.md), [speedtest.md](speedtest.md),
   [speed-tools-ui.md](speed-tools-ui.md) — текущие контракты и поведение скорости/рейтинга.
 - [maintainability-audit-and-plan.md](maintainability-audit-and-plan.md) — аудит,
