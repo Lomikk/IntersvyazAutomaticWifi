@@ -29,6 +29,8 @@ internal sealed partial class InteractiveTerminalUi
     ];
 
     private const string Subtitle = "InterSvyaz Wi-Fi Auth";
+    private const string ActiveStatusDot = "\u25CF";
+    private const string InactiveStatusDot = "\u25CB";
 
     private readonly string productVersion;
     private readonly TerminalOutput terminalOutput;
@@ -1643,7 +1645,7 @@ internal sealed partial class InteractiveTerminalUi
 
     private void DrawStatusPane(Cell[,] canvas)
     {
-        DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, "СЕТЕВЫЕ ПУТИ");
+        DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, "СОСТОЯНИЕ");
         var s = status;
         if (s is null)
         {
@@ -1652,37 +1654,46 @@ internal sealed partial class InteractiveTerminalUi
         }
 
         var paths = s.NetworkPaths ?? Array.Empty<InteractiveNetworkPathStatus>();
-        const int maxVisiblePaths = 4;
+        const int maxPathRows = 4;
         var row = PaneY + 2;
         if (paths.Count == 0)
         {
             Put(canvas, rightPaneX + 3, row, "Нет активных физических путей", Palette.Dim);
         }
-        else
+        else if (paths.Count <= maxPathRows)
         {
-            foreach (var path in paths.Take(maxVisiblePaths))
+            foreach (var path in paths)
             {
                 DrawNetworkPathLine(canvas, row++, path);
             }
-
-            if (paths.Count > maxVisiblePaths)
+        }
+        else
+        {
+            foreach (var path in paths.Take(maxPathRows - 1))
             {
-                Put(canvas, rightPaneX + 3, row, $"ещё {paths.Count - maxVisiblePaths} пути...", Palette.Dim);
+                DrawNetworkPathLine(canvas, row++, path);
             }
+            Put(canvas, rightPaneX + 5, row, $"ещё {paths.Count - (maxPathRows - 1)} пути...", Palette.Dim);
         }
 
-        DrawStatusLine(canvas, PaneY + 8, "Автовход", s.AutomaticAuthorizationEnabled ? "включён ●" : "выключен ○",
+        DrawStatusLine(canvas, PaneY + 6, "VPN",
+            s.VpnActive ? $"включён {ActiveStatusDot}" : $"выключен {InactiveStatusDot}",
+            s.VpnActive ? Palette.Highlight : Palette.Dim);
+
+        DrawStatusLine(canvas, PaneY + 8, "Автовход",
+            s.AutomaticAuthorizationEnabled ? $"включён {ActiveStatusDot}" : $"выключен {InactiveStatusDot}",
             s.AutomaticAuthorizationEnabled ? Palette.Good : Palette.Dim);
-        DrawStatusLine(canvas, PaneY + 9, "Фоновый режим", s.AgentRunning ? "работает ●" : "остановлен ○",
+        DrawStatusLine(canvas, PaneY + 9, "Фоновый режим",
+            s.AgentRunning ? $"работает {ActiveStatusDot}" : $"остановлен {InactiveStatusDot}",
             s.AgentRunning ? Palette.Good : Palette.Dim);
         DrawStatusLine(canvas, PaneY + 10, "Уведомления",
-            s.NotificationMode == "выкл" ? "выкл ○" : $"{s.NotificationMode} ●",
+            s.NotificationMode == "выкл" ? $"выкл {InactiveStatusDot}" : $"{s.NotificationMode} {ActiveStatusDot}",
             s.NotificationMode == "выкл" ? Palette.Dim : Palette.Good);
         DrawStatusLine(canvas, PaneY + 11, "Версия", s.Version, Palette.Text);
 
         if (!string.IsNullOrWhiteSpace(s.AvailableUpdateVersion))
         {
-            DrawStatusLine(canvas, PaneY + 12, "Обновление", $"{s.AvailableUpdateVersion} ●", Palette.Highlight);
+            DrawStatusLine(canvas, PaneY + 12, "Обновление", $"{s.AvailableUpdateVersion} {ActiveStatusDot}", Palette.Highlight);
         }
     }
 
@@ -1690,47 +1701,57 @@ internal sealed partial class InteractiveTerminalUi
     {
         var contentX = rightPaneX + 3;
         var rightExclusive = rightPaneX + paneWidth - 3;
-        var state = FormatPathPaneStatus(path);
+        var presentation = FormatPathPaneStatus(path);
         var marker = path.Preferred ? "> " : "  ";
         var label = marker + path.Name;
-        var reserve = Math.Min(Math.Max(10, state.Text.Length + 1), Math.Max(10, paneWidth / 2));
-        var labelWidth = Math.Max(7, rightExclusive - contentX - reserve);
+
+        const int stateWidth = 14;
+        const int timerWidth = 8;
+        const int gap = 1;
+        var available = Math.Max(1, rightExclusive - contentX);
+        var labelWidth = Math.Max(7, available - stateWidth - timerWidth - (gap * 2));
+        var stateStart = contentX + labelWidth + gap;
+        var timerStart = rightExclusive - timerWidth;
+
         Put(canvas, contentX, row, Truncate(label, labelWidth), path.Preferred ? Palette.Highlight : Palette.Text);
-        PutRightAligned(canvas, contentX + labelWidth + 1, rightExclusive, row, state.Text, state.Color);
+        PutRightAligned(canvas, stateStart, timerStart - gap, row, presentation.StateText, presentation.StateColor);
+        PutRightAligned(canvas, timerStart, rightExclusive, row, presentation.TimerText, presentation.TimerColor);
     }
 
-    internal static (string Text, Palette Color) FormatPathPaneStatus(
+    internal static (string StateText, string TimerText, Palette StateColor, Palette TimerColor) FormatPathPaneStatus(
         InteractiveNetworkPathStatus path,
-        DateTimeOffset? nowUtc = null,
-        bool compact = false)
+        DateTimeOffset? nowUtc = null)
     {
         if (string.Equals(path.LastResult, "step-one-sent", StringComparison.OrdinalIgnoreCase))
         {
-            return ("авторизация...", Palette.Highlight);
+            return ("авторизация...", "—", Palette.Highlight, Palette.Dim);
         }
 
         if (path.Status == PathAuthorizationStatus.Internet)
         {
             var now = nowUtc ?? DateTimeOffset.UtcNow;
+            var authorizationKnown = path.ExpectedExpiryUtc is not null ||
+                                     string.Equals(path.LastResult, "success", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(path.LastResult, "already-authorized", StringComparison.OrdinalIgnoreCase);
             if (path.ExpectedExpiryUtc is { } expiry && expiry > now)
             {
                 var totalMinutes = Math.Max(0, (int)Math.Floor((expiry - now).TotalMinutes));
                 var hours = totalMinutes / 60;
                 var minutes = totalMinutes % 60;
-                return compact
-                    ? ($"online {hours:00}:{minutes:00}", Palette.Good)
-                    : ($"интернет {hours}ч {minutes:00}м", Palette.Good);
+                return ("авторизован", $"{hours}ч {minutes:00}м", Palette.Good, Palette.Good);
             }
-            return ("интернет", Palette.Good);
+            return authorizationKnown
+                ? ("авторизован", "—", Palette.Good, Palette.Dim)
+                : ("интернет", "—", Palette.Good, Palette.Dim);
         }
 
         return path.Status switch
         {
-            PathAuthorizationStatus.Captive => ("captive", Palette.Highlight),
-            PathAuthorizationStatus.Unreachable => ("недоступен", Palette.Dim),
-            PathAuthorizationStatus.Ambiguous => ("неясно", Palette.Highlight),
-            PathAuthorizationStatus.Disconnected => ("отключён", Palette.Dim),
-            _ => ("проверка...", Palette.Dim)
+            PathAuthorizationStatus.Captive => ("не авторизован", "—", Palette.Highlight, Palette.Dim),
+            PathAuthorizationStatus.Unreachable => ("недоступен", "—", Palette.Dim, Palette.Dim),
+            PathAuthorizationStatus.Ambiguous => ("неясно", "—", Palette.Highlight, Palette.Dim),
+            PathAuthorizationStatus.Disconnected => ("отключён", "—", Palette.Dim, Palette.Dim),
+            _ => ("проверка...", "—", Palette.Dim, Palette.Dim)
         };
     }
 

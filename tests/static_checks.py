@@ -171,7 +171,7 @@ assert 'IS74W_SKIP_REVEAL' in csharp_program, 'bootstrap must not replay the ful
 assert csharp_ui.count('GetCurrentItems()') >= 3, 'rich and compact menus must use the same action list router'
 assert 'var items = GetCurrentItems();' in csharp_ui and 'RunCompactSelection(GetCurrentItems())' in csharp_ui, 'rich/compact action list paths diverged'
 assert 'MenuPage.Settings => GetSettingsItems(status)' in csharp_ui and 'MenuPage.Maintenance => GetMaintenanceItems(status)' in csharp_ui and 'MenuPage.Updates => GetUpdateItems(status)' in csharp_ui and '_ => GetPrimaryItems(status)' in csharp_ui, 'state-aware action list router lost menu pages'
-assert 'DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, "СЕТЕВЫЕ ПУТИ")' in csharp_ui and 'DrawNetworkPathLine' in csharp_ui and 'path.Preferred ? "> " : "  "' in csharp_ui, 'main status pane must render per-path state and mark the preferred physical path'
+assert 'DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, "СОСТОЯНИЕ")' in csharp_ui and 'DrawNetworkPathLine' in csharp_ui and 'path.Preferred ? "> " : "  "' in csharp_ui and 's.VpnActive' in csharp_ui, 'main status pane must render per-path state, preferred path, and VPN state'
 assert 'DrawStatusLine(canvas, PaneY + 2, "Интернет"' not in csharp_ui and 'DrawStatusLine(canvas, PaneY + 4, "Авторизация"' not in csharp_ui, 'main status pane must not reintroduce global Internet/authorization rows'
 assert '"ещё не выполнялась ○"' in csharp_ui, 'unknown captive authorization state must not be presented as denied Wi-Fi access'
 csharp_wifi = (root / 'src' / 'IS74Wifi.Core' / 'WindowsWifiService.cs').read_text(encoding='utf-8')

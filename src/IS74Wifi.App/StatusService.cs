@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
@@ -176,10 +177,12 @@ internal sealed class StatusService
         var updateMaintenance = new UpdateMaintenanceService(currentVersion, paths, json, logger);
         var updateState = updateMaintenance.LoadState();
         var pathState = new PathAuthorizationStateStore(paths, json).Load();
-        var currentPaths = new NetworkPathEnumerator()
-            .EnumerateAutomaticCandidates()
+        var enumerator = new NetworkPathEnumerator();
+        var allPaths = enumerator.EnumerateAll();
+        var currentPaths = allPaths
             .Where(path => path.CanAutomaticallyAuthorize)
             .ToArray();
+        var vpnActive = DetectActiveVpnRoute(allPaths);
         return new LocalStatusState(
             settings,
             new DpapiSecretStore(paths).Load(),
@@ -187,6 +190,7 @@ internal sealed class StatusService
             new RuntimeStateStore(paths, json).Load(),
             pathState,
             currentPaths,
+            vpnActive,
             updateState,
             updateMaintenance.IncludePrereleases(settings),
             readMachineState());
@@ -268,7 +272,24 @@ internal sealed class StatusService
             InternetPathCount: internetPathCount,
             CaptivePathCount: captivePathCount,
             ProblemPathCount: problemPathCount,
-            NetworkPaths: networkPaths);
+            NetworkPaths: networkPaths,
+            VpnActive: local.VpnActive);
+    }
+
+
+    private static bool DetectActiveVpnRoute(IReadOnlyList<NetworkPathSnapshot> allPaths)
+    {
+        try
+        {
+            var route = new SystemNetworkRouteResolver().Resolve(IPAddress.Parse("1.1.1.1"), allPaths);
+            return route.LocalPath is { LooksVirtual: true };
+        }
+        catch
+        {
+            // Route inspection is best-effort UI diagnostics. Failure must not
+            // affect authorization or make the status screen unavailable.
+            return false;
+        }
     }
 
     private static StatusMachineState ReadDefaultMachineState()
@@ -418,6 +439,7 @@ internal sealed class StatusService
         RuntimeState Runtime,
         PathAuthorizationStateDocument PathState,
         IReadOnlyList<NetworkPathSnapshot> CurrentPaths,
+        bool VpnActive,
         UpdateState UpdateState,
         bool IncludePrereleases,
         StatusMachineState Machine);

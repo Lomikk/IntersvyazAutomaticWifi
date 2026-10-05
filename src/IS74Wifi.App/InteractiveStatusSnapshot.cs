@@ -35,7 +35,8 @@ internal sealed record InteractiveStatusSnapshot(
     int InternetPathCount = 0,
     int CaptivePathCount = 0,
     int ProblemPathCount = 0,
-    IReadOnlyList<InteractiveNetworkPathStatus>? NetworkPaths = null);
+    IReadOnlyList<InteractiveNetworkPathStatus>? NetworkPaths = null,
+    bool VpnActive = false);
 
 internal enum WifiNetworkState
 {

@@ -243,17 +243,23 @@ internal static class TerminalUiContractTests
             LastResult = null
         };
         var authorizing = captive with { LastResult = "step-one-sent" };
+        var knownWithoutTimer = untimed with { LastResult = "already-authorized" };
 
-        Assert(InteractiveTerminalUi.FormatPathPaneStatus(timed, now).Text == "интернет 23ч 36м",
-            "path pane must show the timer belonging to that exact path");
-        Assert(InteractiveTerminalUi.FormatPathPaneStatus(untimed, now).Text == "интернет",
-            "path without a known authorization window must not invent a countdown");
-        Assert(InteractiveTerminalUi.FormatPathPaneStatus(captive, now).Text == "captive",
-            "captive path label changed");
-        Assert(InteractiveTerminalUi.FormatPathPaneStatus(authorizing, now).Text == "авторизация...",
-            "active path authorization must be visible in the main pane");
-        Assert(InteractiveTerminalUi.FormatPathPaneStatus(timed, now, compact: true).Text == "online 23:36",
-            "narrow path status must keep the countdown readable");
+        var timedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(timed, now);
+        Assert(timedPresentation.StateText == "авторизован" && timedPresentation.TimerText == "23ч 36м",
+            "known path authorization must keep its own countdown separate from state text");
+        var untimedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(untimed, now);
+        Assert(untimedPresentation.StateText == "интернет" && untimedPresentation.TimerText == "—",
+            "path without a known authorization window must show Internet plus an explicit dash");
+        var captivePresentation = InteractiveTerminalUi.FormatPathPaneStatus(captive, now);
+        Assert(captivePresentation.StateText == "не авторизован" && captivePresentation.TimerText == "—",
+            "captive path must be unambiguous in the main pane");
+        var authorizingPresentation = InteractiveTerminalUi.FormatPathPaneStatus(authorizing, now);
+        Assert(authorizingPresentation.StateText == "авторизация..." && authorizingPresentation.TimerText == "—",
+            "active path authorization must be visible without inventing a timer");
+        var knownWithoutTimerPresentation = InteractiveTerminalUi.FormatPathPaneStatus(knownWithoutTimer, now);
+        Assert(knownWithoutTimerPresentation.StateText == "авторизован" && knownWithoutTimerPresentation.TimerText == "—",
+            "known authorization without a usable expiry must keep the state but show an unknown timer");
     }
     private static PhysicalAdapter Adapter(string id, string name, string? ssid) =>
         new(
