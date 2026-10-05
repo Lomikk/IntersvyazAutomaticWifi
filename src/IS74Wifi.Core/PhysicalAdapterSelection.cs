@@ -21,6 +21,7 @@ public sealed record PhysicalAdapter(
     public bool CanConnect => IsUp && IPv4Index > 0 && SourceIPv4 is not null;
     public bool IsWifi => Type == NetworkInterfaceType.Wireless80211;
     public bool IsCampus => IsWifi && Ssid is not null && SsidPolicy.IsTarget(Ssid);
+    public IPAddress? GatewayIPv4 { get; init; }
 }
 
 public static class PhysicalAdapterSelection
@@ -108,9 +109,12 @@ public static class PhysicalAdapterSelection
                                       !address.Equals(IPAddress.Any))
                     .Distinct()
                     .ToArray();
-                var gateway = properties.GatewayAddresses.Any(address =>
-                    address.Address.AddressFamily == AddressFamily.InterNetwork &&
-                    !address.Address.Equals(IPAddress.Any));
+                var gatewayAddress = properties.GatewayAddresses
+                    .Select(address => address.Address)
+                    .FirstOrDefault(address =>
+                        address.AddressFamily == AddressFamily.InterNetwork &&
+                        !address.Equals(IPAddress.Any));
+                var gateway = gatewayAddress is not null;
                 string? ssid = null;
                 if (Guid.TryParse(network.Id, out var guid))
                 {
@@ -118,7 +122,10 @@ public static class PhysicalAdapterSelection
                 }
                 result.Add(new PhysicalAdapter(network.Id, network.Name, network.NetworkInterfaceType,
                     network.OperationalStatus == OperationalStatus.Up, index, ipv4, dns, gateway, ssid,
-                    LooksVirtual: !IsPhysicalCandidate(network.NetworkInterfaceType, network.Name, network.Description)));
+                    LooksVirtual: !IsPhysicalCandidate(network.NetworkInterfaceType, network.Name, network.Description))
+                {
+                    GatewayIPv4 = gatewayAddress
+                });
             }
             catch (NetworkInformationException)
             {

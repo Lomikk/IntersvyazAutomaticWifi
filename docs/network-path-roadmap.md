@@ -242,6 +242,8 @@ agent scheduling одновременно, пока Core-модель path не 
 
 ### N1 — read-only `NetworkPathSnapshot`
 
+**Статус: foundation реализован в Core, в runtime/Agent ещё не подключён.**
+
 - В Core добавить чистую модель snapshot и enumerator/resolver физических path'ов.
 - Не менять authorization flow, timers или UI decisions.
 - Получать adapter ID, ifIndex, type, source IPv4, gateway, SSID, up/down и признаки
@@ -261,7 +263,13 @@ Contracts:
 
 Готово: snapshot можно построить/сравнить без сетевых side effects.
 
+Перед N4 текущую `LooksVirtual`/name-based эвристику нужно усилить позитивным Windows
+hardware-сигналом (эквивалентом `Get-NetAdapter -Physical` либо нативным IP Helper/NDIS
+признаком). N1 намеренно не меняет production selection policy.
+
 ### N2 — bound probe конкретного path
+
+**Статус: foundation реализован в Core, `stepOne` не подключён.**
 
 - Обобщить существующий `DirectNetworkConnector`, чтобы он принимал явный path, а не
   сам выбирал один preferred adapter.
@@ -278,6 +286,11 @@ Contracts:
 - `HTTP 200` captive и нормальный `302` классифицируются отдельно.
 
 Windows field check: direct Wi-Fi, USB phone, Windows hotspot, VPN on/off.
+
+Полевой smoke 2026-10-06 подтвердил ключевой N2-инвариант: при одновременно активных
+USB-RNDIS и Wi-Fi через Windows Mobile Hotspot, поверх которых был включён TAP-VPN,
+bound HTTP probes к IS74/SUSU успешно прошли независимо через оба физических пути без
+переключения системного default route и без отключения VPN.
 
 ### N3 — `PathAuthorizationStateStore`
 

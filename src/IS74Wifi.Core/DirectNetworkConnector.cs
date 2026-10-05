@@ -17,6 +17,13 @@ public sealed class DirectNetworkConnector(
     InterfaceDnsResolver? resolver = null,
     Func<PhysicalAdapter, IPAddress, int, CancellationToken, ValueTask<Stream>>? testDialer = null)
 {
+    public DirectNetworkConnector(
+        NetworkPathSnapshot path,
+        InterfaceDnsResolver? resolver = null,
+        Func<PhysicalAdapter, IPAddress, int, CancellationToken, ValueTask<Stream>>? testDialer = null)
+        : this(() => [path.ToPhysicalAdapter()], path.AdapterId, resolver, testDialer)
+    {
+    }
     // Winsock IP_UNICAST_IF takes an IPv4 interface index in network byte order.
     private const int IpUnicastIf = 31;
     private readonly InterfaceDnsResolver dns = resolver ?? new InterfaceDnsResolver();
