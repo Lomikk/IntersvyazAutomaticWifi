@@ -165,6 +165,42 @@ internal static class NetworkPathContractTests
         }
         Assert(virtualProbeCalls == 0, "VPN candidate reached the bound probe implementation");
 
+        var preferredWifiId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var preferredUsbId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var preferredWifi = campusPath with { AdapterId = preferredWifiId.ToString("B") };
+        var preferredUsb = usbPath with { AdapterId = preferredUsbId.ToString("B") };
+
+        Assert(PreferredNetworkPathResolver.ResolveFromSignals(
+                   [preferredWifi],
+                   Guid.Parse("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"),
+                   []) == preferredWifi.Identity,
+            "a single live physical path must be preferred even when Windows reports only a VPN profile");
+
+        Assert(PreferredNetworkPathResolver.ResolveFromSignals(
+                   [preferredWifi, preferredUsb],
+                   preferredUsbId,
+                   [preferredWifiId, preferredUsbId]) == preferredUsb.Identity,
+            "an exact physical Internet profile must win preferred-path arbitration");
+
+        Assert(PreferredNetworkPathResolver.ResolveFromSignals(
+                   [preferredWifi, preferredUsb],
+                   Guid.Parse("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"),
+                   [preferredWifiId]) == preferredWifi.Identity,
+            "a virtual primary profile must fall back to the one physical profile with Internet access");
+
+        Assert(PreferredNetworkPathResolver.ResolveFromSignals(
+                   [preferredWifi, preferredUsb],
+                   Guid.Parse("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"),
+                   [preferredWifiId, preferredUsbId]) is null,
+            "resolver must not guess when multiple physical Internet paths remain equally plausible");
+
+        var noGatewayUsb = preferredUsb with { GatewayIPv4 = null };
+        Assert(PreferredNetworkPathResolver.ResolveFromSignals(
+                   [preferredWifi, noGatewayUsb],
+                   Guid.Parse("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"),
+                   []) == preferredWifi.Identity,
+            "a single gateway-capable physical path should be used as conservative underlay fallback");
+
         using (var temp = TestDirectory.Create())
         {
             var paths = new AppPaths(temp.Path);
