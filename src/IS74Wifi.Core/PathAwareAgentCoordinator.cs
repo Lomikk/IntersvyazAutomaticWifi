@@ -23,6 +23,7 @@ public sealed class PathAwareAgentCoordinator(
     private static readonly TimeSpan NoPathRecheck = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan MaximumWait = TimeSpan.FromDays(1);
     private static readonly TimeSpan InitialProbeTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan PathSettlingRetryDelay = TimeSpan.FromSeconds(1);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private NetworkPathIdentity? lastPreferredPath;
 
@@ -129,15 +130,9 @@ public sealed class PathAwareAgentCoordinator(
                 continue;
             }
 
-            NetworkPathProbeResult result;
-            try
+            var result = await ProbePathAsync(path, changed, cancellationToken).ConfigureAwait(false);
+            if (result is null)
             {
-                result = await probe.ProbeAsync(path, InitialProbeTimeout, cancellationToken).ConfigureAwait(false);
-            }
-            catch (DirectNetworkUnavailableException ex)
-            {
-                logger.Write(DiagnosticLevel.Warn,
-                    $"agent.path-probe unavailable adapter={Safe(path.Name)} error={ex.GetType().Name}");
                 continue;
             }
 
@@ -172,6 +167,67 @@ public sealed class PathAwareAgentCoordinator(
         }
 
         await RunAuthorizationAsync(authorizationCandidate, secrets, cancellationToken).ConfigureAwait(false);
+    }
+
+
+    private async Task<NetworkPathProbeResult?> ProbePathAsync(
+        NetworkPathSnapshot path,
+        bool settlingAllowed,
+        CancellationToken cancellationToken)
+    {
+        NetworkPathProbeResult first;
+        try
+        {
+            first = await probe.ProbeAsync(path, InitialProbeTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (DirectNetworkUnavailableException ex)
+        {
+            logger.Write(DiagnosticLevel.Warn,
+                $"agent.path-probe unavailable adapter={Safe(path.Name)} error={ex.GetType().Name}");
+            return null;
+        }
+
+        if (!settlingAllowed ||
+            first.Status is not (NetworkPathProbeStatus.Unreachable or NetworkPathProbeStatus.Ambiguous))
+        {
+            return first;
+        }
+
+        logger.Write(DiagnosticLevel.Info,
+            $"agent.path-probe settling adapter={Safe(path.Name)} first={first.Status}");
+        try
+        {
+            await Task.Delay(PathSettlingRetryDelay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+
+        // The interface may have changed again while DHCP/ICS/NAT was settling.
+        // Do not publish a stale failure for the old transport binding; the next
+        // tick will immediately observe and probe the new snapshot instead.
+        var current = CurrentPaths().FirstOrDefault(candidate => SameIdentity(candidate.Identity, path.Identity));
+        if (current is null || !path.HasSameTransportBinding(current))
+        {
+            logger.Write(DiagnosticLevel.Info,
+                $"agent.path-probe settling-changed adapter={Safe(path.Name)}");
+            return null;
+        }
+
+        try
+        {
+            var retry = await probe.ProbeAsync(path, InitialProbeTimeout, cancellationToken).ConfigureAwait(false);
+            logger.Write(DiagnosticLevel.Info,
+                $"agent.path-probe settling-retry adapter={Safe(path.Name)} status={retry.Status}");
+            return retry;
+        }
+        catch (DirectNetworkUnavailableException ex)
+        {
+            logger.Write(DiagnosticLevel.Warn,
+                $"agent.path-probe settling-unavailable adapter={Safe(path.Name)} error={ex.GetType().Name}");
+            return null;
+        }
     }
 
     private bool ShouldFirePreferredTimerImmediately(

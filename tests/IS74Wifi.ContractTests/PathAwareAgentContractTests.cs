@@ -111,6 +111,43 @@ internal static class PathAwareAgentContractTests
         Assert(auth.Paths.Count == callsBefore, "expired timer caused authorization without a captive probe");
         Assert(state.Find(usb.Identity)?.Status == PathAuthorizationStatus.Internet,
             "expired-but-online path was not retained as Internet after probe");
+
+        // A freshly appeared/changed path may be visible before DHCP/ICS/NAT is
+        // fully usable. Do not publish the first transient failure as a stable
+        // Unreachable state: retry once while the UI remains in Unknown/checking.
+        var settling = Path("settling", NetworkInterfaceType.Wireless80211,
+            "192.168.137.222", "192.168.137.1", "Settling-Hotspot");
+        var settlingCalls = 0;
+        PathAuthorizationStatus? statusDuringRetry = null;
+        var settlingProbe = new NetworkPathProbe((path, _, _) =>
+        {
+            settlingCalls++;
+            if (settlingCalls == 1)
+            {
+                return Task.FromResult(ProbeResult(NetworkPathProbeStatus.Unreachable));
+            }
+
+            statusDuringRetry = state.Find(path.Identity)?.Status;
+            return Task.FromResult(ProbeResult(NetworkPathProbeStatus.Internet));
+        });
+        var settlingCoordinator = new PathAwareAgentCoordinator(
+            () => new StoredSecrets("token", "9123456789"),
+            () => "device",
+            () => [settling],
+            state,
+            settlingProbe,
+            auth,
+            settings,
+            logger,
+            clock);
+
+        await settlingCoordinator.TickAsync();
+        Assert(settlingCalls == 2,
+            "new path did not receive a settling retry after its first transient failure");
+        Assert(statusDuringRetry == PathAuthorizationStatus.Unknown,
+            "first transient failure was published before the settling retry completed");
+        Assert(state.Find(settling.Identity)?.Status == PathAuthorizationStatus.Internet,
+            "settling retry did not replace the transient failure with Internet truth");
     }
 
     private static NetworkPathSnapshot Path(
