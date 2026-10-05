@@ -10,19 +10,16 @@ public interface IPathAuthorizationRunner
 
 /// <summary>
 /// Runs the entire captive transaction through one immutable physical path.
-/// Every API/portal/probe client shares the same bound connector; transport
-/// continuity is revalidated before stepOne and again before stepTwo.
+/// Every API/portal/probe client shares the same bound connector. The critical
+/// stepOne -> mailbox polling -> stepTwo sequence contains no path re-enumeration.
 /// </summary>
 public sealed class PathAuthorizationRunner(
     PathAuthorizationStateStore pathState,
     AppSettings settings,
     DiagnosticLogger logger,
     AuthorizationTelemetryRecorder? telemetry = null,
-    Func<IReadOnlyList<PhysicalAdapter>>? enumerateAdapters = null,
     TimeProvider? timeProvider = null) : IPathAuthorizationRunner
 {
-    private readonly Func<IReadOnlyList<PhysicalAdapter>> enumerate =
-        enumerateAdapters ?? PhysicalAdapterSelection.Enumerate;
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
 
     public async Task<AuthorizationOutcome> RunAsync(
@@ -48,15 +45,6 @@ public sealed class PathAuthorizationRunner(
         var state = new AuthorizationStateManager(runtimeStore, settings, clock);
         var polling = new PushPollingEngine(api);
 
-        Task<bool> PathStillCurrent(CancellationToken token)
-        {
-            token.ThrowIfCancellationRequested();
-            var current = new NetworkPathEnumerator(enumerate)
-                .EnumerateAll()
-                .FirstOrDefault(candidate =>
-                    string.Equals(candidate.AdapterId, path.AdapterId, StringComparison.OrdinalIgnoreCase));
-            return Task.FromResult(current is not null && path.HasSameTransportBinding(current));
-        }
 
         var flow = new AuthorizationFlow(
             api,
@@ -69,8 +57,7 @@ public sealed class PathAuthorizationRunner(
             telemetry: telemetry,
             options: new AuthorizationFlowOptions { BaselineTimeout = TimeSpan.FromSeconds(5) },
             ignoreNetworkCheck: true,
-            preStepNetworkCheck: token => connector.CanReachPortalAsync(TimeSpan.FromSeconds(4), token),
-            pathContinuityCheck: PathStillCurrent);
+            preStepNetworkCheck: token => connector.CanReachPortalAsync(TimeSpan.FromSeconds(4), token));
 
         return await flow.RunAsync(request, cancellationToken).ConfigureAwait(false);
     }

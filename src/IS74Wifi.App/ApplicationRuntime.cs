@@ -178,6 +178,7 @@ internal sealed class ApplicationRuntime : IDisposable
         var pathState = new PathAuthorizationStateStore(paths, json, runtimeState);
         var pathEnumerator = new NetworkPathEnumerator();
         var pathProbe = new NetworkPathProbe();
+        var preferredPath = new PreferredNetworkPathResolver();
         var pathAuthorization = new PathAuthorizationRunner(
             pathState,
             settings,
@@ -192,7 +193,8 @@ internal sealed class ApplicationRuntime : IDisposable
             pathAuthorization,
             settings,
             logger,
-            notifications: notifications);
+            notifications: notifications,
+            preferredPathResolver: preferredPath);
         var agent = new AgentService(
             secrets,
             deviceIdentity,

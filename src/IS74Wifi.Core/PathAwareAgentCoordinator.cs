@@ -15,7 +15,8 @@ public sealed class PathAwareAgentCoordinator(
     AppSettings settings,
     DiagnosticLogger logger,
     TimeProvider? timeProvider = null,
-    IAgentNotificationSink? notifications = null)
+    IAgentNotificationSink? notifications = null,
+    PreferredNetworkPathResolver? preferredPathResolver = null)
 {
     private static readonly TimeSpan UnknownInternetRecheck = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan FailureRecheck = TimeSpan.FromMinutes(1);
@@ -23,6 +24,7 @@ public sealed class PathAwareAgentCoordinator(
     private static readonly TimeSpan MaximumWait = TimeSpan.FromDays(1);
     private static readonly TimeSpan InitialProbeTimeout = TimeSpan.FromSeconds(2);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
+    private NetworkPathIdentity? lastPreferredPath;
 
     public TimeSpan GetSleepDelay()
     {
@@ -89,8 +91,34 @@ public sealed class PathAwareAgentCoordinator(
             return;
         }
 
+        var preferredPath = preferredPathResolver?.Resolve(current);
+        if (preferredPath is not null)
+        {
+            lastPreferredPath = preferredPath;
+        }
+        else if (lastPreferredPath is not null &&
+                 !current.Any(path => SameIdentity(path.Identity, lastPreferredPath)))
+        {
+            lastPreferredPath = null;
+        }
+
+        var preferredSnapshot = lastPreferredPath is null
+            ? null
+            : current.FirstOrDefault(path => SameIdentity(path.Identity, lastPreferredPath));
+        if (preferredSnapshot is not null)
+        {
+            var preferredState = state.Find(preferredSnapshot.Identity);
+            if (ShouldFirePreferredTimerImmediately(preferredState, preferredSnapshot, now))
+            {
+                await RunAuthorizationAsync(preferredSnapshot, secrets, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+        }
+
         NetworkPathSnapshot? authorizationCandidate = null;
-        foreach (var path in current.OrderBy(PathSortKey, StringComparer.Ordinal))
+        foreach (var path in current
+                     .OrderByDescending(path => lastPreferredPath is not null && SameIdentity(path.Identity, lastPreferredPath))
+                     .ThenBy(PathSortKey, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var before = state.Find(path.Identity);
@@ -126,10 +154,16 @@ public sealed class PathAwareAgentCoordinator(
                 continue;
             }
 
-            // Deterministic arbitration: only the first confirmed-captive path
-            // receives the SMS flow on this tick. The next path remains due and
-            // wakes the agent again immediately after this attempt completes.
-            authorizationCandidate ??= path;
+            if (!await ConfirmCaptiveAsync(path, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            // Only one SMS-producing flow may run in one tick. Because the
+            // preferred Internet path is ordered first, it wins arbitration and
+            // starts immediately instead of waiting for probes of backup paths.
+            authorizationCandidate = path;
+            break;
         }
 
         if (authorizationCandidate is null || cancellationToken.IsCancellationRequested)
@@ -137,18 +171,82 @@ public sealed class PathAwareAgentCoordinator(
             return;
         }
 
-        var candidateState = state.Find(authorizationCandidate.Identity) ?? state.Observe(authorizationCandidate);
+        await RunAuthorizationAsync(authorizationCandidate, secrets, cancellationToken).ConfigureAwait(false);
+    }
+
+    private bool ShouldFirePreferredTimerImmediately(
+        PathAuthorizationState? pathState,
+        NetworkPathSnapshot current,
+        DateTimeOffset now)
+    {
+        if (pathState is null || pathState.UserActionRequired ||
+            pathState.ExpectedExpiryUtc is not { } expiry || now < expiry ||
+            pathState.EdgeWatchActive || SnapshotChanged(pathState, current) ||
+            pathState.Status != PathAuthorizationStatus.Internet)
+        {
+            return false;
+        }
+        if (pathState.NextAutomaticRetryUtc is { } retry && retry > now)
+        {
+            return false;
+        }
+
+        var lastAutomaticSendWasBeforeExpiry = pathState.AutomaticStepOneAttempts > 0 &&
+                                                pathState.LastAttemptUtc is { } lastAttempt &&
+                                                lastAttempt < expiry;
+        return pathState.AutomaticStepOneAttempts == 0 || lastAutomaticSendWasBeforeExpiry;
+    }
+
+    private async Task<bool> ConfirmCaptiveAsync(
+        NetworkPathSnapshot path,
+        CancellationToken cancellationToken)
+    {
+        var delay = TimeSpan.FromMilliseconds(Math.Max(100, settings.GuardProbeIntervalMilliseconds));
+        try
+        {
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+
+        var timeout = TimeSpan.FromMilliseconds(Math.Max(100, settings.GuardProbeTimeoutMilliseconds));
+        NetworkPathProbeResult confirmation;
+        try
+        {
+            confirmation = await probe.ProbeAsync(path, timeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (DirectNetworkUnavailableException ex)
+        {
+            logger.Write(DiagnosticLevel.Warn,
+                $"agent.path-probe-confirm unavailable adapter={Safe(path.Name)} error={ex.GetType().Name}");
+            return false;
+        }
+
+        var updated = state.RecordProbe(path, confirmation, clock.GetUtcNow());
+        logger.Write(DiagnosticLevel.Info,
+            $"agent.path-probe-confirm adapter={Safe(path.Name)} status={confirmation.Status} expiry={updated.ExpectedExpiryUtc:O}");
+        return confirmation.Status == NetworkPathProbeStatus.Captive && !updated.UserActionRequired;
+    }
+
+    private async Task RunAuthorizationAsync(
+        NetworkPathSnapshot path,
+        StoredSecrets secrets,
+        CancellationToken cancellationToken)
+    {
+        var candidateState = state.Find(path.Identity) ?? state.Observe(path);
         var reason = candidateState.AutomaticStepOneAttempts == 0
             ? AuthorizationAttemptReason.Automatic
             : AuthorizationAttemptReason.Retry;
         Publish(new AgentNotification(
             "Автоматическая авторизация Wi-Fi",
-            $"Проверенный captive-путь: {authorizationCandidate.Name}.",
+            $"Проверенный captive-путь: {path.Name}.",
             AgentNotificationImportance.Routine,
             AgentNotificationSeverity.Info));
 
         var outcome = await authorization.RunAsync(
-            authorizationCandidate,
+            path,
             new AuthorizationRequest(
                 secrets.Token,
                 secrets.Phone,
@@ -160,14 +258,14 @@ public sealed class PathAwareAgentCoordinator(
         if (outcome.Kind == AuthorizationOutcomeKind.Busy)
         {
             new AuthorizationStateManager(
-                new PathRuntimeStateStore(state, authorizationCandidate),
+                new PathRuntimeStateStore(state, path),
                 settings,
                 clock).ScheduleAutomaticRetry(TimeSpan.FromSeconds(1));
         }
 
         logger.Write(DiagnosticLevel.Info,
-            $"agent.path-auth adapter={Safe(authorizationCandidate.Name)} result={outcome.Kind} confirmed={outcome.InternetConfirmed}");
-        NotifyOutcome(authorizationCandidate, outcome);
+            $"agent.path-auth adapter={Safe(path.Name)} result={outcome.Kind} confirmed={outcome.InternetConfirmed}");
+        NotifyOutcome(path, outcome);
     }
 
     private IReadOnlyList<NetworkPathSnapshot> CurrentPaths() =>
