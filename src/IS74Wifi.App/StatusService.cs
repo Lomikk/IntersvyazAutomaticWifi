@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Net.NetworkInformation;
 using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
@@ -282,7 +283,45 @@ internal sealed class StatusService
         try
         {
             var route = new SystemNetworkRouteResolver().Resolve(IPAddress.Parse("1.1.1.1"), allPaths);
-            return route.LocalPath is { LooksVirtual: true };
+            if (route.LocalPath is { LooksVirtual: true })
+            {
+                return true;
+            }
+            if (route.SourceAddress is null)
+            {
+                return false;
+            }
+
+            foreach (var network in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                try
+                {
+                    if (network.OperationalStatus != OperationalStatus.Up)
+                    {
+                        continue;
+                    }
+                    var properties = network.GetIPProperties();
+                    var ownsRouteSource = properties.UnicastAddresses.Any(address =>
+                        address.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                        address.Address.Equals(route.SourceAddress));
+                    if (!ownsRouteSource)
+                    {
+                        continue;
+                    }
+
+                    var index = properties.GetIPv4Properties()?.Index ?? 0;
+                    return PhysicalAdapterSelection.LooksVirtual(
+                        network.NetworkInterfaceType,
+                        network.Name,
+                        network.Description,
+                        index);
+                }
+                catch (NetworkInformationException)
+                {
+                    // The interface may disappear while the status pane is refreshing.
+                }
+            }
+            return false;
         }
         catch
         {

@@ -35,6 +35,12 @@ internal static class DirectNetworkContractTests
             "WireGuard Tunnel", "Virtual Ethernet Adapter"), "virtual VPN adapter was eligible for automatic routing");
         Assert(!PhysicalAdapterSelection.IsPhysicalCandidate(NetworkInterfaceType.Tunnel,
             "VPN", "VPN"), "a tunnel adapter was eligible for direct routing");
+        Assert(PhysicalAdapterSelection.LooksVirtual((NetworkInterfaceType)53,
+            "Local Area Connection", "TAP-Windows Adapter V9", 0),
+            "non-Ethernet TAP interface type must be recognized as virtual for VPN route diagnostics");
+        Assert(!PhysicalAdapterSelection.LooksVirtual(NetworkInterfaceType.Ethernet,
+            "Ethernet", "Realtek Gaming GbE Family Controller", 0),
+            "ordinary physical ethernet was misclassified as virtual");
 
         var query = InterfaceDnsResolver.CreateQuery("api.is74.ru", 0x1234);
         var response = new byte[query.Length + 16];

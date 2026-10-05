@@ -45,6 +45,20 @@ public static class PhysicalAdapterSelection
         !VirtualMarkers.Any(marker => name.Contains(marker, StringComparison.OrdinalIgnoreCase) ||
                                       description.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
+    public static bool LooksVirtual(
+        NetworkInterfaceType type,
+        string name,
+        string description,
+        int interfaceIndex)
+    {
+        var hasHardwareSignal = WindowsInterfaceHardware.TryGet(
+            interfaceIndex,
+            out var hardwareInterface,
+            out _);
+        return !IsPhysicalCandidate(type, name, description) ||
+               hasHardwareSignal && !hardwareInterface;
+    }
+
     /// <summary>Pure selection logic: a missing manually chosen adapter is never replaced.</summary>
     public static PhysicalAdapter? Select(IReadOnlyList<PhysicalAdapter> candidates, string? preferredId)
     {
@@ -124,8 +138,7 @@ public static class PhysicalAdapterSelection
                     ssidsByAdapter.TryGetValue(guid, out ssid);
                 }
                 var hasHardwareSignal = WindowsInterfaceHardware.TryGet(index, out var hardwareInterface, out var connectorPresent);
-                var looksVirtual = !IsPhysicalCandidate(network.NetworkInterfaceType, network.Name, network.Description) ||
-                                   hasHardwareSignal && !hardwareInterface;
+                var looksVirtual = LooksVirtual(network.NetworkInterfaceType, network.Name, network.Description, index);
                 result.Add(new PhysicalAdapter(network.Id, network.Name, network.NetworkInterfaceType,
                     network.OperationalStatus == OperationalStatus.Up, index, ipv4, dns, gateway, ssid,
                     LooksVirtual: looksVirtual)
