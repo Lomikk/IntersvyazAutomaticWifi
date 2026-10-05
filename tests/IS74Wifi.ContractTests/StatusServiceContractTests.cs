@@ -38,10 +38,10 @@ internal static class StatusServiceContractTests
             InternetConfirmed = false
         });
         var alreadyAuthorized = service.ReadLocalSnapshot();
-        Assert(alreadyAuthorized.AuthorizationAlreadyActive,
-            "already-authorized runtime result must be preserved in the snapshot");
+        Assert(!alreadyAuthorized.AuthorizationAlreadyActive,
+            "legacy global already-authorized state must not be promoted to an active physical path");
         Assert(alreadyAuthorized.LastResult == "уже авторизован",
-            "runtime result wording changed");
+            "legacy runtime result must remain visible as diagnostic history");
 
         var overridden = service.ReadLocalSnapshot(internetOverride: true);
         Assert(overridden.InternetAvailable == true,
