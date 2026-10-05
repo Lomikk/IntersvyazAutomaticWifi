@@ -9,6 +9,7 @@ namespace IS74Wifi.Core;
 [JsonSerializable(typeof(AppSettings))]
 [JsonSerializable(typeof(UpdateState))]
 [JsonSerializable(typeof(RuntimeState))]
+[JsonSerializable(typeof(PathAuthorizationStateDocument))]
 [JsonSerializable(typeof(SessionMetadata))]
 [JsonSerializable(typeof(HostAddressCacheDocument))]
 [JsonSerializable(typeof(StoredSecrets))]

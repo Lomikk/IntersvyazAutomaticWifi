@@ -294,6 +294,8 @@ bound HTTP probes к IS74/SUSU успешно прошли независимо 
 
 ### N3 — `PathAuthorizationStateStore`
 
+**Статус: durable store реализован; production Agent пока продолжает использовать legacy global state.**
+
 - Ввести per-path durable state и schema/version migration.
 - `expected_expiry_utc` хранить только после подтверждённого Internet успеха данного
   path.

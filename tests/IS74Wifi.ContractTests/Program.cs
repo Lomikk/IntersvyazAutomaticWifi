@@ -27,6 +27,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("cached-dns", DnsContractTests.RunAsync),
     ("direct-network-adapter", DirectNetworkContractTests.RunAsync),
     ("network-path-foundation", NetworkPathContractTests.RunAsync),
+    ("path-authorization-state", PathAuthorizationStateContractTests.RunAsync),
     ("internet-probe", TestInternetProbeAsync),
     ("self-update", UpdateContractTests.RunAsync)
 };

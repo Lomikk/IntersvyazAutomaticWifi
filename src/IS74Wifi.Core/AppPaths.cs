@@ -14,6 +14,7 @@ public sealed class AppPaths
     public string SecretsFile => Path.Combine(Root, "secrets.dpapi");
     public string SessionMetaFile => Path.Combine(Root, "session-meta.json");
     public string RuntimeStateFile => Path.Combine(Root, "runtime-state.json");
+    public string PathAuthorizationStateFile => Path.Combine(Root, "path-authorization-state.json");
     public string SettingsFile => Path.Combine(Root, "settings.json");
     public string UpdateStateFile => Path.Combine(Root, "update-state.json");
     public string DeviceMetadataFile => Path.Combine(Root, "device-metadata.json");
