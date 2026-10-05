@@ -176,7 +176,10 @@ internal sealed class StatusService
         var updateMaintenance = new UpdateMaintenanceService(currentVersion, paths, json, logger);
         var updateState = updateMaintenance.LoadState();
         var pathState = new PathAuthorizationStateStore(paths, json).Load();
-        var currentPaths = new NetworkPathEnumerator().EnumerateAutomaticCandidates();
+        var currentPaths = new NetworkPathEnumerator()
+            .EnumerateAutomaticCandidates()
+            .Where(path => path.CanAutomaticallyAuthorize)
+            .ToArray();
         return new LocalStatusState(
             settings,
             new DpapiSecretStore(paths).Load(),
@@ -215,6 +218,24 @@ internal sealed class StatusService
             .Where(state => !string.IsNullOrWhiteSpace(state.LastResult))
             .OrderByDescending(state => state.LastAttemptUtc ?? DateTimeOffset.MinValue)
             .FirstOrDefault();
+        var preferredPath = new PreferredNetworkPathResolver().Resolve(local.CurrentPaths);
+        var networkPaths = local.CurrentPaths
+            .OrderByDescending(path => preferredPath is not null && SamePathIdentity(path.Identity, preferredPath))
+            .ThenBy(path => path.Ssid is null ? path.Name : path.Ssid, StringComparer.OrdinalIgnoreCase)
+            .Select(path =>
+            {
+                var pathState = local.PathState.Paths.FirstOrDefault(state => SamePathIdentity(state.Identity, path.Identity));
+                var displayName = path.IsWifi
+                    ? $"Wi-Fi · {path.Ssid ?? path.Name}"
+                    : path.Name;
+                return new InteractiveNetworkPathStatus(
+                    displayName,
+                    pathState?.Status ?? PathAuthorizationStatus.Unknown,
+                    preferredPath is not null && SamePathIdentity(path.Identity, preferredPath),
+                    pathState?.ExpectedExpiryUtc,
+                    pathState?.LastResult);
+            })
+            .ToArray();
 
         return new InteractiveStatusSnapshot(
             Installed: local.Machine.Installed,
@@ -246,7 +267,8 @@ internal sealed class StatusService
             ActivePhysicalPathCount: local.CurrentPaths.Count,
             InternetPathCount: internetPathCount,
             CaptivePathCount: captivePathCount,
-            ProblemPathCount: problemPathCount);
+            ProblemPathCount: problemPathCount,
+            NetworkPaths: networkPaths);
     }
 
     private static StatusMachineState ReadDefaultMachineState()

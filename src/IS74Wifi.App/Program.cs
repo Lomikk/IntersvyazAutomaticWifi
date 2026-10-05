@@ -2502,10 +2502,12 @@ internal static class Program
         return await statusService.RefreshNetworkSnapshotAsync(
             async cancellationToken =>
             {
-                var probe = await app.Internet.ProbeAsync(
-                    TimeSpan.FromSeconds(3),
-                    cancellationToken).ConfigureAwait(false);
-                return probe.Online;
+                var diagnostics = await app.NetworkPathDiagnostics
+                    .InspectAsync(TimeSpan.FromSeconds(3), cancellationToken)
+                    .ConfigureAwait(false);
+                return diagnostics.Count == 0
+                    ? null
+                    : diagnostics.Any(item => item.Status == NetworkPathProbeStatus.Internet);
             },
             _ => TryCheckForUpdatesIfDueAsync(app)).ConfigureAwait(false);
     }

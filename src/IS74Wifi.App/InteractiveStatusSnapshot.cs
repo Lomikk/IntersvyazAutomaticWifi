@@ -2,6 +2,13 @@ using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
 
+internal sealed record InteractiveNetworkPathStatus(
+    string Name,
+    PathAuthorizationStatus Status,
+    bool Preferred,
+    DateTimeOffset? ExpectedExpiryUtc,
+    string? LastResult);
+
 internal sealed record InteractiveStatusSnapshot(
     bool Installed,
     bool Registered,
@@ -27,7 +34,8 @@ internal sealed record InteractiveStatusSnapshot(
     int ActivePhysicalPathCount = 0,
     int InternetPathCount = 0,
     int CaptivePathCount = 0,
-    int ProblemPathCount = 0);
+    int ProblemPathCount = 0,
+    IReadOnlyList<InteractiveNetworkPathStatus>? NetworkPaths = null);
 
 internal enum WifiNetworkState
 {

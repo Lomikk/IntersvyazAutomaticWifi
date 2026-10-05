@@ -19,6 +19,7 @@ internal static class TerminalUiContractTests
         AdapterScreenNavigatesLargeLists();
         AdapterScreenFastKeysAndEscape();
         SharedListWindowKeepsLargeListsVisible();
+        PathPaneFormatsIndependentCountdowns();
         return Task.CompletedTask;
     }
 
@@ -219,6 +220,41 @@ internal static class TerminalUiContractTests
             "scroll window geometry must clamp a large leaderboard to its final page");
     }
 
+
+    private static void PathPaneFormatsIndependentCountdowns()
+    {
+        var now = new DateTimeOffset(2026, 10, 6, 0, 0, 0, TimeSpan.Zero);
+        var timed = new InteractiveNetworkPathStatus(
+            "Wi-Fi · Campus Wi-Fi",
+            PathAuthorizationStatus.Internet,
+            Preferred: false,
+            ExpectedExpiryUtc: now.AddHours(23).AddMinutes(36),
+            LastResult: "success");
+        var untimed = new InteractiveNetworkPathStatus(
+            "Ethernet 4",
+            PathAuthorizationStatus.Internet,
+            Preferred: true,
+            ExpectedExpiryUtc: null,
+            LastResult: null);
+        var captive = timed with
+        {
+            Status = PathAuthorizationStatus.Captive,
+            ExpectedExpiryUtc = null,
+            LastResult = null
+        };
+        var authorizing = captive with { LastResult = "step-one-sent" };
+
+        Assert(InteractiveTerminalUi.FormatPathPaneStatus(timed, now).Text == "интернет 23ч 36м",
+            "path pane must show the timer belonging to that exact path");
+        Assert(InteractiveTerminalUi.FormatPathPaneStatus(untimed, now).Text == "интернет",
+            "path without a known authorization window must not invent a countdown");
+        Assert(InteractiveTerminalUi.FormatPathPaneStatus(captive, now).Text == "captive",
+            "captive path label changed");
+        Assert(InteractiveTerminalUi.FormatPathPaneStatus(authorizing, now).Text == "авторизация...",
+            "active path authorization must be visible in the main pane");
+        Assert(InteractiveTerminalUi.FormatPathPaneStatus(timed, now, compact: true).Text == "online 23:36",
+            "narrow path status must keep the countdown readable");
+    }
     private static PhysicalAdapter Adapter(string id, string name, string? ssid) =>
         new(
             id,
