@@ -238,7 +238,8 @@ internal sealed class StatusService
                     pathState?.Status ?? PathAuthorizationStatus.Unknown,
                     preferredPath is not null && SamePathIdentity(path.Identity, preferredPath),
                     pathState?.ExpectedExpiryUtc,
-                    pathState?.LastResult);
+                    pathState?.LastResult,
+                    AuthorizationWindowApproximate: IsAuthorizationWindowApproximate(path));
             })
             .ToArray();
 
@@ -464,6 +465,21 @@ internal sealed class StatusService
         if (bytes < 1024) return $"{bytes} Б";
         if (bytes < 1024L * 1024L) return $"{bytes / 1024d:0.0} КБ";
         return $"{bytes / (1024d * 1024d):0.0} МБ";
+    }
+
+    internal static bool IsAuthorizationWindowApproximate(NetworkPathSnapshot path)
+    {
+        if (!path.IsWifi || string.IsNullOrWhiteSpace(path.Ssid))
+        {
+            return true;
+        }
+
+        // SSID is only a confidence signal. These are the locally observable
+        // direct campus networks; other Wi-Fi names may be phone/laptop
+        // hotspots whose upstream can change behind NAT without the local
+        // path identity changing.
+        return !SsidPolicy.IsTarget(path.Ssid) &&
+               !string.Equals(path.Ssid.Trim(), "SUSU Hide", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool SamePathIdentity(NetworkPathIdentity left, NetworkPathIdentity right) =>

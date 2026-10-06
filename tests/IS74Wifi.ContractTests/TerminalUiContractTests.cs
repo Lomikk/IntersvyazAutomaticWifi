@@ -229,38 +229,79 @@ internal static class TerminalUiContractTests
             PathAuthorizationStatus.Internet,
             Preferred: false,
             ExpectedExpiryUtc: now.AddHours(23).AddMinutes(36),
-            LastResult: "success");
-        var untimed = new InteractiveNetworkPathStatus(
+            LastResult: "success",
+            AuthorizationWindowApproximate: false);
+        var opaqueTimed = new InteractiveNetworkPathStatus(
             "Ethernet 4",
             PathAuthorizationStatus.Internet,
             Preferred: true,
-            ExpectedExpiryUtc: null,
-            LastResult: null);
-        var captive = timed with
+            ExpectedExpiryUtc: now.AddHours(18).AddMinutes(12),
+            LastResult: "success",
+            AuthorizationWindowApproximate: true);
+        var untimed = opaqueTimed with
         {
-            Status = PathAuthorizationStatus.Captive,
             ExpectedExpiryUtc = null,
             LastResult = null
         };
+        var unreachable = timed with { Status = PathAuthorizationStatus.Unreachable };
+        var ambiguous = timed with { Status = PathAuthorizationStatus.Ambiguous };
+        var unknown = timed with { Status = PathAuthorizationStatus.Unknown };
+        var captive = timed with { Status = PathAuthorizationStatus.Captive };
         var authorizing = captive with { LastResult = "step-one-sent" };
-        var knownWithoutTimer = untimed with { LastResult = "already-authorized" };
+        var expired = timed with { ExpectedExpiryUtc = now.AddSeconds(-1) };
 
         var timedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(timed, now);
-        Assert(timedPresentation.StateText == "авторизован" && timedPresentation.TimerText == "23ч 36м",
-            "known path authorization must keep its own countdown separate from state text");
+        Assert(timedPresentation.StateText == "интернет" && timedPresentation.TimerText == "23ч 36м",
+            "direct campus path must show observed Internet plus its known authorization window");
+        var opaquePresentation = InteractiveTerminalUi.FormatPathPaneStatus(opaqueTimed, now);
+        Assert(opaquePresentation.StateText == "интернет" && opaquePresentation.TimerText == "~18ч 12м",
+            "opaque NAT path must mark the remembered authorization window as approximate");
         var untimedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(untimed, now);
         Assert(untimedPresentation.StateText == "интернет" && untimedPresentation.TimerText == "—",
             "path without a known authorization window must show Internet plus an explicit dash");
+        var unreachablePresentation = InteractiveTerminalUi.FormatPathPaneStatus(unreachable, now);
+        Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "23ч 36м",
+            "temporary transport failure must not erase a still-valid remembered authorization window");
+        var ambiguousPresentation = InteractiveTerminalUi.FormatPathPaneStatus(ambiguous, now);
+        Assert(ambiguousPresentation.StateText == "неясно" && ambiguousPresentation.TimerText == "23ч 36м",
+            "ambiguous live state must preserve the remembered authorization window");
+        var unknownPresentation = InteractiveTerminalUi.FormatPathPaneStatus(unknown, now);
+        Assert(unknownPresentation.StateText == "проверка..." && unknownPresentation.TimerText == "23ч 36м",
+            "pending probe must preserve the remembered authorization window");
         var captivePresentation = InteractiveTerminalUi.FormatPathPaneStatus(captive, now);
-        Assert(captivePresentation.StateText == "не авторизован" && captivePresentation.TimerText == "—",
-            "captive path must be unambiguous in the main pane");
+        Assert(captivePresentation.StateText == "нужна авторизация" && captivePresentation.TimerText == "—",
+            "live captive observation must invalidate the displayed predicted window");
         var authorizingPresentation = InteractiveTerminalUi.FormatPathPaneStatus(authorizing, now);
         Assert(authorizingPresentation.StateText == "авторизация..." && authorizingPresentation.TimerText == "—",
-            "active path authorization must be visible without inventing a timer");
-        var knownWithoutTimerPresentation = InteractiveTerminalUi.FormatPathPaneStatus(knownWithoutTimer, now);
-        Assert(knownWithoutTimerPresentation.StateText == "авторизован" && knownWithoutTimerPresentation.TimerText == "—",
-            "known authorization without a usable expiry must keep the state but show an unknown timer");
+            "active authorization must not show a stale window");
+        var expiredPresentation = InteractiveTerminalUi.FormatPathPaneStatus(expired, now);
+        Assert(expiredPresentation.StateText == "интернет" && expiredPresentation.TimerText == "—",
+            "expired prediction must not be displayed as a current authorization window");
+
+        var directCampus = NetworkPathSnapshot.FromAdapter(Adapter("campus", "Wi-Fi", "Campus Wi-Fi"));
+        var hiddenCampus = NetworkPathSnapshot.FromAdapter(Adapter("hidden", "Wi-Fi", "SUSU Hide"));
+        var hotspot = NetworkPathSnapshot.FromAdapter(Adapter("hotspot", "Wi-Fi", "DESKTOP-S327VD2 4631"));
+        var usb = new NetworkPathSnapshot(
+            "usb",
+            "Ethernet 4",
+            NetworkInterfaceType.Ethernet,
+            IsUp: true,
+            InterfaceIndex: 8,
+            SourceIPv4: IPAddress.Parse("10.253.184.3"),
+            GatewayIPv4: IPAddress.Parse("10.253.184.224"),
+            DnsServers: [IPAddress.Parse("192.0.2.53")],
+            Ssid: null,
+            LooksVirtual: false);
+        Assert(!StatusService.IsAuthorizationWindowApproximate(directCampus),
+            "direct Campus Wi-Fi timer must not be marked approximate");
+        Assert(!StatusService.IsAuthorizationWindowApproximate(hiddenCampus),
+            "direct SUSU Hide timer must not be marked approximate");
+        Assert(StatusService.IsAuthorizationWindowApproximate(hotspot),
+            "Wi-Fi hotspot may change upstream behind NAT and must use an approximate timer");
+        Assert(StatusService.IsAuthorizationWindowApproximate(usb),
+            "USB/Ethernet tethering may change upstream behind NAT and must use an approximate timer");
     }
+
     private static PhysicalAdapter Adapter(string id, string name, string? ssid) =>
         new(
             id,

@@ -1727,32 +1727,36 @@ internal sealed partial class InteractiveTerminalUi
             return ("авторизация...", "—", Palette.Highlight, Palette.Dim);
         }
 
-        if (path.Status == PathAuthorizationStatus.Internet)
-        {
-            var now = nowUtc ?? DateTimeOffset.UtcNow;
-            var authorizationKnown = path.ExpectedExpiryUtc is not null ||
-                                     string.Equals(path.LastResult, "success", StringComparison.OrdinalIgnoreCase) ||
-                                     string.Equals(path.LastResult, "already-authorized", StringComparison.OrdinalIgnoreCase);
-            if (path.ExpectedExpiryUtc is { } expiry && expiry > now)
-            {
-                var totalMinutes = Math.Max(0, (int)Math.Floor((expiry - now).TotalMinutes));
-                var hours = totalMinutes / 60;
-                var minutes = totalMinutes % 60;
-                return ("авторизован", $"{hours}ч {minutes:00}м", Palette.Good, Palette.Good);
-            }
-            return authorizationKnown
-                ? ("авторизован", "—", Palette.Good, Palette.Dim)
-                : ("интернет", "—", Palette.Good, Palette.Dim);
-        }
+        var now = nowUtc ?? DateTimeOffset.UtcNow;
+        var timerText = FormatKnownAuthorizationWindow(path, now);
+        var timerColor = timerText == "—" || path.Status != PathAuthorizationStatus.Internet
+            ? Palette.Dim
+            : Palette.Good;
 
         return path.Status switch
         {
-            PathAuthorizationStatus.Captive => ("не авторизован", "—", Palette.Highlight, Palette.Dim),
-            PathAuthorizationStatus.Unreachable => ("недоступен", "—", Palette.Dim, Palette.Dim),
-            PathAuthorizationStatus.Ambiguous => ("неясно", "—", Palette.Highlight, Palette.Dim),
-            PathAuthorizationStatus.Disconnected => ("отключён", "—", Palette.Dim, Palette.Dim),
-            _ => ("проверка...", "—", Palette.Dim, Palette.Dim)
+            PathAuthorizationStatus.Internet => ("интернет", timerText, Palette.Good, timerColor),
+            // A live captive observation disproves the old predicted window.
+            PathAuthorizationStatus.Captive => ("нужна авторизация", "—", Palette.Highlight, Palette.Dim),
+            PathAuthorizationStatus.Unreachable => ("недоступен", timerText, Palette.Dim, Palette.Dim),
+            PathAuthorizationStatus.Ambiguous => ("неясно", timerText, Palette.Highlight, Palette.Dim),
+            PathAuthorizationStatus.Disconnected => ("отключён", timerText, Palette.Dim, Palette.Dim),
+            _ => ("проверка...", timerText, Palette.Dim, Palette.Dim)
         };
+    }
+
+    private static string FormatKnownAuthorizationWindow(InteractiveNetworkPathStatus path, DateTimeOffset nowUtc)
+    {
+        if (path.ExpectedExpiryUtc is not { } expiry || expiry <= nowUtc)
+        {
+            return "—";
+        }
+
+        var totalMinutes = Math.Max(0, (int)Math.Floor((expiry - nowUtc).TotalMinutes));
+        var hours = totalMinutes / 60;
+        var minutes = totalMinutes % 60;
+        var prefix = path.AuthorizationWindowApproximate ? "~" : string.Empty;
+        return $"{prefix}{hours}ч {minutes:00}м";
     }
 
     private static (string Text, Palette Color) FormatNetworkStatus(InteractiveStatusSnapshot s)

@@ -7,7 +7,8 @@ internal sealed record InteractiveNetworkPathStatus(
     PathAuthorizationStatus Status,
     bool Preferred,
     DateTimeOffset? ExpectedExpiryUtc,
-    string? LastResult);
+    string? LastResult,
+    bool AuthorizationWindowApproximate = false);
 
 internal sealed record InteractiveStatusSnapshot(
     bool Installed,
