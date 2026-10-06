@@ -24,7 +24,7 @@ public sealed record TelemetryPathContext(
         var directCampus = path.IsWifi && path.Ssid is not null && SsidPolicy.IsTarget(path.Ssid);
         var knownWindow = state?.ExpectedExpiryUtc is { } expiry && expiry > nowUtc;
         return new TelemetryPathContext(
-            PathKind(path),
+            PathKindName(path),
             directCampus,
             preferredPath,
             vpnActive,
@@ -33,7 +33,7 @@ public sealed record TelemetryPathContext(
             knownWindow && !directCampus);
     }
 
-    internal static string PathKind(NetworkPathSnapshot path) => path.InterfaceType switch
+    internal static string PathKindName(NetworkPathSnapshot path) => path.InterfaceType switch
     {
         NetworkInterfaceType.Wireless80211 => "wifi",
         NetworkInterfaceType.Ethernet or NetworkInterfaceType.GigabitEthernet or
