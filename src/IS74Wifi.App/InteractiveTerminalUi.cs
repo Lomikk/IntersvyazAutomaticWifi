@@ -1702,12 +1702,11 @@ internal sealed partial class InteractiveTerminalUi
         DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, title: null);
         var columns = GetNetworkPathColumns();
 
-        // Header labels live in the top border, but their placement follows the
-        // data columns rather than their text widths. This keeps the long
-        // "ДО ПРОВЕРКИ" caption from visually merging with "СТАТУС".
-        Put(canvas, columns.ContentX + 1, PaneY, " ПУТЬ ", Palette.Highlight);
-        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - 2, PaneY, " СТАТУС ", Palette.Highlight);
-        PutRightAligned(canvas, columns.TimerStart - 5, columns.RightExclusive, PaneY, " ДО ПРОВЕРКИ ", Palette.Highlight);
+        // Header and data use the same three column ranges. Two untouched
+        // border cells between columns remain visible as separators.
+        PutCenteredInRange(canvas, columns.ContentX, columns.StateStart - 2, PaneY, "ПУТЬ", Palette.Highlight);
+        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - 2, PaneY, "СТАТУС", Palette.Highlight);
+        PutCenteredInRange(canvas, columns.TimerStart, columns.RightExclusive, PaneY, "ДО ПРОВЕРКИ", Palette.Highlight);
     }
 
     private void DrawNetworkPathLine(Cell[,] canvas, int row, InteractiveNetworkPathStatus path)
@@ -1718,17 +1717,17 @@ internal sealed partial class InteractiveTerminalUi
         var label = marker + path.Name;
 
         Put(canvas, columns.ContentX, row, Truncate(label, columns.LabelWidth), path.Preferred ? Palette.Highlight : Palette.Text);
-        PutRightAligned(canvas, columns.StateStart, columns.TimerStart - 1, row, presentation.StateText, presentation.StateColor);
-        PutRightAligned(canvas, columns.TimerStart, columns.RightExclusive, row, presentation.TimerText, presentation.TimerColor);
+        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - 2, row, presentation.StateText, presentation.StateColor);
+        PutCenteredInRange(canvas, columns.TimerStart, columns.RightExclusive, row, presentation.TimerText, presentation.TimerColor);
     }
 
     private (int ContentX, int RightExclusive, int LabelWidth, int StateStart, int TimerStart) GetNetworkPathColumns()
     {
         var contentX = rightPaneX + 3;
         var rightExclusive = rightPaneX + paneWidth - 3;
-        const int stateWidth = 14;
-        const int timerWidth = 8;
-        const int gap = 1;
+        const int stateWidth = 11;
+        const int timerWidth = 12;
+        const int gap = 2;
         var available = Math.Max(1, rightExclusive - contentX);
         var labelWidth = Math.Max(7, available - stateWidth - timerWidth - (gap * 2));
         var stateStart = contentX + labelWidth + gap;
