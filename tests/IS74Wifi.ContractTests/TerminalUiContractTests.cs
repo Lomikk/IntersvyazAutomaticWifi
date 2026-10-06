@@ -230,7 +230,7 @@ internal static class TerminalUiContractTests
             Preferred: false,
             ExpectedExpiryUtc: now.AddHours(23).AddMinutes(36),
             LastResult: "success",
-            AuthorizationWindowApproximate: false);
+            AuthorizationWindowApproximate: true);
         var opaqueTimed = new InteractiveNetworkPathStatus(
             "Ethernet 4",
             PathAuthorizationStatus.Internet,
@@ -251,8 +251,8 @@ internal static class TerminalUiContractTests
         var expired = timed with { ExpectedExpiryUtc = now.AddSeconds(-1) };
 
         var timedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(timed, now);
-        Assert(timedPresentation.StateText == "интернет" && timedPresentation.TimerText == "23ч 36м",
-            "direct campus path must show observed Internet plus its known authorization window");
+        Assert(timedPresentation.StateText == "интернет" && timedPresentation.TimerText == "~23ч 36м",
+            "all remembered authorization windows are predictions, including direct-looking Wi-Fi");
         var opaquePresentation = InteractiveTerminalUi.FormatPathPaneStatus(opaqueTimed, now);
         Assert(opaquePresentation.StateText == "интернет" && opaquePresentation.TimerText == "~18ч 12м",
             "opaque NAT path must mark the remembered authorization window as approximate");
@@ -260,13 +260,13 @@ internal static class TerminalUiContractTests
         Assert(untimedPresentation.StateText == "интернет" && untimedPresentation.TimerText == "—",
             "path without a known authorization window must show Internet plus an explicit dash");
         var unreachablePresentation = InteractiveTerminalUi.FormatPathPaneStatus(unreachable, now);
-        Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "23ч 36м",
+        Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "~23ч 36м",
             "temporary transport failure must not erase a still-valid remembered authorization window");
         var ambiguousPresentation = InteractiveTerminalUi.FormatPathPaneStatus(ambiguous, now);
-        Assert(ambiguousPresentation.StateText == "неясно" && ambiguousPresentation.TimerText == "23ч 36м",
+        Assert(ambiguousPresentation.StateText == "неясно" && ambiguousPresentation.TimerText == "~23ч 36м",
             "ambiguous live state must preserve the remembered authorization window");
         var unknownPresentation = InteractiveTerminalUi.FormatPathPaneStatus(unknown, now);
-        Assert(unknownPresentation.StateText == "проверка..." && unknownPresentation.TimerText == "23ч 36м",
+        Assert(unknownPresentation.StateText == "проверка..." && unknownPresentation.TimerText == "~23ч 36м",
             "pending probe must preserve the remembered authorization window");
         var captivePresentation = InteractiveTerminalUi.FormatPathPaneStatus(captive, now);
         Assert(captivePresentation.StateText == "нужна авторизация" && captivePresentation.TimerText == "—",
@@ -292,10 +292,10 @@ internal static class TerminalUiContractTests
             DnsServers: [IPAddress.Parse("192.0.2.53")],
             Ssid: null,
             LooksVirtual: false);
-        Assert(!StatusService.IsAuthorizationWindowApproximate(directCampus),
-            "direct Campus Wi-Fi timer must not be marked approximate");
-        Assert(!StatusService.IsAuthorizationWindowApproximate(hiddenCampus),
-            "direct SUSU Hide timer must not be marked approximate");
+        Assert(StatusService.IsAuthorizationWindowApproximate(directCampus),
+            "Campus-looking Wi-Fi cannot prove that the upstream is direct and must use an approximate timer");
+        Assert(StatusService.IsAuthorizationWindowApproximate(hiddenCampus),
+            "SUSU Hide may itself be a hotspot and must use an approximate timer");
         Assert(StatusService.IsAuthorizationWindowApproximate(hotspot),
             "Wi-Fi hotspot may change upstream behind NAT and must use an approximate timer");
         Assert(StatusService.IsAuthorizationWindowApproximate(usb),

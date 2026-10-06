@@ -469,17 +469,13 @@ internal sealed class StatusService
 
     internal static bool IsAuthorizationWindowApproximate(NetworkPathSnapshot path)
     {
-        if (!path.IsWifi || string.IsNullOrWhiteSpace(path.Ssid))
-        {
-            return true;
-        }
-
-        // SSID is only a confidence signal. These are the locally observable
-        // direct campus networks; other Wi-Fi names may be phone/laptop
-        // hotspots whose upstream can change behind NAT without the local
-        // path identity changing.
-        return !SsidPolicy.IsTarget(path.Ssid) &&
-               !string.Equals(path.Ssid.Trim(), "SUSU Hide", StringComparison.OrdinalIgnoreCase);
+        _ = path;
+        // A locally visible adapter/SSID does not prove what upstream exists
+        // beyond the first hop. Even a Wi-Fi SSID may be a phone/laptop hotspot,
+        // and the upstream can change without changing this local path identity.
+        // Therefore every stored expiry remains only an expected IS74 window;
+        // a live bound probe is always the source of truth.
+        return true;
     }
 
     private static bool SamePathIdentity(NetworkPathIdentity left, NetworkPathIdentity right) =>
