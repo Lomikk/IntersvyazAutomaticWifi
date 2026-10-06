@@ -534,6 +534,37 @@ static async Task TestIs74ApiAsync()
         .GetBaselineAsync("bearer", "device-1");
     Assert(dns.Failure?.Kind == Is74ApiFailureKind.Transport && dns.Failure.TransportFailure == TransportFailureKind.DnsUnavailable,
         "API client lost DNS failure classification");
+
+    Assert(
+        IS74Wifi.App.Program.ClassifyConfirmationRequestFailure(new Is74ApiFailure(
+            Is74ApiFailureKind.Transport, "auth.get-confirm", TransportFailureKind.Timeout)) ==
+        IS74Wifi.App.ConfirmationRequestFailureDisposition.EnterCodeAndAllowRetry,
+        "get-confirm timeout must preserve the user's chance to enter an already-delivered code");
+    Assert(
+        IS74Wifi.App.Program.ClassifyConfirmationRequestFailure(new Is74ApiFailure(
+            Is74ApiFailureKind.Transport, "auth.get-confirm", TransportFailureKind.ConnectionFailure)) ==
+        IS74Wifi.App.ConfirmationRequestFailureDisposition.EnterCodeAndAllowRetry,
+        "ambiguous connection failure must preserve code entry");
+    Assert(
+        IS74Wifi.App.Program.ClassifyConfirmationRequestFailure(new Is74ApiFailure(
+            Is74ApiFailureKind.Transport, "auth.get-confirm", TransportFailureKind.ResponseTooLarge)) ==
+        IS74Wifi.App.ConfirmationRequestFailureDisposition.EnterCodeAndAllowRetry,
+        "get-confirm response-read failure must preserve code entry");
+    Assert(
+        IS74Wifi.App.Program.ClassifyConfirmationRequestFailure(new Is74ApiFailure(
+            Is74ApiFailureKind.HttpStatus, "auth.get-confirm", StatusCode: 429)) ==
+        IS74Wifi.App.ConfirmationRequestFailureDisposition.EnterCodeWithoutRetry,
+        "HTTP 429 must allow an earlier code without encouraging another request");
+    Assert(
+        IS74Wifi.App.Program.ClassifyConfirmationRequestFailure(new Is74ApiFailure(
+            Is74ApiFailureKind.Transport, "auth.get-confirm", TransportFailureKind.DnsUnavailable)) ==
+        IS74Wifi.App.ConfirmationRequestFailureDisposition.Stop,
+        "definite pre-send DNS failure must not pretend a code may have been requested");
+    Assert(
+        IS74Wifi.App.Program.ClassifyConfirmationRequestFailure(new Is74ApiFailure(
+            Is74ApiFailureKind.HttpStatus, "auth.get-confirm", StatusCode: 500)) ==
+        IS74Wifi.App.ConfirmationRequestFailureDisposition.Stop,
+        "ordinary explicit HTTP failures must remain terminal for get-confirm");
 }
 
 static HttpResponseMessage JsonResponse(string body) => new(HttpStatusCode.OK)

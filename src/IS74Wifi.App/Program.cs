@@ -4,6 +4,13 @@ using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
 
+internal enum ConfirmationRequestFailureDisposition
+{
+    Stop,
+    EnterCodeAndAllowRetry,
+    EnterCodeWithoutRetry
+}
+
 internal static class Program
 {
     private const string ProductVersion = "v0.1.0-alpha.28";
@@ -250,29 +257,85 @@ internal static class Program
             var phone = NormalizePhone(Console.ReadLine());
             var deviceId = app.DeviceIdentity.GetOrCreate();
 
-            Console.WriteLine("Запрашиваю код подтверждения...");
-            registrationStage = "get-confirm";
-            LogRegistrationStageStart(app.Logger, registrationStage);
-            var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
-            registrationTelemetry.Record("get_confirm", 1, requested);
-            if (!requested.IsSuccess)
+            var confirmationRequestCount = 0;
+            string? smsCode = null;
+            while (smsCode is null)
             {
-                LogRegistrationFailure(app.Logger, "get-confirm", requested.Failure!, requested.Elapsed);
-                throw new InvalidOperationException(DescribeApiFailure(requested.Failure));
-            }
-            LogRegistrationStageSuccess(app.Logger, registrationStage, requested);
+                confirmationRequestCount++;
+                Console.WriteLine(confirmationRequestCount == 1
+                    ? "Запрашиваю код подтверждения..."
+                    : "Повторно запрашиваю код подтверждения...");
+                registrationStage = "get-confirm";
+                LogRegistrationStageStart(app.Logger, registrationStage);
+                var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
+                registrationTelemetry.Record("get_confirm", confirmationRequestCount, requested);
+                Console.WriteLine($"Запросов кода в этой сессии: {confirmationRequestCount}");
 
-            registrationStage = "input-code";
-            Console.Write("Введите код подтверждения: ");
-            var smsCode = (Console.ReadLine() ?? string.Empty).Trim();
-            if (smsCode.Length != 4 || smsCode.Any(c => c is < '0' or > '9'))
-            {
-                throw new InvalidOperationException("Код подтверждения должен состоять ровно из 4 цифр.");
+                var allowRequestNewCode = true;
+                var prompt = "Введите 4-значный код подтверждения";
+                if (requested.IsSuccess)
+                {
+                    LogRegistrationStageSuccess(app.Logger, registrationStage, requested);
+                    Console.WriteLine("Код подтверждения запрошен.");
+                }
+                else
+                {
+                    LogRegistrationFailure(app.Logger, "get-confirm", requested.Failure!, requested.Elapsed);
+                    var disposition = ClassifyConfirmationRequestFailure(requested.Failure!);
+                    if (disposition == ConfirmationRequestFailureDisposition.Stop)
+                    {
+                        throw new InvalidOperationException(DescribeApiFailure(requested.Failure!));
+                    }
+
+                    if (disposition == ConfirmationRequestFailureDisposition.EnterCodeWithoutRetry)
+                    {
+                        allowRequestNewCode = false;
+                        prompt = "Введите код от предыдущего запроса, если он пришёл";
+                        Console.WriteLine("Сервер временно ограничил новые запросы кода.");
+                        Console.WriteLine("Если код от предыдущего запроса уже пришёл, его всё ещё можно ввести.");
+                    }
+                    else
+                    {
+                        prompt = "Введите код, если он уже пришёл";
+                        Console.WriteLine("Ответ сервера не получен. Запрос мог быть обработан.");
+                        Console.WriteLine("Если код уже пришёл, введите его. Новый код запрашивайте только если предыдущий не пришёл.");
+                    }
+                }
+
+                var requestAgain = false;
+                while (smsCode is null && !requestAgain)
+                {
+                    registrationStage = "input-code";
+                    Console.Write(allowRequestNewCode
+                        ? $"{prompt} (R — запросить новый): "
+                        : $"{prompt}: ");
+                    var input = (Console.ReadLine() ?? string.Empty).Trim();
+                    if (allowRequestNewCode && string.Equals(input, "r", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine("Частые запросы кода могут быть временно ограничены сервером.");
+                        Console.Write("Запросить новый код? [y/N]: ");
+                        var confirmation = (Console.ReadLine() ?? string.Empty).Trim();
+                        if (string.Equals(confirmation, "y", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(confirmation, "yes", StringComparison.OrdinalIgnoreCase))
+                        {
+                            requestAgain = true;
+                        }
+                        continue;
+                    }
+
+                    if (input.Length != 4 || input.Any(c => c is < '0' or > '9'))
+                    {
+                        Console.WriteLine("Код подтверждения должен состоять ровно из 4 цифр.");
+                        continue;
+                    }
+
+                    smsCode = input;
+                }
             }
 
             registrationStage = "check-confirm";
             LogRegistrationStageStart(app.Logger, registrationStage);
-            var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
+            var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode!, deviceId).ConfigureAwait(false);
             registrationTelemetry.Record("check_confirm", 1, checkedCode);
             if (!checkedCode.IsSuccess)
             {
@@ -2060,46 +2123,100 @@ internal static class Program
             var phone = NormalizePhone(phoneInput);
             var deviceId = app.DeviceIdentity.GetOrCreate();
 
-            history.Start("Запрашиваю 4-значный код подтверждения...");
-            ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
-            registrationStage = "get-confirm";
-            LogRegistrationStageStart(app.Logger, registrationStage);
-            var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
-            registrationTelemetry.Record("get_confirm", 1, requested);
-            if (!requested.IsSuccess)
+            var confirmationRequestCount = 0;
+            string? smsCode = null;
+            while (smsCode is null)
             {
-                LogRegistrationFailure(app.Logger, "get-confirm", requested.Failure!, requested.Elapsed);
-                history.FailActive("Не удалось запросить код подтверждения");
-                history.AddError(DescribeApiFailure(requested.Failure));
-                await ui.ShowActionHistoryAsync(
-                    "РЕГИСТРАЦИЯ",
-                    history,
-                    GetInteractiveStatusSnapshot()).ConfigureAwait(false);
-                return;
-            }
-            LogRegistrationStageSuccess(app.Logger, registrationStage, requested);
-            history.CompleteActive("Код подтверждения запрошен");
+                confirmationRequestCount++;
+                history.Start(confirmationRequestCount == 1
+                    ? "Запрашиваю 4-значный код подтверждения..."
+                    : "Повторно запрашиваю 4-значный код подтверждения...");
+                ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
+                registrationStage = "get-confirm";
+                LogRegistrationStageStart(app.Logger, registrationStage);
+                var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
+                registrationTelemetry.Record("get_confirm", confirmationRequestCount, requested);
 
-            registrationStage = "input-code";
-            var smsCode = await ui.PromptDigitsAsync(
-                "РЕГИСТРАЦИЯ",
-                "Введите 4-значный код подтверждения. Esc отменяет продолжение регистрации.",
-                string.Empty,
-                minimumDigits: 4,
-                maximumDigits: 4,
-                currentStatus: currentStatus,
-                history: history).ConfigureAwait(false);
-            if (smsCode is null)
-            {
-                return;
+                var allowRequestNewCode = true;
+                var prompt = "Введите 4-значный код подтверждения.";
+                if (requested.IsSuccess)
+                {
+                    LogRegistrationStageSuccess(app.Logger, registrationStage, requested);
+                    history.CompleteActive("Код подтверждения запрошен");
+                }
+                else
+                {
+                    LogRegistrationFailure(app.Logger, "get-confirm", requested.Failure!, requested.Elapsed);
+                    var disposition = ClassifyConfirmationRequestFailure(requested.Failure!);
+                    if (disposition == ConfirmationRequestFailureDisposition.Stop)
+                    {
+                        history.FailActive("Не удалось запросить код подтверждения");
+                        history.AddError(DescribeApiFailure(requested.Failure!));
+                        history.AddInfo($"Запросов кода в этой сессии: {confirmationRequestCount}");
+                        await ui.ShowActionHistoryAsync(
+                            "РЕГИСТРАЦИЯ",
+                            history,
+                            GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                        return;
+                    }
+
+                    if (disposition == ConfirmationRequestFailureDisposition.EnterCodeWithoutRetry)
+                    {
+                        allowRequestNewCode = false;
+                        prompt = "Введите код от предыдущего запроса, если он пришёл.";
+                        history.WarnActive("Сервер временно ограничил новые запросы кода");
+                        history.AddWarning("Если код от предыдущего запроса уже пришёл, его всё ещё можно ввести.");
+                    }
+                    else
+                    {
+                        prompt = "Введите код, если он уже пришёл.";
+                        history.WarnActive("Ответ сервера не получен; запрос мог быть обработан");
+                        history.AddWarning("Если код уже пришёл — введите его. Новый код запрашивайте только если предыдущий не пришёл.");
+                    }
+                }
+                history.AddInfo($"Запросов кода в этой сессии: {confirmationRequestCount}");
+
+                while (smsCode is null)
+                {
+                    registrationStage = "input-code";
+                    var codeInput = await ui.PromptConfirmationCodeAsync(
+                        "РЕГИСТРАЦИЯ",
+                        prompt,
+                        allowRequestNewCode,
+                        currentStatus,
+                        history).ConfigureAwait(false);
+                    if (codeInput.Action == ConfirmationCodePromptAction.Cancel)
+                    {
+                        return;
+                    }
+                    if (codeInput.Action == ConfirmationCodePromptAction.Submit)
+                    {
+                        smsCode = codeInput.Code!;
+                        history.AddSuccess("4-значный код подтверждения введён");
+                        break;
+                    }
+
+                    var requestNewCode = await ui.ConfirmAsync(
+                        "РЕГИСТРАЦИЯ",
+                        "Запросить ещё один код? Частые запросы могут быть ограничены сервером.",
+                        "Запросить новый код",
+                        currentStatus,
+                        history).ConfigureAwait(false);
+                    if (!requestNewCode)
+                    {
+                        continue;
+                    }
+
+                    history.AddWarning("Новый код будет запрошен только по вашему выбору.");
+                    break;
+                }
             }
-            history.AddSuccess("4-значный код подтверждения введён");
 
             history.Start("Проверяю код подтверждения...");
             ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
             registrationStage = "check-confirm";
             LogRegistrationStageStart(app.Logger, registrationStage);
-            var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
+            var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode!, deviceId).ConfigureAwait(false);
             registrationTelemetry.Record("check_confirm", 1, checkedCode);
             if (!checkedCode.IsSuccess)
             {
@@ -3271,6 +3388,28 @@ internal static class Program
             $"elapsedMs={(elapsed is null ? "none" : Math.Max(0, (long)Math.Round(elapsed.Value.TotalMilliseconds)).ToString())}");
     }
 
+    internal static ConfirmationRequestFailureDisposition ClassifyConfirmationRequestFailure(Is74ApiFailure failure)
+    {
+        if (failure.Kind == Is74ApiFailureKind.HttpStatus && failure.StatusCode == 429)
+        {
+            return ConfirmationRequestFailureDisposition.EnterCodeWithoutRetry;
+        }
+
+        if (failure.Kind != Is74ApiFailureKind.Transport)
+        {
+            return ConfirmationRequestFailureDisposition.Stop;
+        }
+
+        return failure.TransportFailure switch
+        {
+            TransportFailureKind.Timeout or
+            TransportFailureKind.ConnectionFailure or
+            TransportFailureKind.Unexpected or
+            TransportFailureKind.ResponseTooLarge => ConfirmationRequestFailureDisposition.EnterCodeAndAllowRetry,
+            _ => ConfirmationRequestFailureDisposition.Stop
+        };
+    }
+
     private static string DescribeApiFailure(Is74ApiFailure failure)
     {
         return failure.Kind switch
@@ -3280,6 +3419,8 @@ internal static class Program
             Is74ApiFailureKind.Transport when failure.TransportFailure == TransportFailureKind.Timeout =>
                 "API Интерсвязи не ответил вовремя. Повторите попытку.",
             Is74ApiFailureKind.Unauthorized => "API отклонил авторизацию.",
+            Is74ApiFailureKind.HttpStatus when failure.StatusCode == 429 =>
+                "Сервер временно ограничил новые запросы кода.",
             Is74ApiFailureKind.HttpStatus => $"API Интерсвязи вернул HTTP {failure.StatusCode}.",
             Is74ApiFailureKind.InvalidJson or Is74ApiFailureKind.InvalidPayload =>
                 "API Интерсвязи вернул неожиданный формат ответа.",

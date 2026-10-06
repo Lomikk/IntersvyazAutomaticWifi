@@ -190,6 +190,7 @@ assert "new MenuItem('3', \"Состояние и подробный отчёт\
 assert "new MenuItem('2', \"Скорость и рейтинг\", InteractiveMenuAction.SpeedTools)" in csharp_ui, 'speed/leaderboard submenu entry missing'
 assert 'TargetView' not in csharp_ui, 'rich UI must not reintroduce speculative submenu navigation'
 assert 'PromptDigitsAsync' in csharp_ui and 'ConsoleKey.Escape' in csharp_ui, 'interactive registration input must be cancellable in-pane'
+assert 'PromptConfirmationCodeAsync' in csharp_ui and 'ConfirmationCodePromptAction.RequestNewCode' in csharp_ui, 'confirmation-code prompt must offer an explicit user-driven resend path'
 assert 'lastRenderedCanvas' in terminal_output and 'cell.Equals(lastRenderedCanvas' in terminal_output, 'terminal renderer must diff frames to avoid full-screen shimmer'
 assert 'PrepareInteractiveConsole(clear: !terminalOutput.HasRenderedFrame)' in csharp_ui, 'menu/workflow transitions must preserve the framebuffer for diff rendering'
 for forbidden in ('InteractiveMenuAction', 'CampusSpeedToolsService', 'AuthorizationFlow', 'SettingsStore'):
@@ -217,10 +218,10 @@ assert 'IS74Wifi.App (Local Debug)' in launch_settings and 'IS74W_RUN_LOCAL' in 
 # Menu UX: Esc is explicitly labeled as exit on the main screen, confirmation code is fixed at four digits,
 # successful manual authorization remains visible until the user returns, and technical details open copy-friendly.
 assert 'Esc выход' in csharp_ui, 'main menu must label Esc as exit'
-assert 'minimumDigits: 4' in csharp_program and 'maximumDigits: 4' in csharp_program, 'confirmation code must require exactly four digits'
+assert 'PromptConfirmationCodeAsync' in csharp_program and 'digits.Length == 4' in csharp_ui, 'confirmation code must require exactly four digits'
 assert 'ShowActionHistoryAsync' in csharp_program and 'DescribeAuthorizationOutcomeForUi(outcome)' in csharp_program, 'manual authorization history must stay visible for success and failure'
 assert 'IS74Wifi-status.txt' in csharp_program and 'notepad.exe' in csharp_program, 'detailed status must open as a copy-friendly external report'
-assert 'smsCode.Length != 4' in csharp_program, 'non-interactive registration must enforce the same four-digit confirmation contract'
+assert 'input.Length != 4' in register_flow, 'non-interactive registration must enforce the same four-digit confirmation contract'
 assert 'SMS-код' not in csharp_program and 'код подтверждения' in csharp_program, 'registration UI must not assume SMS delivery'
 assert 'network.failure route=' in (root / 'src' / 'IS74Wifi.Core' / 'HttpTransport.cs').read_text(encoding='utf-8'), 'local network failure diagnostics missing'
 
@@ -231,6 +232,9 @@ assert 'ShowActionProgress' in csharp_ui and 'ShowActionHistoryAsync' in csharp_
 assert "InteractiveActionLineKind.Success => '+'" in csharp_ui and "InteractiveActionLineKind.Success => '✓'" not in csharp_ui, 'success action marker must stay ASCII-safe for Windows consoles'
 assert 'UpdateProgressStage.VerifyingChecksum' in csharp_program and 'UpdateApplyProgressStage.ValidatingExecutable' in csharp_program, 'update workflow must expose package verification/apply history'
 assert 'history: history' in csharp_program, 'registration prompts must preserve prior action history'
+assert 'Запросов кода в этой сессии' in csharp_program, 'registration must label only the locally known confirmation-request count'
+assert 'registrationTelemetry.Record("get_confirm", confirmationRequestCount, requested)' in csharp_program, 'repeated get-confirm calls must keep their real request index'
+assert 'ClassifyConfirmationRequestFailure' in csharp_program and 'EnterCodeWithoutRetry' in csharp_program, 'ambiguous get-confirm failures and HTTP 429 must preserve code entry without blind auto-retry'
 assert 'BuildActionHistoryRows' in csharp_ui and 'WrapText(line.Text' in csharp_ui, 'action history must wrap to the current pane width'
 assert 'Truncate(line.Text' not in csharp_ui, 'action history must wrap instead of truncating long entries'
 

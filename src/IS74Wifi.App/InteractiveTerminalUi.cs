@@ -5,6 +5,17 @@ using static IS74Wifi.App.TerminalCanvas;
 
 namespace IS74Wifi.App;
 
+internal enum ConfirmationCodePromptAction
+{
+    Submit,
+    RequestNewCode,
+    Cancel
+}
+
+internal sealed record ConfirmationCodePromptResult(
+    ConfirmationCodePromptAction Action,
+    string? Code = null);
+
 internal sealed partial class InteractiveTerminalUi
 {
     private const int CanvasHeight = TerminalLayout.CanvasHeight;
@@ -689,6 +700,90 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
+    public async Task<ConfirmationCodePromptResult> PromptConfirmationCodeAsync(
+        string title,
+        string prompt,
+        bool allowRequestNewCode,
+        InteractiveStatusSnapshot currentStatus,
+        InteractiveActionHistory? history = null,
+        CancellationToken cancellationToken = default)
+    {
+        status = currentStatus;
+        var digits = new StringBuilder();
+        PrepareInteractiveConsole(clear: false);
+        try
+        {
+            var keyTask = ReadKeyAsync();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                UpdateLayout();
+                UpdateAmbientSweepState();
+                var footer = allowRequestNewCode
+                    ? "Enter продолжить   R новый код   Backspace удалить   Esc отмена"
+                    : "Enter продолжить   Backspace удалить   Esc отмена";
+                RenderPromptFrame(
+                    title,
+                    prompt,
+                    string.Empty,
+                    digits.ToString(),
+                    minimumDigits: 4,
+                    maximumDigits: 4,
+                    history: history?.Lines,
+                    footerHint: footer);
+
+                var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
+                if (completed != keyTask)
+                {
+                    continue;
+                }
+
+                var key = await keyTask.ConfigureAwait(false);
+                if (key.Key == ConsoleKey.Escape)
+                {
+                    return new ConfirmationCodePromptResult(ConfirmationCodePromptAction.Cancel);
+                }
+
+                if (allowRequestNewCode && key.Key == ConsoleKey.R)
+                {
+                    return new ConfirmationCodePromptResult(ConfirmationCodePromptAction.RequestNewCode);
+                }
+
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (digits.Length > 0)
+                    {
+                        digits.Length--;
+                    }
+                    keyTask = ReadKeyAsync();
+                    continue;
+                }
+
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    if (digits.Length == 4)
+                    {
+                        return new ConfirmationCodePromptResult(
+                            ConfirmationCodePromptAction.Submit,
+                            digits.ToString());
+                    }
+                    keyTask = ReadKeyAsync();
+                    continue;
+                }
+
+                if (char.IsAsciiDigit(key.KeyChar) && digits.Length < 4)
+                {
+                    digits.Append(key.KeyChar);
+                }
+                keyTask = ReadKeyAsync();
+            }
+        }
+        finally
+        {
+            RestoreConsole();
+        }
+    }
+
     public async Task ShowMessageAsync(
         string title,
         string message,
@@ -1164,7 +1259,8 @@ internal sealed partial class InteractiveTerminalUi
         string digits,
         int minimumDigits,
         int maximumDigits,
-        IReadOnlyList<InteractiveActionLine>? history)
+        IReadOnlyList<InteractiveActionLine>? history,
+        string? footerHint = null)
     {
         var canvas = CreateActionCanvas(title, out var contentX, out var contentY, out var contentWidth);
         var historyRows = DrawActionHistoryTail(canvas, contentX, contentY, contentWidth, history, maxRows: 3);
@@ -1175,7 +1271,11 @@ internal sealed partial class InteractiveTerminalUi
             ? $"Нужно цифр: {minimumDigits}"
             : $"Цифр: {minimumDigits}–{maximumDigits}";
         Put(canvas, contentX, promptY + 4, requirement, Palette.Dim);
-        Center(canvas, CanvasHeight - 1, "Enter продолжить   Backspace удалить   Esc отмена", Palette.Dim);
+        Center(
+            canvas,
+            CanvasHeight - 1,
+            footerHint ?? "Enter продолжить   Backspace удалить   Esc отмена",
+            Palette.Dim);
         Render(canvas);
     }
 

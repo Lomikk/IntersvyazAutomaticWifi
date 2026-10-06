@@ -9,7 +9,7 @@
 Примеры (значения времени условные):
 
 ```text
-network.failure route=api.get-confirm kind=DnsUnavailable phase=before_headers elapsedMs=12 budgetMs=15000 headersMs=none httpStatus=none
+network.failure route=api.get-confirm kind=DnsUnavailable phase=before_headers elapsedMs=12 budgetMs=30000 headersMs=none httpStatus=none
 network.failure route=portal.stepOne kind=Timeout phase=before_headers elapsedMs=5001 budgetMs=5000 headersMs=none httpStatus=none
 network.failure route=api.pushmessages kind=ResponseTooLarge phase=reading_body elapsedMs=12 budgetMs=3000 headersMs=9 httpStatus=200
 network.http-error route=api.pushmessages status=429 elapsedMs=40 headersMs=20 retryAfterMs=2000
