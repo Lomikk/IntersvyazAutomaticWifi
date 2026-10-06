@@ -251,13 +251,13 @@ internal static class TerminalUiContractTests
         var expired = timed with { ExpectedExpiryUtc = now.AddSeconds(-1) };
 
         var timedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(timed, now);
-        Assert(timedPresentation.StateText == "интернет" && timedPresentation.TimerText == "~23ч 36м",
+        Assert(timedPresentation.StateText == "онлайн" && timedPresentation.TimerText == "~23ч 36м",
             "all remembered authorization windows are predictions, including direct-looking Wi-Fi");
         var opaquePresentation = InteractiveTerminalUi.FormatPathPaneStatus(opaqueTimed, now);
-        Assert(opaquePresentation.StateText == "интернет" && opaquePresentation.TimerText == "~18ч 12м",
+        Assert(opaquePresentation.StateText == "онлайн" && opaquePresentation.TimerText == "~18ч 12м",
             "opaque NAT path must mark the remembered authorization window as approximate");
         var untimedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(untimed, now);
-        Assert(untimedPresentation.StateText == "интернет" && untimedPresentation.TimerText == "—",
+        Assert(untimedPresentation.StateText == "онлайн" && untimedPresentation.TimerText == "—",
             "path without a known authorization window must show Internet plus an explicit dash");
         var unreachablePresentation = InteractiveTerminalUi.FormatPathPaneStatus(unreachable, now);
         Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "~23ч 36м",
@@ -275,7 +275,7 @@ internal static class TerminalUiContractTests
         Assert(authorizingPresentation.StateText == "авторизация..." && authorizingPresentation.TimerText == "—",
             "active authorization must not show a stale window");
         var expiredPresentation = InteractiveTerminalUi.FormatPathPaneStatus(expired, now);
-        Assert(expiredPresentation.StateText == "интернет" && expiredPresentation.TimerText == "—",
+        Assert(expiredPresentation.StateText == "онлайн" && expiredPresentation.TimerText == "—",
             "expired prediction must not be displayed as a current authorization window");
 
         var directCampus = NetworkPathSnapshot.FromAdapter(Adapter("campus", "Wi-Fi", "Campus Wi-Fi"));

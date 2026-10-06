@@ -75,7 +75,7 @@ internal static class TerminalCanvas
         Put(canvas, x, row, text, color);
     }
 
-    internal static void DrawBox(Cell[,] canvas, int x, int y, int width, int height, string title)
+    internal static void DrawBox(Cell[,] canvas, int x, int y, int width, int height, string? title)
     {
         Put(canvas, x, y, "┌" + new string('─', width - 2) + "┐", Palette.Border);
         for (var row = 1; row < height - 1; row++)
@@ -86,9 +86,12 @@ internal static class TerminalCanvas
 
         Put(canvas, x, y + height - 1, "└" + new string('─', width - 2) + "┘", Palette.Border);
 
-        var caption = $" {title} ";
-        var captionX = x + Math.Max(2, (width - caption.Length) / 2);
-        Put(canvas, captionX, y, Truncate(caption, width - 4), Palette.Highlight);
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            var caption = $" {title} ";
+            var captionX = x + Math.Max(2, (width - caption.Length) / 2);
+            Put(canvas, captionX, y, Truncate(caption, width - 4), Palette.Highlight);
+        }
     }
 
     internal static void PutWrapped(Cell[,] canvas, int x, int y, int width, string text, Palette color)

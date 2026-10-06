@@ -1645,7 +1645,7 @@ internal sealed partial class InteractiveTerminalUi
 
     private void DrawStatusPane(Cell[,] canvas)
     {
-        DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, "СОСТОЯНИЕ");
+        DrawNetworkPathStatusBox(canvas);
         var s = status;
         if (s is null)
         {
@@ -1697,14 +1697,34 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
+    private void DrawNetworkPathStatusBox(Cell[,] canvas)
+    {
+        DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, title: null);
+        var columns = GetNetworkPathColumns();
+        PutCenteredInRange(canvas, columns.ContentX, columns.StateStart - 1, PaneY, "ПУТЬ", Palette.Highlight);
+        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - 1, PaneY, "СТАТУС", Palette.Highlight);
+
+        const string timerHeader = "ДО ПРОВЕРКИ";
+        var timerHeaderX = Math.Max(columns.StateStart, columns.RightExclusive - timerHeader.Length);
+        Put(canvas, timerHeaderX, PaneY, timerHeader, Palette.Highlight);
+    }
+
     private void DrawNetworkPathLine(Cell[,] canvas, int row, InteractiveNetworkPathStatus path)
     {
-        var contentX = rightPaneX + 3;
-        var rightExclusive = rightPaneX + paneWidth - 3;
+        var columns = GetNetworkPathColumns();
         var presentation = FormatPathPaneStatus(path);
         var marker = path.Preferred ? "> " : "  ";
         var label = marker + path.Name;
 
+        Put(canvas, columns.ContentX, row, Truncate(label, columns.LabelWidth), path.Preferred ? Palette.Highlight : Palette.Text);
+        PutRightAligned(canvas, columns.StateStart, columns.TimerStart - 1, row, presentation.StateText, presentation.StateColor);
+        PutRightAligned(canvas, columns.TimerStart, columns.RightExclusive, row, presentation.TimerText, presentation.TimerColor);
+    }
+
+    private (int ContentX, int RightExclusive, int LabelWidth, int StateStart, int TimerStart) GetNetworkPathColumns()
+    {
+        var contentX = rightPaneX + 3;
+        var rightExclusive = rightPaneX + paneWidth - 3;
         const int stateWidth = 14;
         const int timerWidth = 8;
         const int gap = 1;
@@ -1712,10 +1732,15 @@ internal sealed partial class InteractiveTerminalUi
         var labelWidth = Math.Max(7, available - stateWidth - timerWidth - (gap * 2));
         var stateStart = contentX + labelWidth + gap;
         var timerStart = rightExclusive - timerWidth;
+        return (contentX, rightExclusive, labelWidth, stateStart, timerStart);
+    }
 
-        Put(canvas, contentX, row, Truncate(label, labelWidth), path.Preferred ? Palette.Highlight : Palette.Text);
-        PutRightAligned(canvas, stateStart, timerStart - gap, row, presentation.StateText, presentation.StateColor);
-        PutRightAligned(canvas, timerStart, rightExclusive, row, presentation.TimerText, presentation.TimerColor);
+    private static void PutCenteredInRange(Cell[,] canvas, int left, int rightExclusive, int row, string text, Palette color)
+    {
+        var width = Math.Max(1, rightExclusive - left);
+        var value = Truncate(text, width);
+        var x = left + Math.Max(0, (width - value.Length) / 2);
+        Put(canvas, x, row, value, color);
     }
 
     internal static (string StateText, string TimerText, Palette StateColor, Palette TimerColor) FormatPathPaneStatus(
@@ -1735,7 +1760,7 @@ internal sealed partial class InteractiveTerminalUi
 
         return path.Status switch
         {
-            PathAuthorizationStatus.Internet => ("интернет", timerText, Palette.Good, timerColor),
+            PathAuthorizationStatus.Internet => ("онлайн", timerText, Palette.Good, timerColor),
             // A live captive observation disproves the old predicted window.
             PathAuthorizationStatus.Captive => ("нужна авторизация", "—", Palette.Highlight, Palette.Dim),
             PathAuthorizationStatus.Unreachable => ("недоступен", timerText, Palette.Dim, Palette.Dim),
