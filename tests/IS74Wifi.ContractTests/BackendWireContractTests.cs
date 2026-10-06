@@ -16,6 +16,7 @@ internal static class BackendWireContractTests
                 "internet_probe" => TelemetrySerialization.Serialize(sample.Deserialize<TelemetryInternetProbeEvent>(options)!),
                 "portal_response" => TelemetrySerialization.Serialize(sample.Deserialize<TelemetryPortalResponseEvent>(options)!),
                 "registration_event" => TelemetrySerialization.Serialize(sample.Deserialize<TelemetryRegistrationEvent>(options)!),
+                "path_observation" => TelemetrySerialization.Serialize(sample.Deserialize<TelemetryPathObservationEvent>(options)!),
                 "error" => TelemetrySerialization.Serialize(sample.Deserialize<TelemetryErrorEvent>(options)!),
                 "leaderboard_entry" => TelemetrySerialization.Serialize(sample.Deserialize<TelemetryLeaderboardEntry>(options)!),
                 _ => throw new InvalidOperationException("unhandled wire fixture")
