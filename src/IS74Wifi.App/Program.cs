@@ -465,6 +465,7 @@ internal static class Program
         Console.WriteLine($"Автоматическая авторизация : {(automaticAuthorizationEnabled ? "включена" : "выключена")}");
         Console.WriteLine($"Фоновый режим              : {(agentRunning ? "работает" : "остановлен")}");
         Console.WriteLine($"Уведомления                : {FormatNotificationMode(app.Settings.NotificationMode)}");
+        Console.WriteLine($"Значок в трее              : {(app.Settings.ShowTrayIcon ? "показывать" : "скрывать")}");
         var updateMaintenance = new UpdateMaintenanceService(ProductVersion, app.Paths, app.Json, app.Logger);
         var updateState = updateMaintenance.LoadState();
         Console.WriteLine($"Режим обновлений           : {(app.Settings.AutomaticUpdates ? "автоматически" : "уведомлять")}");
@@ -1862,6 +1863,19 @@ internal static class Program
                         CycleNotificationMode();
                         break;
 
+                    case InteractiveMenuAction.ToggleTrayIconVisibility:
+                    {
+                        var visible = !initialStatus.ShowTrayIcon;
+                        await RunMenuBatchActionAsync(
+                            ui,
+                            "ЗНАЧОК В ТРЕЕ",
+                            initialStatus,
+                            visible ? "Включаю значок в трее..." : "Скрываю значок из трея...",
+                            progress => SetTrayIconVisible(visible, progress),
+                            visible ? "Значок в трее включён" : "Значок в трее скрыт").ConfigureAwait(false);
+                        break;
+                    }
+
                     case InteractiveMenuAction.ShowDetailedStatus:
                     {
                         await OpenDetailedStatusReportAsync().ConfigureAwait(false);
@@ -2768,6 +2782,27 @@ internal static class Program
         ReportMenuBatchProgress(progress, "Фоновый режим запущен с новой настройкой");
     }
 
+    private static void SetTrayIconVisible(bool visible, Action<string>? progress = null)
+    {
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        var installation = new ProgramInstallation();
+        var restartAgent = AgentProcessControl.IsAgentRunning() && installation.IsInstalled;
+        var settingsStore = new SettingsStore(app.Paths, app.Json);
+        settingsStore.Save(app.Settings with { ShowTrayIcon = visible });
+        app.Logger.Write(DiagnosticLevel.Info, $"tray.visible value={visible.ToString().ToLowerInvariant()}");
+        ReportMenuBatchProgress(progress, "Настройка сохранена");
+
+        if (!restartAgent)
+        {
+            return;
+        }
+
+        AgentProcessControl.StopAgentOrThrow();
+        ReportMenuBatchProgress(progress, "Фоновый режим остановлен для применения настройки");
+        StartInstalledAgent(installation.ExecutablePath);
+        ReportMenuBatchProgress(progress, "Фоновый режим запущен с новой настройкой");
+    }
+
     private static string FormatAnonymousStatisticsConsent(AnonymousStatisticsConsent consent) =>
         StatusService.FormatAnonymousStatisticsConsent(consent);
 
@@ -3020,6 +3055,10 @@ internal static class Program
             return 0;
         }
 
+        using var tray = WindowsTrayIconService.TryCreate(
+            app.Paths,
+            new SettingsStore(app.Paths, app.Json),
+            app.Logger);
         using var stopEvent = AgentProcessControl.CreateStopEvent();
         using var networkWake = new AutoResetEvent(false);
         // A laptop may join the campus Wi-Fi after a long idle wait or after
@@ -3050,9 +3089,11 @@ internal static class Program
         {
             while (!stopCts.IsCancellationRequested)
             {
+                tray?.SetState(TrayIconStateResolver.Working);
                 try
                 {
                     await app.Agent.TickAsync(stopCts.Token).ConfigureAwait(false);
+                    tray?.SetState(TrayIconStateResolver.Resolve(app.PathState.Load()));
                 }
                 catch (OperationCanceledException) when (stopCts.IsCancellationRequested)
                 {
@@ -3060,6 +3101,7 @@ internal static class Program
                 }
                 catch (Exception ex)
                 {
+                    tray?.SetState(TrayIconStateResolver.TickFailed);
                     app.Logger.Write(DiagnosticLevel.Error, $"agent.tick error={ex.GetType().Name}:{ex.Message}");
                 }
 

@@ -179,6 +179,12 @@ assert 'WlanConnectionProfileDetails' in csharp_wifi and 'GetConnectedSsid()' in
 assert 'WlanQueryInterface' not in csharp_wifi, 'C# client must not use the location-gated current_connection WLAN query'
 assert '"доступен ●"' in csharp_ui, 'status indicators must render after their status text'
 assert 'automaticEnabled ? InteractiveMenuAction.DisableAutomaticAuthorization : InteractiveMenuAction.EnableAutomaticAuthorization' in csharp_ui, 'settings must expose the correct auto-authorization action'
+assert 'InteractiveMenuAction.ToggleTrayIconVisibility' in csharp_ui and 'Значок в трее:' in csharp_ui, 'settings must expose tray visibility'
+tray_service = (root / 'src' / 'IS74Wifi.App' / 'WindowsTrayIconService.cs').read_text(encoding='utf-8')
+assert 'TrayIconSemanticState.Normal' in tray_service and 'TrayIconSemanticState.Working' in tray_service and 'TrayIconSemanticState.Question' in tray_service and 'TrayIconSemanticState.Warning' in tray_service and 'TrayIconSemanticState.Error' in tray_service, 'semantic tray icon states missing'
+assert 'TaskbarCreated' in tray_service and 'ShellNotifyIconW' in tray_service, 'persistent tray icon must survive Explorer restart'
+app_project = (root / 'src' / 'IS74Wifi.App' / 'IS74Wifi.App.csproj').read_text(encoding='utf-8')
+assert r'<ApplicationIcon>Assets\IS74Wifi.ico</ApplicationIcon>' in app_project, 'application icon is not wired into the Windows executable'
 assert 'registered ? "Сбросить регистрацию" : "Зарегистрировать устройство"' in csharp_ui
 assert "new MenuItem('3', \"Состояние и подробный отчёт\", InteractiveMenuAction.ShowDetailedStatus)" in csharp_ui
 assert "new MenuItem('2', \"Скорость и рейтинг\", InteractiveMenuAction.SpeedTools)" in csharp_ui, 'speed/leaderboard submenu entry missing'

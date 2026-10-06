@@ -62,6 +62,7 @@ static Task TestStorageAsync()
     Assert(settings.AuthWindowHours == 24, "default auth window changed");
     Assert(settings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Unknown,
         "anonymous statistics consent must default to unknown");
+    Assert(settings.ShowTrayIcon, "tray icon must be visible by default");
     Assert(settings.TelemetryHttpTimeoutMilliseconds == 10000,
         "background telemetry must allow Apps Script sufficient time to respond");
     Assert(settings.InteractiveBackendTimeoutMilliseconds == 30000,
@@ -72,11 +73,13 @@ static Task TestStorageAsync()
 
     var settingsStore = new SettingsStore(paths, json);
     settingsStore.Save(settings with { AnonymousStatisticsConsent = AnonymousStatisticsConsent.Declined,
-        DirectNetworkAdapterId = "{cf1dd631-b056-43fd-9dd6-2ba9e86d7f04}" });
+        DirectNetworkAdapterId = "{cf1dd631-b056-43fd-9dd6-2ba9e86d7f04}",
+        ShowTrayIcon = false });
     Assert(settingsStore.Load().AnonymousStatisticsConsent == AnonymousStatisticsConsent.Declined,
         "anonymous statistics consent did not persist");
     Assert(settingsStore.Load().DirectNetworkAdapterId == "{cf1dd631-b056-43fd-9dd6-2ba9e86d7f04}",
         "manual adapter identity did not persist across settings reload");
+    Assert(!settingsStore.Load().ShowTrayIcon, "tray icon visibility did not persist");
 
     var installId = new TelemetryIdentityStore(paths).GetOrCreate();
     var nickPreferences = new LeaderboardNicknamePreferences(new SettingsStore(paths, json));

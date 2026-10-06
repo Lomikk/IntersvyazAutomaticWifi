@@ -1583,10 +1583,14 @@ internal sealed partial class InteractiveTerminalUi
             new MenuItem('2', $"Уведомления: {snapshot?.NotificationMode ?? "важные"}", InteractiveMenuAction.CycleNotifications),
             new MenuItem(
                 '3',
+                $"Значок в трее: {(snapshot?.ShowTrayIcon == false ? "скрывать" : "показывать")}",
+                InteractiveMenuAction.ToggleTrayIconVisibility),
+            new MenuItem(
+                '4',
                 $"Анонимная статистика: {FormatStatisticsConsent(snapshot?.AnonymousStatisticsConsent ?? AnonymousStatisticsConsent.Unknown)}",
                 InteractiveMenuAction.ToggleAnonymousStatistics),
-            new MenuItem('4', "Обновления", InteractiveMenuAction.OpenUpdates),
-            new MenuItem('5', "Сеть и диагностика", InteractiveMenuAction.DiagnoseDirectNetwork),
+            new MenuItem('5', "Обновления", InteractiveMenuAction.OpenUpdates),
+            new MenuItem('6', "Сеть и диагностика", InteractiveMenuAction.DiagnoseDirectNetwork),
             new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
     }

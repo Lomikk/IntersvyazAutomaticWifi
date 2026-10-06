@@ -8,9 +8,18 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>IS74Wifi</AssemblyName>
     <RootNamespace>IS74Wifi.App</RootNamespace>
+    <ApplicationIcon>Assets\IS74Wifi.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\IS74Wifi.Core\IS74Wifi.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Tray\IS74Wifi-tray-normal.ico" LogicalName="IS74Wifi.Tray.normal.ico" />
+    <EmbeddedResource Include="Assets\Tray\IS74Wifi-tray-working.ico" LogicalName="IS74Wifi.Tray.working.ico" />
+    <EmbeddedResource Include="Assets\Tray\IS74Wifi-tray-question.ico" LogicalName="IS74Wifi.Tray.question.ico" />
+    <EmbeddedResource Include="Assets\Tray\IS74Wifi-tray-warning.ico" LogicalName="IS74Wifi.Tray.warning.ico" />
+    <EmbeddedResource Include="Assets\Tray\IS74Wifi-tray-error.ico" LogicalName="IS74Wifi.Tray.error.ico" />
   </ItemGroup>
 </Project>

@@ -20,6 +20,7 @@ internal static class TerminalUiContractTests
         AdapterScreenFastKeysAndEscape();
         SharedListWindowKeepsLargeListsVisible();
         PathPaneFormatsIndependentCountdowns();
+        TraySemanticStatesFollowPathHealth();
         return Task.CompletedTask;
     }
 
@@ -300,6 +301,44 @@ internal static class TerminalUiContractTests
             "Wi-Fi hotspot may change upstream behind NAT and must use an approximate timer");
         Assert(StatusService.IsAuthorizationWindowApproximate(usb),
             "USB/Ethernet tethering may change upstream behind NAT and must use an approximate timer");
+    }
+
+
+    private static void TraySemanticStatesFollowPathHealth()
+    {
+        static PathAuthorizationState State(
+            string id,
+            PathAuthorizationStatus status,
+            bool userActionRequired = false,
+            string? lastResult = null) => new()
+        {
+            Identity = new NetworkPathIdentity(id, NetworkInterfaceType.Wireless80211, $"ssid:{id}"),
+            Status = status,
+            UserActionRequired = userActionRequired,
+            LastResult = lastResult
+        };
+
+        static TrayIconSemanticState Resolve(params PathAuthorizationState[] states) =>
+            TrayIconStateResolver.Resolve(new PathAuthorizationStateDocument { Paths = states }).State;
+
+        Assert(Resolve() == TrayIconSemanticState.Question,
+            "tray must use question state before an active physical path is known");
+        Assert(Resolve(State("ok", PathAuthorizationStatus.Internet)) == TrayIconSemanticState.Normal,
+            "healthy Internet path must use the normal tray icon");
+        Assert(Resolve(State("unknown", PathAuthorizationStatus.Unknown)) == TrayIconSemanticState.Question,
+            "unknown path state must use the question tray icon");
+        Assert(Resolve(State("captive", PathAuthorizationStatus.Captive)) == TrayIconSemanticState.Warning,
+            "captive path must use the warning tray icon");
+        Assert(Resolve(State("down", PathAuthorizationStatus.Unreachable)) == TrayIconSemanticState.Warning,
+            "unreachable path must use the warning tray icon");
+        Assert(Resolve(State("fatal", PathAuthorizationStatus.Captive, userActionRequired: true)) == TrayIconSemanticState.Error,
+            "user-action-required state must use the error tray icon");
+        Assert(Resolve(State("fatal-result", PathAuthorizationStatus.Captive, lastResult: "bearer-invalid")) == TrayIconSemanticState.Error,
+            "terminal authorization failures must use the error tray icon");
+        Assert(Resolve(
+                   State("ok", PathAuthorizationStatus.Internet),
+                   State("captive", PathAuthorizationStatus.Captive)) == TrayIconSemanticState.Warning,
+            "a captive secondary path must outrank a healthy path in the tray summary");
     }
 
     private static PhysicalAdapter Adapter(string id, string name, string? ssid) =>

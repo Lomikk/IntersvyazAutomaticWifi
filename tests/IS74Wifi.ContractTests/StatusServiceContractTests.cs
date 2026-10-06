@@ -53,14 +53,15 @@ internal static class StatusServiceContractTests
             AnonymousStatisticsConsent = AnonymousStatisticsConsent.Declined,
             AutomaticUpdates = true,
             IncludePrereleaseUpdates = false,
-            NotificationMode = NotificationMode.Off
+            NotificationMode = NotificationMode.Off,
+            ShowTrayIcon = false
         });
         var changedSettings = service.ReadLocalSnapshot();
         Assert(!changedSettings.NetworkCheckIgnored && changedSettings.DirectNetworkMode == "системный",
             "legacy network-check setting must no longer affect the path-aware UI snapshot");
         Assert(changedSettings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Declined &&
                changedSettings.AutomaticUpdates && !changedSettings.IncludePrereleaseUpdates &&
-               changedSettings.NotificationMode == "выкл",
+               changedSettings.NotificationMode == "выкл" && !changedSettings.ShowTrayIcon,
             "changed UI settings must be reflected by the next local snapshot");
 
         var updateStore = new UpdateStateStore(paths, json);
@@ -107,6 +108,8 @@ internal static class StatusServiceContractTests
             "detailed report must include the supplied Internet result");
         Assert(report.Any(line => line == "Регистрация: сохранена"),
             "detailed report must read registration from the supplied AppPaths");
+        Assert(report.Any(line => line == "Значок в трее: скрывать"),
+            "detailed report must expose tray visibility");
     }
 
     private static void Assert(bool condition, string message)

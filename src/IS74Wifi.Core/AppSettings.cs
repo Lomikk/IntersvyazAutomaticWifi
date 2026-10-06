@@ -10,6 +10,7 @@ public enum AnonymousStatisticsConsent
 public sealed record AppSettings
 {
     public NotificationMode NotificationMode { get; init; } = NotificationMode.Important;
+    public bool ShowTrayIcon { get; init; } = true;
     // Explicit user override for environments where Windows network detection
     // is not representative of the route used by captive-portal traffic
     // (USB tethering, VPN/proxy software, multiple adapters, etc.).
