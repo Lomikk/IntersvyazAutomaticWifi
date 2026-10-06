@@ -314,9 +314,9 @@ internal static class Program
                     {
                         Console.WriteLine("Частые запросы кода могут быть временно ограничены сервером.");
                         Console.Write("Запросить новый код? [y/N]: ");
-                        var confirmation = (Console.ReadLine() ?? string.Empty).Trim();
-                        if (string.Equals(confirmation, "y", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(confirmation, "yes", StringComparison.OrdinalIgnoreCase))
+                        var retryConfirmation = (Console.ReadLine() ?? string.Empty).Trim();
+                        if (string.Equals(retryConfirmation, "y", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(retryConfirmation, "yes", StringComparison.OrdinalIgnoreCase))
                         {
                             requestAgain = true;
                         }
@@ -340,7 +340,7 @@ internal static class Program
             if (!checkedCode.IsSuccess)
             {
                 LogRegistrationFailure(app.Logger, "check-confirm", checkedCode.Failure!, checkedCode.Elapsed);
-                throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure));
+                throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure!));
             }
             LogRegistrationStageSuccess(app.Logger, registrationStage, checkedCode);
 
@@ -356,7 +356,7 @@ internal static class Program
             if (!sessionResult.IsSuccess)
             {
                 LogRegistrationFailure(app.Logger, "get-token", sessionResult.Failure!, sessionResult.Elapsed);
-                throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure));
+                throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure!));
             }
             LogRegistrationStageSuccess(app.Logger, registrationStage, sessionResult);
 
@@ -2222,7 +2222,7 @@ internal static class Program
             {
                 LogRegistrationFailure(app.Logger, "check-confirm", checkedCode.Failure!, checkedCode.Elapsed);
                 history.FailActive("Код подтверждения отклонён");
-                history.AddError(DescribeApiFailure(checkedCode.Failure));
+                history.AddError(DescribeApiFailure(checkedCode.Failure!));
                 await ui.ShowActionHistoryAsync(
                     "РЕГИСТРАЦИЯ",
                     history,
@@ -2245,7 +2245,7 @@ internal static class Program
             {
                 LogRegistrationFailure(app.Logger, "get-token", sessionResult.Failure!, sessionResult.Elapsed);
                 history.FailActive("Не удалось получить API-сессию");
-                history.AddError(DescribeApiFailure(sessionResult.Failure));
+                history.AddError(DescribeApiFailure(sessionResult.Failure!));
                 await ui.ShowActionHistoryAsync(
                     "РЕГИСТРАЦИЯ",
                     history,
