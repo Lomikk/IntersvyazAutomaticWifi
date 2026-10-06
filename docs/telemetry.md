@@ -30,6 +30,7 @@ Telemetry event contracts deliberately contain no fields for:
 - Cookie / Set-Cookie values;
 - `USER_ID` / `PROFILE_ID`;
 - InterSvyaz `deviceId`;
+- SSID, BSSID/MAC, local IP, gateway, interface GUID or adapter/computer name;
 - raw `/mobile/pushmessages` JSON, subject, message body, or full message.
 
 Mailbox telemetry stores only derived facts such as counts, whether a fresh Wi-Fi-code message matched, and small ID deltas from the pre-stepOne baseline. Unexpected portal bodies are not stored; only a bounded classification and SHA-256 may be recorded.
@@ -69,6 +70,14 @@ The attempt summary additionally records:
 
 `fast_path_success` requires that the early stepTwo path was actually used, the authorization outcome was successful, and the independent Internet probe confirmed connectivity.
 
+## Path-aware telemetry (schema 5)
+
+Authorization `attempt` rows use schema 5 and may add only coarse path context: `path_kind` (`wifi`, `ethernet`, `other_physical`), whether the local SSID is directly recognized by the existing `Campus Wi-Fi*` policy, whether the path was the preferred physical underlay, whether a VPN route was observed, the pre-attempt path state, and whether an authorization window was known/approximate. No SSID, IP address, gateway, interface GUID or adapter name is serialized. Child timing events (`mailbox_poll`, `internet_probe`, `portal_response`, `error`) remain schema 4 and join to the schema-5 attempt through `attempt_id`.
+
+The agent can also queue a standalone schema-5 `path_observation` when a physical path appears, reappears or changes, when a settling retry was required, or when a scheduled recheck changes/loses connectivity. Stable periodic Internet rechecks are deliberately not emitted. The event records only the reason, initial/final coarse result, path kind, direct-Campus/preferred/VPN booleans, authorization-window flags, settling-retry flag and total local probe duration. A captive result that is about to enter the SMS-critical authorization flow is not synchronously written first; the subsequent authorization trace carries that context after the flow completes.
+
+This preserves the latency-first rule: no telemetry HTTP request occurs in the captive critical path, and the immediate timer-triggered path does not perform extra VPN/interface diagnostics before `stepOne`.
+
 ## Registration diagnostics
 
 Schema v4 adds one `registration_event` row for each registration API request that actually runs: `get_confirm`, `check_confirm`, `get_token`, and `device_metadata`. A single random `attempt_id` groups those stages for one registration flow. Each row contains only the stage, request index, success/error/cancelled result, request duration, HTTP status when available, a coarse error class, optional retry delay, and a bounded server header.
@@ -83,7 +92,7 @@ When anonymous statistics are allowed, after the network authorization work has 
 %LOCALAPPDATA%\IS74Wifi\telemetry\pending\
 ```
 
-One file represents one completed authorization trace and contains the attempt summary plus its detailed poll/probe/portal/error events. Files are append-only from the analytics point of view and are never modified after publication to the queue.
+A queue file contains one completed authorization trace (attempt summary plus detailed poll/probe/portal/error events) or one standalone deferred event such as a significant `path_observation`/speed-test retry. Files are append-only from the analytics point of view and are never modified after publication to the queue.
 
 The queue is bounded (currently about 10 MiB / 1024 trace files). An individually invalid/oversized trace is quarantined rather than blocking later uploads.
 
@@ -112,7 +121,7 @@ The first command performs DNS resolution, manually displays every GET redirect 
 
 ## Ingestion API contract
 
-The Apps Script source is intentionally kept outside this public repository, in the companion private `IntersvyazAutomaticWifi_SERVER` repository (`Code.gs`). The pre-release receiver accepts schema 4 only and requires an explicit route for every request:
+The Apps Script source is intentionally kept outside this public repository, in the companion private `IntersvyazAutomaticWifi_SERVER` repository (`Code.gs`). The receiver keeps schema 4 as the legacy/default contract and additionally accepts schema 5 only for path-aware authorization `attempt` rows and `path_observation`; registration, speed-test and leaderboard protocols remain schema 4. Every request still requires an explicit route:
 
 ```text
 POST <web-app endpoint>?route=telemetry         # queued telemetry batch
@@ -132,7 +141,7 @@ this compatibility without changing schema or requiring a client update. Pending
 queues are retained and resume on the next scheduled retry after server deployment;
 do not clear them to work around `route_event_mismatch`.
 
-The production `/exec` URL is a versioned Apps Script deployment. Saving editor code is not enough: after a receiver change, create a new script version and edit the existing deployment to use it. Keep execution as the deploying account and anonymous/public access enabled. A quick contract check is that the root GET reports schema 4, `accepted_schemas` contains only 4, and `GET ?route=leaderboard&limit=3` returns an object with an `entries` array.
+The production `/exec` URL is a versioned Apps Script deployment. Saving editor code is not enough: after a receiver change, create a new script version and edit the existing deployment to use it. Keep execution as the deploying account and anonymous/public access enabled. A quick contract check is that the root GET reports legacy/default schema 4, `accepted_schemas` contains `[4,5]`, and `GET ?route=leaderboard&limit=3` returns an object with an `entries` array.
 
 The public leaderboard shows **one active position per valid `install_id`**, selecting that installation's winning measurement (download DESC, then upload DESC, lower latency, newer receipt time) and applying its current lifecycle nickname. All displayed metrics come from one winning measurement. Renaming changes that one public position without rewriting measurement history. Different installations may have identical nicknames and appear independently. Historical rows with empty or invalid `install_id` remain separate, since their identities cannot safely be inferred. Deduplication happens only in the public GET view **before sorting, `limit`, and `total`**; raw `Leaderboard` and `SpeedTests` remain append-only. The response exposes only rank, nickname, download/upload, latency, jitter and optional packet loss; private `install_id`, `test_id`, `event_id`, radio metadata and time bucket remain server-side. The companion private Apps Script is deployed manually, retaining the existing `/exec` URL. Its production surface contains only `doGet` and `doPost`; destructive setup, one-time migration, and manual self-test entry points are not deployed.
 
@@ -189,13 +198,13 @@ still gives another quota. There are deliberately no accounts, access keys,
 global write budget or ingestion kill switch. See Google's
 [cache lifetime and size limits](https://developers.google.com/apps-script/reference/cache/cache#put(String,String,Integer)).
 
-Schema remains 4. Prefer updating beta clients before deploying these limits:
+Legacy/default schema remains 4; path-aware authorization adds schema 5. Prefer updating beta clients before deploying these limits:
 older clients can read the error but wait 6 hours on a throttled batch and do not
 queue an immediately rate-limited speed result. The new client also works with
 the older server. No Sheet migration or `/exec` URL change is required.
 
 Shared fixtures in `tests/fixtures/backend-events.json` plus `queued-speedtest.json`
-cover all eight event types in both the production C# serializer and the private
+cover all nine event types in both the production C# serializer and the private
 server's validation/storage. `backend-rate-limited.json` is shared by server and
 client response/retry tests. These are synthetic examples, not production data.
 
@@ -206,6 +215,7 @@ Google Sheets is an append-only ingestion buffer, not the analytics engine. The 
 - `Attempts`
 - `MailboxPolls`
 - `InternetProbes`
+- `PathObservations`
 - `PortalResponses`
 - `Errors`
 - `RegistrationEvents`

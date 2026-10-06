@@ -17,7 +17,16 @@ internal static class TelemetryContractTests
         Assert(firstInstallId == secondInstallId, "telemetry install ID is not stable");
         Assert(firstInstallId.Length == 32 && firstInstallId.All(Uri.IsHexDigit), "telemetry install ID format changed");
 
-        var trace = recorder.Begin(AuthorizationAttemptReason.Automatic);
+        var trace = recorder.Begin(
+            AuthorizationAttemptReason.Automatic,
+            new TelemetryPathContext(
+                "wifi",
+                DirectCampus: true,
+                PreferredPath: true,
+                VpnActive: true,
+                PathStateBefore: "captive",
+                KnownAuthWindow: true,
+                AuthWindowApproximate: false));
         trace.SetBaseline(42.125);
         trace.SetStepOneAttempt(1);
         trace.PortalStarted("step_one", 0.0);
@@ -110,6 +119,14 @@ internal static class TelemetryContractTests
         Assert(attempt.GetProperty("step_two_before_step_one_response").GetBoolean(), "early stepTwo race was not captured");
         Assert(attempt.GetProperty("fast_path_used").GetBoolean(), "fast path was not marked used");
         Assert(attempt.GetProperty("fast_path_success").GetBoolean(), "successful fast path was not marked successful");
+        Assert(attempt.GetProperty("schema").GetInt32() == 5, "path-aware attempt must use schema 5");
+        Assert(attempt.GetProperty("path_kind").GetString() == "wifi", "attempt path kind missing");
+        Assert(attempt.GetProperty("direct_campus").GetBoolean(), "direct Campus flag missing");
+        Assert(attempt.GetProperty("preferred_path").GetBoolean(), "preferred path flag missing");
+        Assert(attempt.GetProperty("vpn_active").GetBoolean(), "VPN context missing");
+        Assert(attempt.GetProperty("path_state_before").GetString() == "captive", "pre-attempt path state missing");
+        Assert(attempt.GetProperty("known_auth_window").GetBoolean(), "known auth-window flag missing");
+        Assert(!attempt.GetProperty("auth_window_approximate").GetBoolean(), "direct Campus window must not be approximate");
 
         var pollEvents = batch.EventJson
             .Where(line => line.Contains("\"event_type\":\"mailbox_poll\"", StringComparison.Ordinal))
@@ -139,11 +156,70 @@ internal static class TelemetryContractTests
         queue.Complete(batch);
         Assert(!queue.HasPending, "successful telemetry batch was not removed from local queue");
 
+        TestPathObservationTelemetry();
         TestRegistrationTelemetry();
         TestUploadTimeoutCompatibility();
         await TestUploadConsentGateAsync();
         await TestMixedQueueRetryAsync();
         await TestServerRetryDelayAsync();
+    }
+
+    private static void TestPathObservationTelemetry()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var queue = new TelemetryQueue(paths);
+        var installId = new TelemetryIdentityStore(paths).GetOrCreate();
+        var recorder = new NetworkPathTelemetryRecorder(installId, queue, "0.0.0-test");
+        var now = DateTimeOffset.UtcNow;
+        var path = new NetworkPathSnapshot(
+            "adapter-telemetry",
+            "Wi-Fi",
+            System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211,
+            IsUp: true,
+            InterfaceIndex: 7,
+            SourceIPv4: IPAddress.Parse("192.0.2.10"),
+            GatewayIPv4: IPAddress.Parse("192.0.2.1"),
+            DnsServers: [IPAddress.Parse("192.0.2.1")],
+            Ssid: "SUSU Hide",
+            LooksVirtual: false,
+            HardwareInterface: true,
+            ConnectorPresent: true);
+        var state = new PathAuthorizationState
+        {
+            Identity = path.Identity,
+            Status = PathAuthorizationStatus.Internet,
+            ExpectedExpiryUtc = now.AddHours(8)
+        };
+
+        recorder.RecordObservation(
+            path,
+            state,
+            reason: "changed",
+            initialResult: NetworkPathProbeStatus.Unreachable,
+            result: NetworkPathProbeStatus.Internet,
+            settlingRetryUsed: true,
+            durationMs: 1012.5,
+            preferredPath: true,
+            vpnActive: false,
+            nowUtc: now);
+
+        var batch = queue.ReadOldestBatch();
+        Assert(batch is not null && batch.EventJson.Count == 1, "path observation was not queued");
+        using var doc = JsonDocument.Parse(batch!.EventJson[0]);
+        var evt = doc.RootElement;
+        Assert(evt.GetProperty("event_type").GetString() == "path_observation", "path observation type changed");
+        Assert(evt.GetProperty("schema").GetInt32() == 5, "path observation schema changed");
+        Assert(evt.GetProperty("path_kind").GetString() == "wifi", "path observation kind missing");
+        Assert(!evt.GetProperty("direct_campus").GetBoolean(), "non-Campus SSID must not be trusted as direct Campus");
+        Assert(evt.GetProperty("auth_window_approximate").GetBoolean(), "opaque Wi-Fi window must be approximate");
+        Assert(evt.GetProperty("settling_retry_used").GetBoolean(), "settling retry was not recorded");
+        Assert(evt.GetProperty("initial_result").GetString() == "unreachable" &&
+               evt.GetProperty("result").GetString() == "internet",
+            "path observation transition was lost");
+        var json = batch.EventJson[0];
+        Assert(!json.Contains("SUSU Hide", StringComparison.OrdinalIgnoreCase), "path telemetry leaked SSID");
+        Assert(!json.Contains("192.0.2.", StringComparison.OrdinalIgnoreCase), "path telemetry leaked IP address");
     }
 
     private static void TestUploadTimeoutCompatibility()

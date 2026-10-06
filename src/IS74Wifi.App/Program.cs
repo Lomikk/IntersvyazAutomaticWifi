@@ -381,7 +381,8 @@ internal static class Program
                 deviceId,
                 AuthorizationAttemptReason.Manual,
                 Force: true,
-                Progress: progress)).ConfigureAwait(false);
+                Progress: progress),
+            new PathAuthorizationExecutionContext(captive.Preferred, NetworkVpnDetector.IsActive())).ConfigureAwait(false);
     }
 
     private static int PrintAuthorizationOutcome(AuthorizationOutcome outcome)

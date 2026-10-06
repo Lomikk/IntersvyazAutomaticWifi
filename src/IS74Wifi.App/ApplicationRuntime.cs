@@ -134,6 +134,9 @@ internal sealed class ApplicationRuntime : IDisposable
         var telemetryRecorder = settings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Allowed
             ? new AuthorizationTelemetryRecorder(telemetryInstallId, telemetryQueue, appVersion)
             : null;
+        var pathTelemetryRecorder = settings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Allowed
+            ? new NetworkPathTelemetryRecorder(telemetryInstallId, telemetryQueue, appVersion)
+            : null;
         var registrationTelemetry = new RegistrationTelemetryRecorder(
             telemetryInstallId,
             telemetryQueue,
@@ -209,7 +212,9 @@ internal sealed class ApplicationRuntime : IDisposable
             settings,
             logger,
             notifications: notifications,
-            preferredPathResolver: preferredPath);
+            preferredPathResolver: preferredPath,
+            telemetry: pathTelemetryRecorder,
+            isVpnActive: NetworkVpnDetector.IsActive);
         var agent = new AgentService(
             secrets,
             deviceIdentity,

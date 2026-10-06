@@ -69,7 +69,7 @@ leaderboardHeaders = [...vm.runInContext('LEADERBOARD_HEADERS', sandbox)];
 actionHeaders = [...vm.runInContext('LEADERBOARD_ACTION_HEADERS', sandbox)];
 const cfg = vm.runInContext('CONFIG', sandbox);
 assert.equal(cfg.schema, 4);
-assert.deepEqual(Array.from(cfg.acceptedSchemas), [4]);
+assert.deepEqual(Array.from(cfg.acceptedSchemas), [4, 5]);
 assert.equal(cfg.maxBatchEvents, 64);
 assert.equal(cfg.maxPayloadBytes, 65536);
 assert.equal(cfg.leaderboardNicknameMaxLength, 18);

@@ -16,7 +16,9 @@ public sealed class PathAwareAgentCoordinator(
     DiagnosticLogger logger,
     TimeProvider? timeProvider = null,
     IAgentNotificationSink? notifications = null,
-    PreferredNetworkPathResolver? preferredPathResolver = null)
+    PreferredNetworkPathResolver? preferredPathResolver = null,
+    NetworkPathTelemetryRecorder? telemetry = null,
+    Func<bool>? isVpnActive = null)
 {
     private static readonly TimeSpan UnknownInternetRecheck = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan FailureRecheck = TimeSpan.FromMinutes(1);
@@ -111,11 +113,19 @@ public sealed class PathAwareAgentCoordinator(
             var preferredState = state.Find(preferredSnapshot.Identity);
             if (ShouldFirePreferredTimerImmediately(preferredState, preferredSnapshot, now))
             {
-                await RunAuthorizationAsync(preferredSnapshot, secrets, cancellationToken).ConfigureAwait(false);
+                // Preserve the latency-first edge path: do not add VPN/interface
+                // diagnostics before the immediate timer-triggered stepOne.
+                await RunAuthorizationAsync(
+                    preferredSnapshot,
+                    secrets,
+                    preferred: true,
+                    vpnActive: null,
+                    cancellationToken).ConfigureAwait(false);
                 return;
             }
         }
 
+        var vpnActiveNow = telemetry is null ? false : SafeVpnActive();
         NetworkPathSnapshot? authorizationCandidate = null;
         foreach (var path in current
                      .OrderByDescending(path => lastPreferredPath is not null && SameIdentity(path.Identity, lastPreferredPath))
@@ -123,22 +133,40 @@ public sealed class PathAwareAgentCoordinator(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var before = state.Find(path.Identity);
-            var changed = before is null || before.Status == PathAuthorizationStatus.Disconnected || SnapshotChanged(before, path);
+            var observationReason = ObservationReason(before, path);
+            var changed = observationReason != "scheduled_recheck";
             var observed = state.Observe(path, now);
             if (!changed && GetPathDelay(observed, now) > TimeSpan.FromMilliseconds(100))
             {
                 continue;
             }
 
-            var result = await ProbePathAsync(path, changed, cancellationToken).ConfigureAwait(false);
-            if (result is null)
+            var probeOutcome = await ProbePathAsync(path, changed, cancellationToken).ConfigureAwait(false);
+            if (probeOutcome is null)
             {
                 continue;
             }
 
+            var result = probeOutcome.Result;
             var updated = state.RecordProbe(path, result, clock.GetUtcNow());
             logger.Write(DiagnosticLevel.Info,
                 $"agent.path-probe adapter={Safe(path.Name)} status={result.Status} expiry={updated.ExpectedExpiryUtc:O}");
+
+            if (result.Status != NetworkPathProbeStatus.Captive &&
+                ShouldRecordObservation(before, observationReason, probeOutcome))
+            {
+                telemetry?.RecordObservation(
+                    path,
+                    before,
+                    observationReason,
+                    probeOutcome.InitialStatus,
+                    result.Status,
+                    probeOutcome.SettlingRetryUsed,
+                    probeOutcome.DurationMs,
+                    IsPreferred(path),
+                    vpnActiveNow,
+                    clock.GetUtcNow());
+            }
 
             if (result.Status != NetworkPathProbeStatus.Captive || updated.UserActionRequired)
             {
@@ -166,15 +194,21 @@ public sealed class PathAwareAgentCoordinator(
             return;
         }
 
-        await RunAuthorizationAsync(authorizationCandidate, secrets, cancellationToken).ConfigureAwait(false);
+        await RunAuthorizationAsync(
+            authorizationCandidate,
+            secrets,
+            IsPreferred(authorizationCandidate),
+            vpnActiveNow,
+            cancellationToken).ConfigureAwait(false);
     }
 
 
-    private async Task<NetworkPathProbeResult?> ProbePathAsync(
+    private async Task<ProbePathOutcome?> ProbePathAsync(
         NetworkPathSnapshot path,
         bool settlingAllowed,
         CancellationToken cancellationToken)
     {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         NetworkPathProbeResult first;
         try
         {
@@ -190,7 +224,11 @@ public sealed class PathAwareAgentCoordinator(
         if (!settlingAllowed ||
             first.Status is not (NetworkPathProbeStatus.Unreachable or NetworkPathProbeStatus.Ambiguous))
         {
-            return first;
+            return new ProbePathOutcome(
+                first,
+                first.Status,
+                SettlingRetryUsed: false,
+                stopwatch.Elapsed.TotalMilliseconds);
         }
 
         logger.Write(DiagnosticLevel.Info,
@@ -220,7 +258,11 @@ public sealed class PathAwareAgentCoordinator(
             var retry = await probe.ProbeAsync(path, InitialProbeTimeout, cancellationToken).ConfigureAwait(false);
             logger.Write(DiagnosticLevel.Info,
                 $"agent.path-probe settling-retry adapter={Safe(path.Name)} status={retry.Status}");
-            return retry;
+            return new ProbePathOutcome(
+                retry,
+                first.Status,
+                SettlingRetryUsed: true,
+                stopwatch.Elapsed.TotalMilliseconds);
         }
         catch (DirectNetworkUnavailableException ex)
         {
@@ -289,6 +331,8 @@ public sealed class PathAwareAgentCoordinator(
     private async Task RunAuthorizationAsync(
         NetworkPathSnapshot path,
         StoredSecrets secrets,
+        bool preferred,
+        bool? vpnActive,
         CancellationToken cancellationToken)
     {
         var candidateState = state.Find(path.Identity) ?? state.Observe(path);
@@ -309,6 +353,7 @@ public sealed class PathAwareAgentCoordinator(
                 getDeviceId(),
                 reason,
                 Force: true),
+            new PathAuthorizationExecutionContext(preferred, vpnActive, candidateState),
             cancellationToken).ConfigureAwait(false);
 
         if (outcome.Kind == AuthorizationOutcomeKind.Busy)
@@ -323,6 +368,43 @@ public sealed class PathAwareAgentCoordinator(
             $"agent.path-auth adapter={Safe(path.Name)} result={outcome.Kind} confirmed={outcome.InternetConfirmed}");
         NotifyOutcome(path, outcome);
     }
+
+    private bool SafeVpnActive()
+    {
+        try
+        {
+            return isVpnActive?.Invoke() == true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool IsPreferred(NetworkPathSnapshot path) =>
+        lastPreferredPath is not null && SameIdentity(path.Identity, lastPreferredPath);
+
+    private static string ObservationReason(PathAuthorizationState? before, NetworkPathSnapshot path)
+    {
+        if (before is null) return "appeared";
+        if (before.Status == PathAuthorizationStatus.Disconnected) return "reappeared";
+        return SnapshotChanged(before, path) ? "changed" : "scheduled_recheck";
+    }
+
+    private static bool ShouldRecordObservation(
+        PathAuthorizationState? before,
+        string reason,
+        ProbePathOutcome outcome) =>
+        !string.Equals(reason, "scheduled_recheck", StringComparison.Ordinal) ||
+        outcome.SettlingRetryUsed ||
+        outcome.Result.Status != NetworkPathProbeStatus.Internet ||
+        before?.Status != PathAuthorizationStatus.Internet;
+
+    private sealed record ProbePathOutcome(
+        NetworkPathProbeResult Result,
+        NetworkPathProbeStatus InitialStatus,
+        bool SettlingRetryUsed,
+        double DurationMs);
 
     private IReadOnlyList<NetworkPathSnapshot> CurrentPaths() =>
         enumeratePaths()

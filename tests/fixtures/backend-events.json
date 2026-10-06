@@ -47,6 +47,15 @@
     "native_error": "10060", "location_kind": "none"
   },
   {
+    "event_type": "path_observation", "schema": 5,
+    "install_id": "install-wire-00000001", "app_version": "0.0.0-test",
+    "event_id": "event-path-wire-0001", "reason": "changed",
+    "initial_result": "unreachable", "result": "internet", "path_kind": "wifi",
+    "direct_campus": false, "preferred_path": true, "vpn_active": true,
+    "known_auth_window": true, "auth_window_approximate": true,
+    "settling_retry_used": true, "duration_ms": 1012.5
+  },
+  {
     "event_type": "leaderboard_entry", "schema": 4,
     "entry_id": "entry-wire-0001", "install_id": "install-wire-00000001",
     "test_id": "speed-wire-0001", "app_version": "0.0.0-test",

@@ -12,6 +12,7 @@ public sealed class AuthorizationFlow(
     DiagnosticLogger logger,
     AuthorizationFlowOptions? options = null,
     AuthorizationTelemetryRecorder? telemetry = null,
+    TelemetryPathContext? telemetryPathContext = null,
     bool ignoreNetworkCheck = false,
     Func<CancellationToken, Task<bool>>? preStepNetworkCheck = null) : IAuthorizationRunner
 {
@@ -22,7 +23,7 @@ public sealed class AuthorizationFlow(
         CancellationToken cancellationToken = default)
     {
         ValidateRequest(request);
-        var trace = telemetry?.Begin(request.Reason);
+        var trace = telemetry?.Begin(request.Reason, telemetryPathContext);
         try
         {
             var outcome = await RunCoreAsync(request, trace, cancellationToken).ConfigureAwait(false);

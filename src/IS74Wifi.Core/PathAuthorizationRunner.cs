@@ -1,10 +1,16 @@
 namespace IS74Wifi.Core;
 
+public sealed record PathAuthorizationExecutionContext(
+    bool PreferredPath,
+    bool? VpnActive,
+    PathAuthorizationState? StateBefore = null);
+
 public interface IPathAuthorizationRunner
 {
     Task<AuthorizationOutcome> RunAsync(
         NetworkPathSnapshot path,
         AuthorizationRequest request,
+        PathAuthorizationExecutionContext? executionContext = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -25,6 +31,7 @@ public sealed class PathAuthorizationRunner(
     public async Task<AuthorizationOutcome> RunAsync(
         NetworkPathSnapshot path,
         AuthorizationRequest request,
+        PathAuthorizationExecutionContext? executionContext = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(path);
@@ -41,6 +48,14 @@ public sealed class PathAuthorizationRunner(
         var api = new Is74ApiClient(new HttpTransport(apiHttp, logger));
         var portal = new CaptivePortalClient(new HttpTransport(portalHttp, logger));
         var internet = new InternetConnectivityProbe(new HttpTransport(internetHttp, logger));
+        var telemetryPathContext = telemetry is null
+            ? null
+            : TelemetryPathContext.Create(
+                path,
+                executionContext?.StateBefore,
+                executionContext?.PreferredPath == true,
+                executionContext?.VpnActive,
+                clock.GetUtcNow());
         var runtimeStore = new PathRuntimeStateStore(pathState, path);
         var state = new AuthorizationStateManager(runtimeStore, settings, clock);
         var polling = new PushPollingEngine(api);
@@ -55,6 +70,7 @@ public sealed class PathAuthorizationRunner(
             state,
             logger,
             telemetry: telemetry,
+            telemetryPathContext: telemetryPathContext,
             options: new AuthorizationFlowOptions { BaselineTimeout = TimeSpan.FromSeconds(5) },
             ignoreNetworkCheck: true,
             preStepNetworkCheck: token => connector.CanReachPortalAsync(TimeSpan.FromSeconds(4), token));

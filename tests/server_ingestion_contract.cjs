@@ -86,7 +86,7 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(scriptPath, 'utf8'), sandbox, { timeout: 2000 });
 for (const type of ['attempt', 'speed_test', 'leaderboard_entry', 'mailbox_poll',
-  'internet_probe', 'portal_response', 'registration_event', 'error']) {
+  'internet_probe', 'portal_response', 'registration_event', 'path_observation', 'error']) {
   const def = vm.runInContext(`getStorageDefinition_('${type}')`, sandbox);
   tables.set(def.sheetName, { headers: [...def.headers], rows: [] });
 }
@@ -155,6 +155,13 @@ assert.equal(post('speedtest', fixture).error, 'route_event_mismatch');
 assert.equal(post('leaderboard', speed).error, 'route_event_mismatch'); checks++;
 
 assert.equal(post('telemetry', { ...speed, schema: 3 }).error, 'invalid_schema');
+const v5Attempt = { ...fixture.events[0], schema: 5, event_id: 'event-attempt-v5-context',
+  path_kind: 'wifi', direct_campus: true, preferred_path: true, vpn_active: false,
+  path_state_before: 'captive', known_auth_window: true, auth_window_approximate: false };
+assert.equal(post('telemetry', v5Attempt).ok, true);
+assert.equal(post('telemetry', { ...fixture.events[0], event_id: 'event-attempt-v4-context', path_kind: 'wifi' }).error,
+  'path_context_requires_schema_5');
+assert.equal(post('telemetry', { ...speed, schema: 5, event_id: 'event-speed-schema5' }).error, 'invalid_schema');
 assert.equal(post('telemetry', { ...speed, unexpected: 'not allowed' }).error, 'unknown_field');
 assert.equal(post('telemetry', { ...speed, event_type: 'invented' }).error, 'invalid_event_type');
 assert.equal(post('telemetry', { events: [] }).error, 'invalid_batch_size');
@@ -266,10 +273,10 @@ reset();
 const telemetryEvents = [...fixture.events, ...wireEvents.filter(event => event.event_type !== 'leaderboard_entry')];
 const wireResult = post('telemetry', { batch_id: 'batch-all-wire-types', events: telemetryEvents });
 assert.equal(wireResult.ok, true, JSON.stringify(wireResult));
-assert.equal(wireResult.accepted, 7);
+assert.equal(wireResult.accepted, 8);
 assert.equal(post('leaderboard', wireEvents.find(event => event.event_type === 'leaderboard_entry')).ok, true);
 for (const name of ['Attempts', 'SpeedTests', 'Leaderboard', 'MailboxPolls',
-  'InternetProbes', 'PortalResponses', 'RegistrationEvents', 'Errors']) {
+  'InternetProbes', 'PortalResponses', 'RegistrationEvents', 'PathObservations', 'Errors']) {
   assert.equal(tables.get(name).rows.length, 1, name + ' wire fixture was not stored');
 }
 checks++;

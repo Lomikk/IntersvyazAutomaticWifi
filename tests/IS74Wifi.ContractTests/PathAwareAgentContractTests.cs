@@ -198,6 +198,7 @@ internal static class PathAwareAgentContractTests
         public Task<AuthorizationOutcome> RunAsync(
             NetworkPathSnapshot path,
             AuthorizationRequest request,
+            PathAuthorizationExecutionContext? executionContext = null,
             CancellationToken cancellationToken = default)
         {
             Paths.Add(path);

@@ -7,8 +7,10 @@ public sealed class AuthorizationTelemetryRecorder(
     TelemetryQueue queue,
     string appVersion)
 {
-    public AuthorizationTelemetryTrace Begin(AuthorizationAttemptReason reason) =>
-        new(installId, queue, appVersion, reason);
+    public AuthorizationTelemetryTrace Begin(
+        AuthorizationAttemptReason reason,
+        TelemetryPathContext? pathContext = null) =>
+        new(installId, queue, appVersion, reason, pathContext);
 }
 
 public sealed class AuthorizationTelemetryTrace
@@ -18,6 +20,7 @@ public sealed class AuthorizationTelemetryTrace
     private readonly TelemetryQueue queue;
     private readonly string appVersion;
     private readonly AuthorizationAttemptReason reason;
+    private readonly TelemetryPathContext? pathContext;
     private readonly Stopwatch attemptClock = Stopwatch.StartNew();
     private readonly Dictionary<int, PollDraft> polls = [];
     private readonly List<ProbeDraft> probes = [];
@@ -39,12 +42,14 @@ public sealed class AuthorizationTelemetryTrace
         string installId,
         TelemetryQueue queue,
         string appVersion,
-        AuthorizationAttemptReason reason)
+        AuthorizationAttemptReason reason,
+        TelemetryPathContext? pathContext)
     {
         this.installId = installId;
         this.queue = queue;
         this.appVersion = appVersion;
         this.reason = reason;
+        this.pathContext = pathContext;
         AttemptId = "attempt-" + Guid.NewGuid().ToString("N");
     }
 
@@ -447,7 +452,14 @@ public sealed class AuthorizationTelemetryTrace
             StepTwoLocationKind = stepTwo?.LocationKind,
             InternetConfirmedAfterStepTwoMs = internetConfirmedMs is { } internetMs && stepTwo?.StartedMs is { } start
                 ? Round(internetMs - start)
-                : null
+                : null,
+            PathKind = pathContext?.PathKind,
+            DirectCampus = pathContext?.DirectCampus,
+            PreferredPath = pathContext?.PreferredPath,
+            VpnActive = pathContext?.VpnActive,
+            PathStateBefore = pathContext?.PathStateBefore,
+            KnownAuthWindow = pathContext?.KnownAuthWindow,
+            AuthWindowApproximate = pathContext?.AuthWindowApproximate
         };
 
         var events = new List<string>

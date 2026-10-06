@@ -294,6 +294,9 @@ public static class TelemetrySerialization
     public static string Serialize(TelemetryAttemptEvent value) =>
         JsonSerializer.Serialize(value, TelemetryJsonContext.Default.TelemetryAttemptEvent);
 
+    public static string Serialize(TelemetryPathObservationEvent value) =>
+        JsonSerializer.Serialize(value, TelemetryJsonContext.Default.TelemetryPathObservationEvent);
+
     public static string Serialize(TelemetryMailboxPollEvent value) =>
         JsonSerializer.Serialize(value, TelemetryJsonContext.Default.TelemetryMailboxPollEvent);
 

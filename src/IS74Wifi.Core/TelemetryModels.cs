@@ -5,6 +5,7 @@ namespace IS74Wifi.Core;
 public static class TelemetryContract
 {
     public const int Schema = 4;
+    public const int PathSchema = 5;
     public const string PushScheduleVersion = "push-v1";
     // Keep transport batches within the currently deployed Apps Script receiver's
     // hard guards. Payload leaves a small envelope/headroom margin below 64 KiB.
@@ -15,7 +16,7 @@ public static class TelemetryContract
 public sealed record TelemetryAttemptEvent
 {
     public string EventType { get; init; } = "attempt";
-    public int Schema { get; init; } = TelemetryContract.Schema;
+    public int Schema { get; init; } = TelemetryContract.PathSchema;
     public required string AttemptId { get; init; }
     public required string InstallId { get; init; }
     public required string AppVersion { get; init; }
@@ -49,6 +50,33 @@ public sealed record TelemetryAttemptEvent
     public string? StepOneLocationKind { get; init; }
     public string? StepTwoLocationKind { get; init; }
     public double? InternetConfirmedAfterStepTwoMs { get; init; }
+    public string? PathKind { get; init; }
+    public bool? DirectCampus { get; init; }
+    public bool? PreferredPath { get; init; }
+    public bool? VpnActive { get; init; }
+    public string? PathStateBefore { get; init; }
+    public bool? KnownAuthWindow { get; init; }
+    public bool? AuthWindowApproximate { get; init; }
+}
+
+public sealed record TelemetryPathObservationEvent
+{
+    public string EventType { get; init; } = "path_observation";
+    public int Schema { get; init; } = TelemetryContract.PathSchema;
+    public required string InstallId { get; init; }
+    public required string AppVersion { get; init; }
+    public required string EventId { get; init; }
+    public required string Reason { get; init; }
+    public string? InitialResult { get; init; }
+    public required string Result { get; init; }
+    public required string PathKind { get; init; }
+    public required bool DirectCampus { get; init; }
+    public required bool PreferredPath { get; init; }
+    public required bool VpnActive { get; init; }
+    public required bool KnownAuthWindow { get; init; }
+    public required bool AuthWindowApproximate { get; init; }
+    public required bool SettlingRetryUsed { get; init; }
+    public double? DurationMs { get; init; }
 }
 
 public sealed record TelemetryMailboxPollEvent
@@ -230,6 +258,7 @@ public sealed record TelemetryUploadState(
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     WriteIndented = false)]
 [JsonSerializable(typeof(TelemetryAttemptEvent))]
+[JsonSerializable(typeof(TelemetryPathObservationEvent))]
 [JsonSerializable(typeof(TelemetryMailboxPollEvent))]
 [JsonSerializable(typeof(TelemetryInternetProbeEvent))]
 [JsonSerializable(typeof(TelemetryPortalResponseEvent))]
