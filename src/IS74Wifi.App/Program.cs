@@ -242,6 +242,7 @@ internal static class Program
 
         PromptAnonymousStatisticsConsentConsole();
         var registrationTelemetry = app.RegistrationTelemetry.Begin();
+        var registrationStage = "input-phone";
 
         try
         {
@@ -250,6 +251,8 @@ internal static class Program
             var deviceId = app.DeviceIdentity.GetOrCreate();
 
             Console.WriteLine("Запрашиваю код подтверждения...");
+            registrationStage = "get-confirm";
+            LogRegistrationStageStart(app.Logger, registrationStage);
             var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
             registrationTelemetry.Record("get_confirm", 1, requested);
             if (!requested.IsSuccess)
@@ -257,7 +260,9 @@ internal static class Program
                 LogRegistrationFailure(app.Logger, "get-confirm", requested.Failure!, requested.Elapsed);
                 throw new InvalidOperationException(DescribeApiFailure(requested.Failure));
             }
+            LogRegistrationStageSuccess(app.Logger, registrationStage, requested);
 
+            registrationStage = "input-code";
             Console.Write("Введите код подтверждения: ");
             var smsCode = (Console.ReadLine() ?? string.Empty).Trim();
             if (smsCode.Length != 4 || smsCode.Any(c => c is < '0' or > '9'))
@@ -265,6 +270,8 @@ internal static class Program
                 throw new InvalidOperationException("Код подтверждения должен состоять ровно из 4 цифр.");
             }
 
+            registrationStage = "check-confirm";
+            LogRegistrationStageStart(app.Logger, registrationStage);
             var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
             registrationTelemetry.Record("check_confirm", 1, checkedCode);
             if (!checkedCode.IsSuccess)
@@ -272,10 +279,13 @@ internal static class Program
                 LogRegistrationFailure(app.Logger, "check-confirm", checkedCode.Failure!, checkedCode.Elapsed);
                 throw new InvalidOperationException(DescribeApiFailure(checkedCode.Failure));
             }
+            LogRegistrationStageSuccess(app.Logger, registrationStage, checkedCode);
 
             var confirmation = checkedCode.Value!;
             app.Logger.Write(DiagnosticLevel.Info, "registration.confirmed mode=phone-only");
 
+            registrationStage = "get-token";
+            LogRegistrationStageStart(app.Logger, registrationStage);
             var sessionResult = await app.Api.GetTokenAsync(
                 confirmation.AuthId,
                 deviceId).ConfigureAwait(false);
@@ -285,6 +295,7 @@ internal static class Program
                 LogRegistrationFailure(app.Logger, "get-token", sessionResult.Failure!, sessionResult.Elapsed);
                 throw new InvalidOperationException(DescribeApiFailure(sessionResult.Failure));
             }
+            LogRegistrationStageSuccess(app.Logger, registrationStage, sessionResult);
 
             var session = sessionResult.Value!;
             app.Secrets.Save(new StoredSecrets(session.Token, phone));
@@ -2029,6 +2040,7 @@ internal static class Program
 
         var history = new InteractiveActionHistory();
         var registrationTelemetry = app.RegistrationTelemetry.Begin();
+        var registrationStage = "input-phone";
         try
         {
             var phoneInput = await ui.PromptDigitsAsync(
@@ -2050,6 +2062,8 @@ internal static class Program
 
             history.Start("Запрашиваю 4-значный код подтверждения...");
             ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
+            registrationStage = "get-confirm";
+            LogRegistrationStageStart(app.Logger, registrationStage);
             var requested = await app.Api.RequestConfirmationAsync(phone, deviceId).ConfigureAwait(false);
             registrationTelemetry.Record("get_confirm", 1, requested);
             if (!requested.IsSuccess)
@@ -2063,8 +2077,10 @@ internal static class Program
                     GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                 return;
             }
+            LogRegistrationStageSuccess(app.Logger, registrationStage, requested);
             history.CompleteActive("Код подтверждения запрошен");
 
+            registrationStage = "input-code";
             var smsCode = await ui.PromptDigitsAsync(
                 "РЕГИСТРАЦИЯ",
                 "Введите 4-значный код подтверждения. Esc отменяет продолжение регистрации.",
@@ -2081,6 +2097,8 @@ internal static class Program
 
             history.Start("Проверяю код подтверждения...");
             ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
+            registrationStage = "check-confirm";
+            LogRegistrationStageStart(app.Logger, registrationStage);
             var checkedCode = await app.Api.CheckConfirmationAsync(phone, smsCode, deviceId).ConfigureAwait(false);
             registrationTelemetry.Record("check_confirm", 1, checkedCode);
             if (!checkedCode.IsSuccess)
@@ -2094,6 +2112,7 @@ internal static class Program
                     GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                 return;
             }
+            LogRegistrationStageSuccess(app.Logger, registrationStage, checkedCode);
 
             history.CompleteActive("Код подтверждения принят");
             var confirmation = checkedCode.Value!;
@@ -2101,6 +2120,8 @@ internal static class Program
 
             history.Start("Получаю API-сессию...");
             ui.ShowActionProgress("РЕГИСТРАЦИЯ", history, currentStatus);
+            registrationStage = "get-token";
+            LogRegistrationStageStart(app.Logger, registrationStage);
             var sessionResult = await app.Api.GetTokenAsync(confirmation.AuthId, deviceId).ConfigureAwait(false);
             registrationTelemetry.Record("get_token", 1, sessionResult);
             if (!sessionResult.IsSuccess)
@@ -2114,6 +2135,7 @@ internal static class Program
                     GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                 return;
             }
+            LogRegistrationStageSuccess(app.Logger, registrationStage, sessionResult);
 
             history.CompleteActive("API-сессия получена");
             var session = sessionResult.Value!;
@@ -2167,6 +2189,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
+            LogRegistrationException(app.Logger, registrationStage, ex);
             history.FailActive("Операция прервана");
             history.AddError(ex.Message);
             await ui.ShowActionHistoryAsync(
@@ -3214,6 +3237,27 @@ internal static class Program
     }
 
     private static string MaskPhone(string? phone) => StatusService.MaskPhone(phone);
+
+    private static void LogRegistrationStageStart(DiagnosticLogger logger, string stage)
+    {
+        logger.Write(DiagnosticLevel.Info, $"registration.stage start stage={stage}");
+    }
+
+    private static void LogRegistrationStageSuccess<T>(
+        DiagnosticLogger logger, string stage, Is74ApiResult<T> result)
+    {
+        logger.Write(DiagnosticLevel.Info,
+            $"registration.stage success stage={stage} " +
+            $"httpStatus={result.HttpStatus?.ToString() ?? "none"} " +
+            $"elapsedMs={(result.Elapsed is null ? "none" : Math.Max(0, (long)Math.Round(result.Elapsed.Value.TotalMilliseconds)).ToString())}");
+    }
+
+    private static void LogRegistrationException(DiagnosticLogger logger, string stage, Exception exception)
+    {
+        // Do not log exception messages here: they can contain server-provided or user-provided data.
+        logger.Write(DiagnosticLevel.Error,
+            $"registration.exception stage={stage} type={exception.GetType().Name}");
+    }
 
     private static void LogRegistrationFailure(
         DiagnosticLogger logger, string stage, Is74ApiFailure failure, TimeSpan? elapsed)

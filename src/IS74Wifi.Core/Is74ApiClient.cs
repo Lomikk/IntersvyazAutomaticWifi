@@ -9,6 +9,7 @@ public sealed class Is74ApiClient : IIs74PushClient
 {
     private static readonly Uri ApiBase = new("https://api.is74.ru/");
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan RegistrationTimeout = TimeSpan.FromSeconds(30);
 
     private readonly HttpTransport transport;
 
@@ -29,7 +30,7 @@ public sealed class Is74ApiClient : IIs74PushClient
             new ConfirmationRequestPayload(phone, deviceId, 0),
             ApiJsonContext.Default.ConfirmationRequestPayload);
 
-        var call = await transport.SendAsync(request, DefaultTimeout, cancellationToken).ConfigureAwait(false);
+        var call = await transport.SendAsync(request, RegistrationTimeout, cancellationToken).ConfigureAwait(false);
         var failure = ClassifyFailure(call, operation);
         return failure is null
             ? Is74ApiResult<ConfirmationRequested>.Success(new ConfirmationRequested(), call)
@@ -52,7 +53,7 @@ public sealed class Is74ApiClient : IIs74PushClient
             ["authId"] = string.Empty
         });
 
-        var call = await transport.SendAsync(request, DefaultTimeout, cancellationToken).ConfigureAwait(false);
+        var call = await transport.SendAsync(request, RegistrationTimeout, cancellationToken).ConfigureAwait(false);
         var failure = ClassifyFailure(call, operation);
         if (failure is not null)
         {
@@ -104,7 +105,7 @@ public sealed class Is74ApiClient : IIs74PushClient
             ["uniqueDeviceId"] = deviceId
         });
 
-        var call = await transport.SendAsync(request, DefaultTimeout, cancellationToken).ConfigureAwait(false);
+        var call = await transport.SendAsync(request, RegistrationTimeout, cancellationToken).ConfigureAwait(false);
         var failure = ClassifyFailure(call, operation);
         if (failure is not null)
         {
