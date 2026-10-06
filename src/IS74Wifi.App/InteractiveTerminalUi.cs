@@ -1701,12 +1701,13 @@ internal sealed partial class InteractiveTerminalUi
     {
         DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, title: null);
         var columns = GetNetworkPathColumns();
-        PutCenteredInRange(canvas, columns.ContentX, columns.StateStart - 1, PaneY, "ПУТЬ", Palette.Highlight);
-        PutRightAligned(canvas, columns.StateStart, columns.TimerStart - 1, PaneY, "СТАТУС", Palette.Highlight);
 
-        const string timerHeader = "ДО ПРОВЕРКИ";
-        var timerHeaderX = Math.Max(columns.StateStart, columns.RightExclusive - timerHeader.Length);
-        Put(canvas, timerHeaderX, PaneY, timerHeader, Palette.Highlight);
+        // Header labels live in the top border, but their placement follows the
+        // data columns rather than their text widths. This keeps the long
+        // "ДО ПРОВЕРКИ" caption from visually merging with "СТАТУС".
+        Put(canvas, columns.ContentX + 1, PaneY, " ПУТЬ ", Palette.Highlight);
+        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - 2, PaneY, " СТАТУС ", Palette.Highlight);
+        PutRightAligned(canvas, columns.TimerStart - 5, columns.RightExclusive, PaneY, " ДО ПРОВЕРКИ ", Palette.Highlight);
     }
 
     private void DrawNetworkPathLine(Cell[,] canvas, int row, InteractiveNetworkPathStatus path)
