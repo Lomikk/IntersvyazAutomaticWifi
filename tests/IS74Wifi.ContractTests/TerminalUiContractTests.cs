@@ -251,22 +251,22 @@ internal static class TerminalUiContractTests
         var expired = timed with { ExpectedExpiryUtc = now.AddSeconds(-1) };
 
         var timedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(timed, now);
-        Assert(timedPresentation.StateText == "онлайн" && timedPresentation.TimerText == "~23ч 36м",
+        Assert(timedPresentation.StateText == "онлайн" && timedPresentation.TimerText == "~23:36",
             "all remembered authorization windows are predictions, including direct-looking Wi-Fi");
         var opaquePresentation = InteractiveTerminalUi.FormatPathPaneStatus(opaqueTimed, now);
-        Assert(opaquePresentation.StateText == "онлайн" && opaquePresentation.TimerText == "~18ч 12м",
+        Assert(opaquePresentation.StateText == "онлайн" && opaquePresentation.TimerText == "~18:12",
             "opaque NAT path must mark the remembered authorization window as approximate");
         var untimedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(untimed, now);
         Assert(untimedPresentation.StateText == "онлайн" && untimedPresentation.TimerText == "—",
             "path without a known authorization window must show Internet plus an explicit dash");
         var unreachablePresentation = InteractiveTerminalUi.FormatPathPaneStatus(unreachable, now);
-        Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "~23ч 36м",
+        Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "~23:36",
             "temporary transport failure must not erase a still-valid remembered authorization window");
         var ambiguousPresentation = InteractiveTerminalUi.FormatPathPaneStatus(ambiguous, now);
-        Assert(ambiguousPresentation.StateText == "неясно" && ambiguousPresentation.TimerText == "~23ч 36м",
+        Assert(ambiguousPresentation.StateText == "неясно" && ambiguousPresentation.TimerText == "~23:36",
             "ambiguous live state must preserve the remembered authorization window");
         var unknownPresentation = InteractiveTerminalUi.FormatPathPaneStatus(unknown, now);
-        Assert(unknownPresentation.StateText == "проверка..." && unknownPresentation.TimerText == "~23ч 36м",
+        Assert(unknownPresentation.StateText == "проверка..." && unknownPresentation.TimerText == "~23:36",
             "pending probe must preserve the remembered authorization window");
         var captivePresentation = InteractiveTerminalUi.FormatPathPaneStatus(captive, now);
         Assert(captivePresentation.StateText == "нужна авторизация" && captivePresentation.TimerText == "—",

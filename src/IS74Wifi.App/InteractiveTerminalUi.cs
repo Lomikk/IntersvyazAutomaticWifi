@@ -1702,7 +1702,7 @@ internal sealed partial class InteractiveTerminalUi
         DrawBox(canvas, rightPaneX, PaneY, paneWidth, PaneHeight, title: null);
         var columns = GetNetworkPathColumns();
         PutCenteredInRange(canvas, columns.ContentX, columns.StateStart - 1, PaneY, "ПУТЬ", Palette.Highlight);
-        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - 1, PaneY, "СТАТУС", Palette.Highlight);
+        PutRightAligned(canvas, columns.StateStart, columns.TimerStart - 1, PaneY, "СТАТУС", Palette.Highlight);
 
         const string timerHeader = "ДО ПРОВЕРКИ";
         var timerHeaderX = Math.Max(columns.StateStart, columns.RightExclusive - timerHeader.Length);
@@ -1781,7 +1781,7 @@ internal sealed partial class InteractiveTerminalUi
         var hours = totalMinutes / 60;
         var minutes = totalMinutes % 60;
         var prefix = path.AuthorizationWindowApproximate ? "~" : string.Empty;
-        return $"{prefix}{hours}ч {minutes:00}м";
+        return $"{prefix}{hours:00}:{minutes:00}";
     }
 
     private static (string Text, Palette Color) FormatNetworkStatus(InteractiveStatusSnapshot s)
