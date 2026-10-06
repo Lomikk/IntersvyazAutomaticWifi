@@ -292,8 +292,8 @@ internal static class TerminalUiContractTests
             DnsServers: [IPAddress.Parse("192.0.2.53")],
             Ssid: null,
             LooksVirtual: false);
-        Assert(StatusService.IsAuthorizationWindowApproximate(directCampus),
-            "Campus-looking Wi-Fi cannot prove that the upstream is direct and must use an approximate timer");
+        Assert(!StatusService.IsAuthorizationWindowApproximate(directCampus),
+            "Campus Wi-Fi is the only trusted direct SSID family and must use the ordinary timer");
         Assert(StatusService.IsAuthorizationWindowApproximate(hiddenCampus),
             "SUSU Hide may itself be a hotspot and must use an approximate timer");
         Assert(StatusService.IsAuthorizationWindowApproximate(hotspot),
