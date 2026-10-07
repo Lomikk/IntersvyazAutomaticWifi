@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using System.Net;
+using IS74Wifi.App;
 using IS74Wifi.Core;
 
 internal static class AgentContractTests
