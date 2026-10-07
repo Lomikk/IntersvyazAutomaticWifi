@@ -44,7 +44,12 @@ internal static class Program
             {
                 return forwardedAgentExit;
             }
-            return await RunAgentAsync().ConfigureAwait(false);
+            return await RunAgentSupervisorAsync().ConfigureAwait(false);
+        }
+
+        if (command == "agent-worker")
+        {
+            return await RunAgentWorkerAsync().ConfigureAwait(false);
         }
 
         if (command == "update-auto")
@@ -1493,6 +1498,34 @@ internal static class Program
             lastError);
     }
 
+    private static void TryRecoverAutomaticAuthorizationAgent()
+    {
+        if (IsLocalRunRequested())
+        {
+            return;
+        }
+
+        try
+        {
+            var installation = new ProgramInstallation();
+            if (!installation.IsInstalled ||
+                !new WindowsAutostartService().IsEnabledFor(installation.ExecutablePath) ||
+                AgentProcessControl.IsAgentRunning())
+            {
+                return;
+            }
+
+            StartInstalledAgent(installation.ExecutablePath);
+            new DiagnosticLogger(new AppPaths()).Write(DiagnosticLevel.Warn,
+                "agent.recovery launched reason=interactive-start");
+        }
+        catch (Exception ex)
+        {
+            new DiagnosticLogger(new AppPaths()).Write(DiagnosticLevel.Warn,
+                $"agent.recovery failed type={ex.GetType().Name}");
+        }
+    }
+
     private static void StartInstalledAgent(string executablePath)
     {
         var agent = new ProcessStartInfo(executablePath)
@@ -1663,6 +1696,7 @@ internal static class Program
     private static async Task<int> RunMenuAsync(bool startInUpdates = false)
     {
         using var interactiveSession = WindowsNotificationService.TryMarkInteractiveSession();
+        TryRecoverAutomaticAuthorizationAgent();
         var ui = new InteractiveTerminalUi(ProductVersion);
         var showReveal = !string.Equals(
             Environment.GetEnvironmentVariable("IS74W_SKIP_REVEAL"),
@@ -3180,7 +3214,41 @@ internal static class Program
         }
     }
 
-    private static async Task<int> RunAgentAsync()
+    private static async Task<int> RunAgentSupervisorAsync()
+    {
+        var paths = new AppPaths();
+        var logger = new DiagnosticLogger(paths);
+        if (new DpapiSecretStore(paths).Load() is null)
+        {
+            logger.Write(DiagnosticLevel.Warn, "agent.start skipped reason=registration-missing runtime=csharp");
+            return 0;
+        }
+
+        var executable = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
+        {
+            logger.Write(DiagnosticLevel.Error, "agent.supervisor error=ExecutableUnavailable");
+            return 1;
+        }
+
+        return await AgentSupervisor.RunAsync(executable, logger).ConfigureAwait(false);
+    }
+
+    private static async Task<int> RunAgentWorkerAsync()
+    {
+        try
+        {
+            return await RunAgentWorkerCoreAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            new DiagnosticLogger(new AppPaths()).Write(DiagnosticLevel.Error,
+                $"agent.worker fatal error={ex.GetType().Name}");
+            return 1;
+        }
+    }
+
+    private static async Task<int> RunAgentWorkerCoreAsync()
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
         if (app.Secrets.Load() is null)
@@ -3188,10 +3256,10 @@ internal static class Program
             return 0;
         }
 
-        using var lease = NamedSemaphoreLease.TryAcquire(AgentProcessControl.AgentGateName);
+        using var lease = NamedSemaphoreLease.TryAcquire(AgentProcessControl.AgentWorkerGateName);
         if (lease is null)
         {
-            app.Logger.Write(DiagnosticLevel.Info, "agent.start skipped reason=already-running runtime=csharp");
+            app.Logger.Write(DiagnosticLevel.Info, "agent.worker start-skipped reason=already-running runtime=csharp");
             return 0;
         }
 
@@ -3199,7 +3267,7 @@ internal static class Program
             app.Paths,
             new SettingsStore(app.Paths, app.Json),
             app.Logger);
-        using var stopEvent = AgentProcessControl.CreateStopEvent();
+        using var stopEvent = AgentProcessControl.CreateWorkerStopEvent();
         using var networkWake = new AutoResetEvent(false);
         // A laptop may join the campus Wi-Fi after a long idle wait or after
         // resuming from sleep. Network change events shorten that wait without
@@ -3216,7 +3284,6 @@ internal static class Program
         using var resumeMonitor = AgentPowerResumeMonitor.TryRegister(
             WakeForNetworkChange,
             error => app.Logger.Write(DiagnosticLevel.Warn, $"agent.resume-monitor unavailable error={error}"));
-        AgentProcessControl.RegisterCurrentAgentProcess();
         using var stopCts = new CancellationTokenSource();
         var stopRegistration = ThreadPool.RegisterWaitForSingleObject(
             stopEvent,
@@ -3224,7 +3291,7 @@ internal static class Program
             stopCts,
             Timeout.Infinite,
             executeOnlyOnce: true);
-        app.Logger.Write(DiagnosticLevel.Info, "agent.start runtime=csharp");
+        app.Logger.Write(DiagnosticLevel.Info, "agent.worker start runtime=csharp");
         try
         {
             while (!stopCts.IsCancellationRequested)
@@ -3332,8 +3399,7 @@ internal static class Program
             NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
             NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
             stopRegistration.Unregister(null);
-            AgentProcessControl.ClearCurrentAgentProcess();
-            app.Logger.Write(DiagnosticLevel.Info, "agent.stop runtime=csharp");
+            app.Logger.Write(DiagnosticLevel.Info, "agent.worker stop runtime=csharp");
         }
 
         return 0;

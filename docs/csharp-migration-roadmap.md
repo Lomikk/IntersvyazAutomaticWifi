@@ -161,7 +161,7 @@ Exit gate: C# tests reproduce the existing PowerShell critical-path scenarios, i
 
 Status: **implementation complete; field validation pending**. Windows CI builds and runs the C# contracts, CLI smoke test, and clean-state consoleless agent smoke test. The executable now owns registration/connect/status/reset/purge/log commands, a long-running consoleless agent, the 24-hour expiry/guard policy, a named stop signal, and per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` autostart. The first C# registration remains an explicit one-time action and the first Wi-Fi `connect` establishes the trusted 24-hour reference.
 
-- Long-running consoleless `agent` mode.
+- Long-running consoleless `agent` supervisor with an isolated `agent-worker`; the supervisor restarts a worker that exits unexpectedly, while normal disable/update stop signals still terminate both cleanly.
 - Dynamic sleeping outside the expiry guard.
 - 24-hour predicted expiry scheduling and guard behavior.
 - Canonical per-user installation is separate from automatic authorization. The first ordinary external launch offers to copy the EXE to `%LOCALAPPDATA%\Programs\IS74Wifi\IS74Wifi.exe`, register it in Windows, and relaunch the menu from that path. `enable-autostart` only creates the per-user `HKCU ...\Run` entry and starts the agent; stale Run commands are detected and removed instead of being reported as an enabled automatic mode.

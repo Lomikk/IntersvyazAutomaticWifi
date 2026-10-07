@@ -289,6 +289,12 @@ assert 'longIdleEnd - now' in agent_service and 'ExpiryReminderWindow = TimeSpan
 assert 'BoundSleepByBackgroundWork' in csharp_program and 'BoundSleepByBackgroundWork' in agent_service, 'idle sleep must respect update and telemetry deadlines'
 assert 'NetworkChange.NetworkAddressChanged +=' in csharp_program and 'NetworkChange.NetworkAvailabilityChanged +=' in csharp_program, 'long-idle agent must respond to network changes'
 assert 'AgentPowerResumeMonitor.TryRegister(' in csharp_program, 'long-idle agent must respond to Windows power resume'
+agent_supervisor = (root / 'src' / 'IS74Wifi.App' / 'AgentSupervisor.cs').read_text(encoding='utf-8')
+agent_process_control = (root / 'src' / 'IS74Wifi.Core' / 'AgentProcessControl.cs').read_text(encoding='utf-8')
+assert 'agent-worker' in csharp_program and 'AgentSupervisor.RunAsync' in csharp_program, 'autostart agent must isolate the restartable worker behind a supervisor'
+assert 'agent.worker exited' in agent_supervisor and 'GetRestartDelay' in agent_supervisor, 'agent supervisor must restart a worker that exits unexpectedly'
+assert 'AgentWorkerGateName' in agent_process_control and 'SignalWorkerStop' in agent_process_control, 'agent stop control must cover both supervisor and worker'
+assert 'TryRecoverAutomaticAuthorizationAgent();' in csharp_program, 'interactive menu must recover an enabled but missing background agent'
 assert 'MissingNetworkFallbackInterval' in agent_service and 'PublishAutomaticLimitNotification()' in agent_service, 'overdue agent must use sparse fallback and notify on exhausted attempts'
 
 

@@ -6,41 +6,32 @@ public static class AgentProcessControl
 {
     public const string AgentGateName = @"Local\IS74Wifi.CSharp.Agent";
     public const string StopEventName = @"Local\IS74Wifi.CSharp.AgentStop";
+    public const string AgentWorkerGateName = @"Local\IS74Wifi.CSharp.AgentWorker";
+    public const string WorkerStopEventName = @"Local\IS74Wifi.CSharp.AgentWorkerStop";
 
     private const string PidFileName = "agent.pid";
 
-    public static EventWaitHandle CreateStopEvent()
-    {
-        var handle = new EventWaitHandle(false, EventResetMode.ManualReset, StopEventName);
-        handle.Reset();
-        return handle;
-    }
+    public static EventWaitHandle CreateStopEvent() => CreateResetEvent(StopEventName);
+
+    public static EventWaitHandle CreateWorkerStopEvent() => CreateResetEvent(WorkerStopEventName);
 
     public static void SignalStop()
     {
-        try
-        {
-            using var handle = EventWaitHandle.OpenExisting(StopEventName);
-            handle.Set();
-        }
-        catch (WaitHandleCannotBeOpenedException)
-        {
-        }
+        SignalEvent(StopEventName);
+        SignalWorkerStop();
     }
 
-    public static bool IsAgentRunning()
-    {
-        using var lease = NamedSemaphoreLease.TryAcquire(AgentGateName);
-        return lease is null;
-    }
+    public static void SignalWorkerStop() => SignalEvent(WorkerStopEventName);
+
+    public static bool IsAgentRunning() =>
+        IsGateHeld(AgentGateName) || IsGateHeld(AgentWorkerGateName);
 
     public static bool WaitForAgentExit(TimeSpan timeout)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         do
         {
-            using var lease = NamedSemaphoreLease.TryAcquire(AgentGateName);
-            if (lease is not null)
+            if (!IsGateHeld(AgentGateName) && !IsGateHeld(AgentWorkerGateName))
             {
                 return true;
             }
@@ -49,6 +40,32 @@ public static class AgentProcessControl
         } while (DateTimeOffset.UtcNow < deadline);
 
         return false;
+    }
+
+
+    private static EventWaitHandle CreateResetEvent(string name)
+    {
+        var handle = new EventWaitHandle(false, EventResetMode.ManualReset, name);
+        handle.Reset();
+        return handle;
+    }
+
+    private static void SignalEvent(string name)
+    {
+        try
+        {
+            using var handle = EventWaitHandle.OpenExisting(name);
+            handle.Set();
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+        }
+    }
+
+    private static bool IsGateHeld(string name)
+    {
+        using var lease = NamedSemaphoreLease.TryAcquire(name);
+        return lease is null;
     }
 
     public static string GetPidFilePath(string? localAppDataOverride = null)

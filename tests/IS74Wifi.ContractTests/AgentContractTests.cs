@@ -14,6 +14,7 @@ internal static class AgentContractTests
         TestPowerResumeEvents();
         TestAutostartCommand();
         TestAutostartRegistrationState();
+        TestAgentSupervisorRestartPolicy();
         TestAgentPidRecord();
         await TestDaytimeTickDoesNotProbeAsync();
         await TestExpiryIsAuthoritativeAsync();
@@ -311,6 +312,22 @@ internal static class AgentContractTests
             using var key = Registry.CurrentUser.OpenSubKey(runKeyPath, writable: true);
             key?.DeleteValue(valueName, throwOnMissingValue: false);
         }
+    }
+
+    private static void TestAgentSupervisorRestartPolicy()
+    {
+        Assert(AgentSupervisorPolicy.GetRestartDelay(1) == TimeSpan.FromSeconds(1),
+            "first worker crash must restart quickly");
+        Assert(AgentSupervisorPolicy.GetRestartDelay(2) == TimeSpan.FromSeconds(2),
+            "second worker crash backoff changed");
+        Assert(AgentSupervisorPolicy.GetRestartDelay(3) == TimeSpan.FromSeconds(5),
+            "third worker crash backoff changed");
+        Assert(AgentSupervisorPolicy.GetRestartDelay(4) == TimeSpan.FromSeconds(15),
+            "fourth worker crash backoff changed");
+        Assert(AgentSupervisorPolicy.GetRestartDelay(99) == TimeSpan.FromSeconds(30),
+            "worker crash backoff must be capped");
+        Assert(AgentSupervisorPolicy.StableRunThreshold == TimeSpan.FromMinutes(5),
+            "stable worker run threshold changed unexpectedly");
     }
 
     private static void TestAgentPidRecord()
