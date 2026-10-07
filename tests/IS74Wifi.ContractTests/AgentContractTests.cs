@@ -284,6 +284,7 @@ internal static class AgentContractTests
         if (!OperatingSystem.IsWindows()) return;
 
         const string runKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        const string startupApprovedRunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
         var valueName = "IS74WifiContract-" + Guid.NewGuid().ToString("N");
         var executable = Path.Combine(Path.GetTempPath(), valueName + ".exe");
         File.WriteAllText(executable, "placeholder");
@@ -299,6 +300,25 @@ internal static class AgentContractTests
             Assert(service.GetRegistrationState(executable) == AutostartRegistrationState.Enabled,
                 "canonical HKCU Run registration was not recognized as enabled");
 
+            using (var approved = Registry.CurrentUser.CreateSubKey(startupApprovedRunKeyPath, writable: true)!)
+            {
+                approved.SetValue(valueName, new byte[] { 0x03, 0x00, 0x00, 0x00 }, RegistryValueKind.Binary);
+            }
+
+            Assert(service.GetRegistrationState(executable) == AutostartRegistrationState.BlockedByWindows,
+                "Windows-disabled StartupApproved registration was reported as enabled");
+            Assert(!service.IsEnabledFor(executable),
+                "Windows-disabled StartupApproved registration still appeared enabled");
+
+            service.Enable(executable, startNow: false);
+            Assert(service.GetRegistrationState(executable) == AutostartRegistrationState.Enabled,
+                "explicit enable did not clear the Windows StartupApproved override");
+            using (var approved = Registry.CurrentUser.OpenSubKey(startupApprovedRunKeyPath, writable: false))
+            {
+                Assert(approved?.GetValue(valueName) is null,
+                    "explicit enable left a StartupApproved override behind");
+            }
+
             File.Delete(executable);
             Assert(service.GetRegistrationState(executable) == AutostartRegistrationState.Stale,
                 "HKCU Run registration targeting a missing EXE was not marked stale");
@@ -309,8 +329,14 @@ internal static class AgentContractTests
         finally
         {
             try { File.Delete(executable); } catch { }
-            using var key = Registry.CurrentUser.OpenSubKey(runKeyPath, writable: true);
-            key?.DeleteValue(valueName, throwOnMissingValue: false);
+            using (var key = Registry.CurrentUser.OpenSubKey(runKeyPath, writable: true))
+            {
+                key?.DeleteValue(valueName, throwOnMissingValue: false);
+            }
+            using (var approved = Registry.CurrentUser.OpenSubKey(startupApprovedRunKeyPath, writable: true))
+            {
+                approved?.DeleteValue(valueName, throwOnMissingValue: false);
+            }
         }
     }
 
