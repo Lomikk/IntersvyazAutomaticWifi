@@ -3279,8 +3279,17 @@ internal static class Program
         }
         void OnNetworkAddressChanged(object? _, EventArgs __) => WakeForNetworkChange();
         void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs __) => WakeForNetworkChange();
+        void OnNetworkStatusChanged(object? _)
+        {
+            // Windows NCSI/NLM connectivity changes are authoritative only as a
+            // wake trigger. Untimed paths perform one bound SUSU probe after
+            // this event; known-expiry paths keep their normal timer schedule.
+            app.Agent.NotifyNetworkConnectivityChanged();
+            WakeForNetworkChange();
+        }
         NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
         NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+        Windows.Networking.Connectivity.NetworkInformation.NetworkStatusChanged += OnNetworkStatusChanged;
         using var resumeMonitor = AgentPowerResumeMonitor.TryRegister(
             WakeForNetworkChange,
             error => app.Logger.Write(DiagnosticLevel.Warn, $"agent.resume-monitor unavailable error={error}"));
@@ -3398,6 +3407,7 @@ internal static class Program
         {
             NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
             NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
+            Windows.Networking.Connectivity.NetworkInformation.NetworkStatusChanged -= OnNetworkStatusChanged;
             stopRegistration.Unregister(null);
             app.Logger.Write(DiagnosticLevel.Info, "agent.worker stop runtime=csharp");
         }

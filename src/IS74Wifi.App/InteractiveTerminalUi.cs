@@ -1858,7 +1858,8 @@ internal sealed partial class InteractiveTerminalUi
 
         var now = nowUtc ?? DateTimeOffset.UtcNow;
         var timerText = FormatNextPathCheck(path, now);
-        var timerColor = timerText == "—" || path.Status != PathAuthorizationStatus.Internet
+        var timerColor = timerText == "—" || path.CheckOnConnectivityEvent ||
+                         path.Status != PathAuthorizationStatus.Internet
             ? Palette.Dim
             : Palette.Good;
 
@@ -1878,7 +1879,7 @@ internal sealed partial class InteractiveTerminalUi
     {
         if (path.NextCheckUtc is not { } nextCheck)
         {
-            return "—";
+            return path.CheckOnConnectivityEvent ? "по сети" : "—";
         }
 
         var remaining = nextCheck - nowUtc;

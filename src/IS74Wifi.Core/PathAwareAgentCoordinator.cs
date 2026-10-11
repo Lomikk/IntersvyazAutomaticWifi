@@ -25,6 +25,10 @@ public sealed class PathAwareAgentCoordinator(
     private static readonly TimeSpan PathSettlingRetryDelay = TimeSpan.FromSeconds(1);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private NetworkPathIdentity? lastPreferredPath;
+    private int connectivityChangePending;
+
+    public void NotifyNetworkConnectivityChanged() =>
+        Interlocked.Exchange(ref connectivityChangePending, 1);
 
     public TimeSpan GetSleepDelay()
     {
@@ -84,6 +88,7 @@ public sealed class PathAwareAgentCoordinator(
         }
 
         var now = clock.GetUtcNow();
+        var connectivityChanged = Interlocked.Exchange(ref connectivityChangePending, 0) != 0;
         var current = CurrentPaths();
         state.MarkMissingAsDisconnected(current.Select(path => path.Identity).ToArray());
         if (current.Count == 0)
@@ -133,7 +138,10 @@ public sealed class PathAwareAgentCoordinator(
             var observationReason = ObservationReason(before, path);
             var changed = observationReason != "scheduled_recheck";
             var observed = state.Observe(path, now);
-            if (!changed && PathAuthorizationSchedule.GetDelay(observed, path, settings, now) > TimeSpan.FromMilliseconds(100))
+            var connectivityTriggeredProbe = connectivityChanged &&
+                                             PathAuthorizationSchedule.IsConnectivityEventDriven(observed, path);
+            if (!changed && !connectivityTriggeredProbe &&
+                PathAuthorizationSchedule.GetDelay(observed, path, settings, now) > TimeSpan.FromMilliseconds(100))
             {
                 continue;
             }

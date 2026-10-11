@@ -118,6 +118,7 @@ internal static class PathAwareAgentContractTests
         var settling = Path("settling", NetworkInterfaceType.Wireless80211,
             "192.168.137.222", "192.168.137.1", "Settling-Hotspot");
         var settlingCalls = 0;
+        var postSettlingStatus = NetworkPathProbeStatus.Internet;
         PathAuthorizationStatus? statusDuringRetry = null;
         var settlingProbe = new NetworkPathProbe((path, _, _) =>
         {
@@ -128,7 +129,7 @@ internal static class PathAwareAgentContractTests
             }
 
             statusDuringRetry = state.Find(path.Identity)?.Status;
-            return Task.FromResult(ProbeResult(NetworkPathProbeStatus.Internet));
+            return Task.FromResult(ProbeResult(postSettlingStatus));
         });
         var settlingCoordinator = new PathAwareAgentCoordinator(
             () => new StoredSecrets("token", "9123456789"),
@@ -149,17 +150,39 @@ internal static class PathAwareAgentContractTests
         Assert(state.Find(settling.Identity)?.Status == PathAuthorizationStatus.Internet,
             "settling retry did not replace the transient failure with Internet truth");
 
-        // The status UI must use the exact same scheduler as the agent. An
-        // Internet path with no known 24-hour boundary is still checked every
-        // five minutes, so "до проверки" must not degrade to an unknown dash.
+        // Once Internet is known but its authorization boundary is not, there is
+        // no useful timer to poll toward. Ordinary agent/background wakes must
+        // remain silent; only a Windows connectivity/NCSI change triggers one
+        // fresh bound probe for that untimed path.
         var untimedInternet = state.Find(settling.Identity)!;
         Assert(untimedInternet.ExpectedExpiryUtc is null && untimedInternet.LastProbeUtc == now,
             "untimed Internet path setup unexpectedly acquired an expiry");
-        var untimedDelay = PathAuthorizationSchedule.GetDelay(untimedInternet, settling, settings, now.AddMinutes(1));
-        Assert(untimedDelay == TimeSpan.FromMinutes(4),
-            "unknown-expiry Internet path did not schedule the remaining five-minute recheck window");
-        Assert(PathAuthorizationSchedule.GetNextCheckUtc(untimedInternet, settling, settings, now.AddMinutes(1)) == now.AddMinutes(5),
-            "next-check timestamp diverged from the agent delay for an unknown-expiry Internet path");
+        Assert(PathAuthorizationSchedule.GetDelay(untimedInternet, settling, settings, now.AddMinutes(1)) ==
+               PathAuthorizationSchedule.MaximumWait,
+            "unknown-expiry Internet path retained a periodic probe timer");
+        Assert(PathAuthorizationSchedule.GetNextCheckUtc(untimedInternet, settling, settings, now.AddMinutes(1)) is null &&
+               PathAuthorizationSchedule.IsConnectivityEventDriven(untimedInternet, settling),
+            "unknown-expiry Internet path was not marked as connectivity-event driven");
+
+        var callsBeforeIdleTick = settlingCalls;
+        await settlingCoordinator.TickAsync();
+        Assert(settlingCalls == callsBeforeIdleTick,
+            "ordinary wake unexpectedly probed an unknown-expiry Internet path");
+
+        settlingCoordinator.NotifyNetworkConnectivityChanged();
+        await settlingCoordinator.TickAsync();
+        Assert(settlingCalls == callsBeforeIdleTick + 1,
+            "connectivity event did not trigger exactly one probe for an unknown-expiry Internet path");
+
+        postSettlingStatus = NetworkPathProbeStatus.Unreachable;
+        settlingCoordinator.NotifyNetworkConnectivityChanged();
+        await settlingCoordinator.TickAsync();
+        var callsAfterUnreachableEvent = settlingCalls;
+        Assert(state.Find(settling.Identity)?.Status == PathAuthorizationStatus.Unreachable,
+            "connectivity-triggered unreachable result was not recorded");
+        await settlingCoordinator.TickAsync();
+        Assert(settlingCalls == callsAfterUnreachableEvent,
+            "untimed unreachable path fell back to periodic polling after the connectivity event");
 
         var knownExpiry = now.AddHours(10);
         state.RecordConfirmedAuthorization(settling, now.AddHours(-14), knownExpiry, now.AddHours(-14));

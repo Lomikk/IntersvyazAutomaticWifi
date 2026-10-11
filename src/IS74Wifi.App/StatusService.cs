@@ -162,6 +162,9 @@ internal sealed class StatusService
                     machine.AgentRunning);
                 if (nextCheck is { } scheduledCheck)
                     lines.Add($"  Следующая проверка: {scheduledCheck.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+                else if (machine.AgentRunning && pathState is not null &&
+                         PathAuthorizationSchedule.IsConnectivityEventDriven(pathState, path))
+                    lines.Add("  Следующая проверка: по событию Windows/NCSI");
                 if (pathState?.LastSuccessfulAuthUtc is { } pathAuth)
                     lines.Add($"  Последняя авторизация: {pathAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
                 if (pathState?.UserActionRequired == true)
@@ -255,7 +258,9 @@ internal sealed class StatusService
                         path,
                         local.Settings,
                         snapshotNow,
-                        local.Machine.AgentRunning));
+                        local.Machine.AgentRunning),
+                    CheckOnConnectivityEvent: local.Machine.AgentRunning && pathState is not null &&
+                        PathAuthorizationSchedule.IsConnectivityEventDriven(pathState, path));
             })
             .ToArray();
 

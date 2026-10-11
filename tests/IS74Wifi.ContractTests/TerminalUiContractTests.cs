@@ -245,7 +245,8 @@ internal static class TerminalUiContractTests
         {
             ExpectedExpiryUtc = null,
             LastResult = null,
-            NextCheckUtc = now.AddMinutes(4)
+            NextCheckUtc = null,
+            CheckOnConnectivityEvent = true
         };
         var unreachable = timed with { Status = PathAuthorizationStatus.Unreachable };
         var ambiguous = timed with { Status = PathAuthorizationStatus.Ambiguous };
@@ -257,7 +258,7 @@ internal static class TerminalUiContractTests
             ExpectedExpiryUtc = now.AddSeconds(-1),
             NextCheckUtc = now.AddMinutes(1)
         };
-        var noScheduledCheck = untimed with { NextCheckUtc = null };
+        var noScheduledCheck = untimed with { CheckOnConnectivityEvent = false };
 
         var timedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(timed, now);
         Assert(timedPresentation.StateText == "онлайн" && timedPresentation.TimerText == "~23:36",
@@ -266,8 +267,8 @@ internal static class TerminalUiContractTests
         Assert(opaquePresentation.StateText == "онлайн" && opaquePresentation.TimerText == "~18:12",
             "opaque NAT path must mark the remembered authorization window as approximate");
         var untimedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(untimed, now);
-        Assert(untimedPresentation.StateText == "онлайн" && untimedPresentation.TimerText == "~00:04",
-            "path without a known authorization window must show its real scheduled recheck countdown");
+        Assert(untimedPresentation.StateText == "онлайн" && untimedPresentation.TimerText == "по сети",
+            "path without a known authorization window must show event-driven connectivity waiting");
         var unreachablePresentation = InteractiveTerminalUi.FormatPathPaneStatus(unreachable, now);
         Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "~23:36",
             "temporary transport failure must not erase a still-valid remembered authorization window");

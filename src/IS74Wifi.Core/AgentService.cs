@@ -201,6 +201,10 @@ public sealed class AgentService(
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private DateTimeOffset? notifiedExpiryUtc;
+
+    public void NotifyNetworkConnectivityChanged() =>
+        pathAware?.NotifyNetworkConnectivityChanged();
+
     public TimeSpan GetSleepDelay()
     {
         if (pathAware is not null)

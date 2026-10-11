@@ -288,6 +288,9 @@ assert 'TelemetryUploader.GetHttpTimeout(settings)' in agent_service and 'Teleme
 assert 'longIdleEnd - now' in agent_service and 'ExpiryReminderWindow = TimeSpan.FromMinutes(5)' in agent_service, 'healthy daytime agent must sleep to the next actual deadline'
 assert 'BoundSleepByBackgroundWork' in csharp_program and 'BoundSleepByBackgroundWork' in agent_service, 'idle sleep must respect update and telemetry deadlines'
 assert 'NetworkChange.NetworkAddressChanged +=' in csharp_program and 'NetworkChange.NetworkAvailabilityChanged +=' in csharp_program, 'long-idle agent must respond to network changes'
+assert 'NetworkInformation.NetworkStatusChanged +=' in csharp_program and 'NotifyNetworkConnectivityChanged()' in csharp_program, 'untimed authorization must wake from Windows NCSI connectivity changes'
+path_schedule = (root / 'src' / 'IS74Wifi.Core' / 'PathAuthorizationSchedule.cs').read_text(encoding='utf-8')
+assert 'UnknownInternetRecheck' not in path_schedule and 'IsConnectivityEventDriven' in path_schedule, 'unknown-expiry paths must remain event-driven instead of periodic SUSU polling'
 assert 'AgentPowerResumeMonitor.TryRegister(' in csharp_program, 'long-idle agent must respond to Windows power resume'
 agent_supervisor = (root / 'src' / 'IS74Wifi.App' / 'AgentSupervisor.cs').read_text(encoding='utf-8')
 agent_process_control = (root / 'src' / 'IS74Wifi.Core' / 'AgentProcessControl.cs').read_text(encoding='utf-8')

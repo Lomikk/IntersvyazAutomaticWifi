@@ -1,14 +1,13 @@
 namespace IS74Wifi.Core;
 
 /// <summary>
-/// Shared scheduling rules for one managed physical network path. The agent and
-/// interactive UI use the same calculation so "до проверки" reflects the next
-/// probe the background coordinator will actually perform, even when no 24-hour
-/// authorization boundary is known yet.
+/// Shared scheduling rules for one managed physical network path. Known
+/// authorization windows use the same deadline calculation in the agent and UI;
+/// observed paths without any trustworthy boundary are event-driven by Windows
+/// connectivity/NCSI changes instead of periodic HTTP polling.
 /// </summary>
 public static class PathAuthorizationSchedule
 {
-    public static readonly TimeSpan UnknownInternetRecheck = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan FailureRecheck = TimeSpan.FromMinutes(1);
     public static readonly TimeSpan MaximumWait = TimeSpan.FromDays(1);
     public static readonly TimeSpan MinimumDelay = TimeSpan.FromMilliseconds(100);
@@ -56,15 +55,20 @@ public static class PathAuthorizationSchedule
         {
             return MinimumDelay;
         }
+        if (state.ExpectedExpiryUtc is null)
+        {
+            // Once an untimed path has produced an observation, there is no
+            // trustworthy deadline to poll toward. Network/NCSI events wake the
+            // worker when Windows notices a connectivity change; ordinary
+            // background wakes must not turn this state into periodic HTTP probes.
+            return MaximumWait;
+        }
         if (state.Status is PathAuthorizationStatus.Unreachable or PathAuthorizationStatus.Ambiguous)
         {
             return DueFromLastProbe(state.LastProbeUtc, FailureRecheck, now);
         }
-        if (state.ExpectedExpiryUtc is not { } expiry)
-        {
-            return DueFromLastProbe(state.LastProbeUtc, UnknownInternetRecheck, now);
-        }
 
+        var expiry = state.ExpectedExpiryUtc.Value;
         var fastStart = expiry - FastStartLead;
         if (now < fastStart)
         {
@@ -90,8 +94,28 @@ public static class PathAuthorizationSchedule
         {
             return null;
         }
+        if (IsConnectivityEventDriven(state, current))
+        {
+            return null;
+        }
 
         return now + GetDelay(state, current, settings, now);
+    }
+
+    public static bool IsConnectivityEventDriven(
+        PathAuthorizationState state,
+        NetworkPathSnapshot current)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(current);
+
+        return state.ExpectedExpiryUtc is null &&
+               state.NextAutomaticRetryUtc is null &&
+               !state.UserActionRequired &&
+               !SnapshotChanged(state, current) &&
+               (state.Status is PathAuthorizationStatus.Internet or
+                   PathAuthorizationStatus.Unreachable or
+                   PathAuthorizationStatus.Ambiguous);
     }
 
     public static bool SnapshotChanged(PathAuthorizationState previous, NetworkPathSnapshot current) =>

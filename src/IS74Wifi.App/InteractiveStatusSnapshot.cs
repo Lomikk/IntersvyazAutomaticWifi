@@ -9,7 +9,8 @@ internal sealed record InteractiveNetworkPathStatus(
     DateTimeOffset? ExpectedExpiryUtc,
     string? LastResult,
     bool AuthorizationWindowApproximate = false,
-    DateTimeOffset? NextCheckUtc = null);
+    DateTimeOffset? NextCheckUtc = null,
+    bool CheckOnConnectivityEvent = false);
 
 internal sealed record InteractiveStatusSnapshot(
     bool Installed,
