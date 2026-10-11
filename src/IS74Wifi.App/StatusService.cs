@@ -154,6 +154,14 @@ internal sealed class StatusService
                 lines.Add($"  IPv4: {path.SourceIPv4?.ToString() ?? "—"}; gateway: {path.GatewayIPv4?.ToString() ?? "—"}; ifIndex: {path.InterfaceIndex}");
                 if (pathState?.ExpectedExpiryUtc is { } pathExpiry)
                     lines.Add($"  Ожидаемая граница: {pathExpiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+                var nextCheck = PathAuthorizationSchedule.GetNextCheckUtc(
+                    pathState,
+                    path,
+                    settings,
+                    DateTimeOffset.UtcNow,
+                    machine.AgentRunning);
+                if (nextCheck is { } scheduledCheck)
+                    lines.Add($"  Следующая проверка: {scheduledCheck.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
                 if (pathState?.LastSuccessfulAuthUtc is { } pathAuth)
                     lines.Add($"  Последняя авторизация: {pathAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
                 if (pathState?.UserActionRequired == true)
@@ -225,6 +233,7 @@ internal sealed class StatusService
             .OrderByDescending(state => state.LastAttemptUtc ?? DateTimeOffset.MinValue)
             .FirstOrDefault();
         var preferredPath = new PreferredNetworkPathResolver().Resolve(local.CurrentPaths);
+        var snapshotNow = DateTimeOffset.UtcNow;
         var networkPaths = local.CurrentPaths
             .OrderByDescending(path => preferredPath is not null && SamePathIdentity(path.Identity, preferredPath))
             .ThenBy(path => path.Ssid is null ? path.Name : path.Ssid, StringComparer.OrdinalIgnoreCase)
@@ -240,7 +249,13 @@ internal sealed class StatusService
                     preferredPath is not null && SamePathIdentity(path.Identity, preferredPath),
                     pathState?.ExpectedExpiryUtc,
                     pathState?.LastResult,
-                    AuthorizationWindowApproximate: IsAuthorizationWindowApproximate(path));
+                    AuthorizationWindowApproximate: IsAuthorizationWindowApproximate(path),
+                    NextCheckUtc: PathAuthorizationSchedule.GetNextCheckUtc(
+                        pathState,
+                        path,
+                        local.Settings,
+                        snapshotNow,
+                        local.Machine.AgentRunning));
             })
             .ToArray();
 

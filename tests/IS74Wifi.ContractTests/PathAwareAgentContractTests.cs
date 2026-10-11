@@ -148,6 +148,26 @@ internal static class PathAwareAgentContractTests
             "first transient failure was published before the settling retry completed");
         Assert(state.Find(settling.Identity)?.Status == PathAuthorizationStatus.Internet,
             "settling retry did not replace the transient failure with Internet truth");
+
+        // The status UI must use the exact same scheduler as the agent. An
+        // Internet path with no known 24-hour boundary is still checked every
+        // five minutes, so "до проверки" must not degrade to an unknown dash.
+        var untimedInternet = state.Find(settling.Identity)!;
+        Assert(untimedInternet.ExpectedExpiryUtc is null && untimedInternet.LastProbeUtc == now,
+            "untimed Internet path setup unexpectedly acquired an expiry");
+        var untimedDelay = PathAuthorizationSchedule.GetDelay(untimedInternet, settling, settings, now.AddMinutes(1));
+        Assert(untimedDelay == TimeSpan.FromMinutes(4),
+            "unknown-expiry Internet path did not schedule the remaining five-minute recheck window");
+        Assert(PathAuthorizationSchedule.GetNextCheckUtc(untimedInternet, settling, settings, now.AddMinutes(1)) == now.AddMinutes(5),
+            "next-check timestamp diverged from the agent delay for an unknown-expiry Internet path");
+
+        var knownExpiry = now.AddHours(10);
+        state.RecordConfirmedAuthorization(settling, now.AddHours(-14), knownExpiry, now.AddHours(-14));
+        var timedInternet = state.Find(settling.Identity)!;
+        Assert(PathAuthorizationSchedule.GetNextCheckUtc(timedInternet, settling, settings, now) == knownExpiry.AddSeconds(-10),
+            "known authorization boundary did not schedule the same pre-edge wake used by the agent");
+        Assert(PathAuthorizationSchedule.GetNextCheckUtc(timedInternet, settling, settings, now, agentRunning: false) is null,
+            "stopped agent must not advertise a background check that cannot occur");
     }
 
     private static NetworkPathSnapshot Path(

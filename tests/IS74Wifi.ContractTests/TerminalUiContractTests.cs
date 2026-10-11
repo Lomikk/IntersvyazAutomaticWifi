@@ -231,25 +231,33 @@ internal static class TerminalUiContractTests
             Preferred: false,
             ExpectedExpiryUtc: now.AddHours(23).AddMinutes(36),
             LastResult: "success",
-            AuthorizationWindowApproximate: true);
+            AuthorizationWindowApproximate: true,
+            NextCheckUtc: now.AddHours(23).AddMinutes(36));
         var opaqueTimed = new InteractiveNetworkPathStatus(
             "Ethernet 4",
             PathAuthorizationStatus.Internet,
             Preferred: true,
             ExpectedExpiryUtc: now.AddHours(18).AddMinutes(12),
             LastResult: "success",
-            AuthorizationWindowApproximate: true);
+            AuthorizationWindowApproximate: true,
+            NextCheckUtc: now.AddHours(18).AddMinutes(12));
         var untimed = opaqueTimed with
         {
             ExpectedExpiryUtc = null,
-            LastResult = null
+            LastResult = null,
+            NextCheckUtc = now.AddMinutes(4)
         };
         var unreachable = timed with { Status = PathAuthorizationStatus.Unreachable };
         var ambiguous = timed with { Status = PathAuthorizationStatus.Ambiguous };
         var unknown = timed with { Status = PathAuthorizationStatus.Unknown };
         var captive = timed with { Status = PathAuthorizationStatus.Captive };
         var authorizing = captive with { LastResult = "step-one-sent" };
-        var expired = timed with { ExpectedExpiryUtc = now.AddSeconds(-1) };
+        var expired = timed with
+        {
+            ExpectedExpiryUtc = now.AddSeconds(-1),
+            NextCheckUtc = now.AddMinutes(1)
+        };
+        var noScheduledCheck = untimed with { NextCheckUtc = null };
 
         var timedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(timed, now);
         Assert(timedPresentation.StateText == "онлайн" && timedPresentation.TimerText == "~23:36",
@@ -258,8 +266,8 @@ internal static class TerminalUiContractTests
         Assert(opaquePresentation.StateText == "онлайн" && opaquePresentation.TimerText == "~18:12",
             "opaque NAT path must mark the remembered authorization window as approximate");
         var untimedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(untimed, now);
-        Assert(untimedPresentation.StateText == "онлайн" && untimedPresentation.TimerText == "—",
-            "path without a known authorization window must show Internet plus an explicit dash");
+        Assert(untimedPresentation.StateText == "онлайн" && untimedPresentation.TimerText == "~00:04",
+            "path without a known authorization window must show its real scheduled recheck countdown");
         var unreachablePresentation = InteractiveTerminalUi.FormatPathPaneStatus(unreachable, now);
         Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "~23:36",
             "temporary transport failure must not erase a still-valid remembered authorization window");
@@ -276,8 +284,11 @@ internal static class TerminalUiContractTests
         Assert(authorizingPresentation.StateText == "авторизация..." && authorizingPresentation.TimerText == "—",
             "active authorization must not show a stale window");
         var expiredPresentation = InteractiveTerminalUi.FormatPathPaneStatus(expired, now);
-        Assert(expiredPresentation.StateText == "онлайн" && expiredPresentation.TimerText == "—",
-            "expired prediction must not be displayed as a current authorization window");
+        Assert(expiredPresentation.StateText == "онлайн" && expiredPresentation.TimerText == "~00:01",
+            "expired prediction must show the next scheduled edge probe instead of an unknown dash");
+        var stoppedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(noScheduledCheck, now);
+        Assert(stoppedPresentation.StateText == "онлайн" && stoppedPresentation.TimerText == "—",
+            "path without a running/scheduled background check must keep the explicit dash");
 
         var directCampus = NetworkPathSnapshot.FromAdapter(Adapter("campus", "Wi-Fi", "Campus Wi-Fi"));
         var hiddenCampus = NetworkPathSnapshot.FromAdapter(Adapter("hidden", "Wi-Fi", "SUSU Hide"));

@@ -1857,7 +1857,7 @@ internal sealed partial class InteractiveTerminalUi
         }
 
         var now = nowUtc ?? DateTimeOffset.UtcNow;
-        var timerText = FormatKnownAuthorizationWindow(path, now);
+        var timerText = FormatNextPathCheck(path, now);
         var timerColor = timerText == "—" || path.Status != PathAuthorizationStatus.Internet
             ? Palette.Dim
             : Palette.Good;
@@ -1874,14 +1874,19 @@ internal sealed partial class InteractiveTerminalUi
         };
     }
 
-    private static string FormatKnownAuthorizationWindow(InteractiveNetworkPathStatus path, DateTimeOffset nowUtc)
+    private static string FormatNextPathCheck(InteractiveNetworkPathStatus path, DateTimeOffset nowUtc)
     {
-        if (path.ExpectedExpiryUtc is not { } expiry || expiry <= nowUtc)
+        if (path.NextCheckUtc is not { } nextCheck)
         {
             return "—";
         }
 
-        var totalMinutes = Math.Max(0, (int)Math.Floor((expiry - nowUtc).TotalMinutes));
+        var remaining = nextCheck - nowUtc;
+        if (remaining < TimeSpan.Zero)
+        {
+            remaining = TimeSpan.Zero;
+        }
+        var totalMinutes = Math.Max(0, (int)Math.Floor(remaining.TotalMinutes));
         var hours = totalMinutes / 60;
         var minutes = totalMinutes % 60;
         var prefix = path.AuthorizationWindowApproximate ? "~" : string.Empty;

@@ -20,10 +20,7 @@ public sealed class PathAwareAgentCoordinator(
     NetworkPathTelemetryRecorder? telemetry = null,
     Func<bool>? isVpnActive = null)
 {
-    private static readonly TimeSpan UnknownInternetRecheck = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan FailureRecheck = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan NoPathRecheck = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan MaximumWait = TimeSpan.FromDays(1);
     private static readonly TimeSpan InitialProbeTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan PathSettlingRetryDelay = TimeSpan.FromSeconds(1);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
@@ -38,16 +35,16 @@ public sealed class PathAwareAgentCoordinator(
             return NoPathRecheck;
         }
 
-        var delay = MaximumWait;
+        var delay = PathAuthorizationSchedule.MaximumWait;
         foreach (var path in current)
         {
             var existing = state.Find(path.Identity);
-            if (existing is null || existing.Status == PathAuthorizationStatus.Disconnected || SnapshotChanged(existing, path))
+            if (existing is null || existing.Status == PathAuthorizationStatus.Disconnected || PathAuthorizationSchedule.SnapshotChanged(existing, path))
             {
                 return TimeSpan.FromMilliseconds(100);
             }
 
-            delay = Min(delay, GetPathDelay(existing, now));
+            delay = Min(delay, PathAuthorizationSchedule.GetDelay(existing, path, settings, now));
         }
         return Clamp(delay);
     }
@@ -136,7 +133,7 @@ public sealed class PathAwareAgentCoordinator(
             var observationReason = ObservationReason(before, path);
             var changed = observationReason != "scheduled_recheck";
             var observed = state.Observe(path, now);
-            if (!changed && GetPathDelay(observed, now) > TimeSpan.FromMilliseconds(100))
+            if (!changed && PathAuthorizationSchedule.GetDelay(observed, path, settings, now) > TimeSpan.FromMilliseconds(100))
             {
                 continue;
             }
@@ -279,7 +276,7 @@ public sealed class PathAwareAgentCoordinator(
     {
         if (pathState is null || pathState.UserActionRequired ||
             pathState.ExpectedExpiryUtc is not { } expiry || now < expiry ||
-            pathState.EdgeWatchActive || SnapshotChanged(pathState, current) ||
+            pathState.EdgeWatchActive || PathAuthorizationSchedule.SnapshotChanged(pathState, current) ||
             pathState.Status != PathAuthorizationStatus.Internet)
         {
             return false;
@@ -388,7 +385,7 @@ public sealed class PathAwareAgentCoordinator(
     {
         if (before is null) return "appeared";
         if (before.Status == PathAuthorizationStatus.Disconnected) return "reappeared";
-        return SnapshotChanged(before, path) ? "changed" : "scheduled_recheck";
+        return PathAuthorizationSchedule.SnapshotChanged(before, path) ? "changed" : "scheduled_recheck";
     }
 
     private static bool ShouldRecordObservation(
@@ -413,63 +410,6 @@ public sealed class PathAwareAgentCoordinator(
             .Select(group => group.First())
             .ToArray();
 
-    private TimeSpan GetPathDelay(PathAuthorizationState path, DateTimeOffset now)
-    {
-        if (path.UserActionRequired)
-        {
-            return MaximumWait;
-        }
-        if (path.NextAutomaticRetryUtc is { } retry && retry > now)
-        {
-            return Clamp(retry - now);
-        }
-        if (path.Status is PathAuthorizationStatus.Unknown or PathAuthorizationStatus.Disconnected)
-        {
-            return TimeSpan.FromMilliseconds(100);
-        }
-        if (path.Status == PathAuthorizationStatus.Captive)
-        {
-            return TimeSpan.FromMilliseconds(100);
-        }
-        if (path.Status is PathAuthorizationStatus.Unreachable or PathAuthorizationStatus.Ambiguous)
-        {
-            return DueFromLastProbe(path.LastProbeUtc, FailureRecheck, now);
-        }
-        if (path.ExpectedExpiryUtc is not { } expiry)
-        {
-            return DueFromLastProbe(path.LastProbeUtc, UnknownInternetRecheck, now);
-        }
-
-        var fastStart = expiry - TimeSpan.FromSeconds(10);
-        if (now < fastStart)
-        {
-            return Clamp(fastStart - now);
-        }
-        var interval = AgentTiming.GetEdgeProbeInterval(settings, expiry, now);
-        var fromProbe = DueFromLastProbe(path.LastProbeUtc, interval, now);
-        if (now < expiry)
-        {
-            return Min(fromProbe, Clamp(expiry - now));
-        }
-        return fromProbe;
-    }
-
-    private static TimeSpan DueFromLastProbe(DateTimeOffset? lastProbe, TimeSpan interval, DateTimeOffset now)
-    {
-        if (lastProbe is null)
-        {
-            return TimeSpan.FromMilliseconds(100);
-        }
-        var due = lastProbe.Value + interval;
-        return due <= now ? TimeSpan.FromMilliseconds(100) : Clamp(due - now);
-    }
-
-    private static bool SnapshotChanged(PathAuthorizationState previous, NetworkPathSnapshot current) =>
-        previous.InterfaceIndex != current.InterfaceIndex ||
-        !string.Equals(previous.SourceIPv4, current.SourceIPv4?.ToString(), StringComparison.OrdinalIgnoreCase) ||
-        !string.Equals(previous.GatewayIPv4, current.GatewayIPv4?.ToString(), StringComparison.OrdinalIgnoreCase) ||
-        !string.Equals(previous.Ssid, current.Ssid, StringComparison.Ordinal);
-
     private static string PathSortKey(NetworkPathSnapshot path) =>
         $"{path.AdapterId}\u001f{path.Identity.NetworkDiscriminator}";
 
@@ -481,7 +421,7 @@ public sealed class PathAwareAgentCoordinator(
     private static TimeSpan Min(TimeSpan left, TimeSpan right) => left < right ? left : right;
     private static TimeSpan Clamp(TimeSpan value) =>
         value < TimeSpan.FromMilliseconds(100) ? TimeSpan.FromMilliseconds(100) :
-        value > MaximumWait ? MaximumWait : value;
+        value > PathAuthorizationSchedule.MaximumWait ? PathAuthorizationSchedule.MaximumWait : value;
     private static string Safe(string value) => value.Replace('\r', ' ').Replace('\n', ' ');
 
     private void NotifyOutcome(NetworkPathSnapshot path, AuthorizationOutcome outcome)
