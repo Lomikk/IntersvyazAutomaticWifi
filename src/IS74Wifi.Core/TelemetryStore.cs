@@ -83,7 +83,8 @@ public sealed class TelemetryQueue(
 
     public TelemetryQueueBatch? ReadOldestBatch(
         int maxEvents = TelemetryContract.MaxUploadEvents,
-        int maxPayloadBytes = TelemetryContract.MaxUploadPayloadBytes)
+        int maxPayloadBytes = TelemetryContract.MaxUploadPayloadBytes,
+        int maxFiles = int.MaxValue)
     {
         try
         {
@@ -136,7 +137,8 @@ public sealed class TelemetryQueue(
                 events.AddRange(lines);
                 approximateBytes += fileBytes;
 
-                if (events.Count >= maxEvents || approximateBytes >= maxPayloadBytes)
+                if (selectedFiles.Count >= Math.Max(1, maxFiles) ||
+                    events.Count >= maxEvents || approximateBytes >= maxPayloadBytes)
                 {
                     break;
                 }
@@ -165,6 +167,14 @@ public sealed class TelemetryQueue(
         foreach (var file in batch.Files)
         {
             TryDelete(file);
+        }
+    }
+
+    public void Reject(TelemetryQueueBatch batch)
+    {
+        foreach (var file in batch.Files)
+        {
+            Quarantine(file);
         }
     }
 
@@ -283,7 +293,7 @@ public sealed class TelemetryUploadStateStore(AppPaths paths, JsonFileStore json
 {
     public TelemetryUploadState Load() =>
         json.Read(paths.TelemetryUploadStateFile, PersistenceJsonContext.Default.TelemetryUploadState)
-        ?? new TelemetryUploadState(null, null, 0);
+        ?? new TelemetryUploadState(null, null, 0, false);
 
     public void Save(TelemetryUploadState state) =>
         json.Write(paths.TelemetryUploadStateFile, state, PersistenceJsonContext.Default.TelemetryUploadState);

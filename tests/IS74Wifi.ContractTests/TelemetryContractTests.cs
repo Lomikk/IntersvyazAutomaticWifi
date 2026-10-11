@@ -159,8 +159,10 @@ internal static class TelemetryContractTests
         TestPathObservationTelemetry();
         TestRegistrationTelemetry();
         TestUploadTimeoutCompatibility();
+        TestUploadStateCompatibility();
         await TestUploadConsentGateAsync();
         await TestMixedQueueRetryAsync();
+        await TestPoisonBatchIsolationAsync();
         await TestServerRetryDelayAsync();
     }
 
@@ -300,6 +302,18 @@ internal static class TelemetryContractTests
         Assert(!queue.HasPending, "declined registration telemetry was queued");
     }
 
+    private static void TestUploadStateCompatibility()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        paths.EnsureDirectories();
+        File.WriteAllText(paths.TelemetryUploadStateFile,
+            "{\"lastSuccessfulUploadUtc\":null,\"nextAttemptUtc\":null,\"consecutiveFailures\":3}");
+        var state = new TelemetryUploadStateStore(paths, new JsonFileStore()).Load();
+        Assert(state.ConsecutiveFailures == 3 && !state.IsolatingPermanentFailure,
+            "legacy telemetry upload state did not default poison isolation to false");
+    }
+
     private static async Task TestUploadConsentGateAsync()
     {
         using var temp = TestDirectory.Create();
@@ -383,9 +397,9 @@ internal static class TelemetryContractTests
             else Assert(body == firstRequestBody, "retry changed the pending payload or its dedupe identity");
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                // Models the old receiver, then the compatible receiver after rollout.
+                // A transient backend failure must retain the exact queued batch for retry.
                 Content = new StringContent(posts == 1
-                    ? "{\"ok\":false,\"error\":\"route_event_mismatch\"}"
+                    ? "{\"ok\":false,\"error\":\"internal_error\"}"
                     : "{\"ok\":true,\"accepted\":2}")
             };
         }));
@@ -406,6 +420,78 @@ internal static class TelemetryContractTests
         await uploader.TryFlushIfDueAsync();
         Assert(posts == 2 && !queue.HasPending, "compatible receiver did not unblock the mixed queue");
         Assert(stateStore.Load().ConsecutiveFailures == 0, "successful retry did not reset failures");
+    }
+
+    private static async Task TestPoisonBatchIsolationAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var queue = new TelemetryQueue(paths);
+        queue.Enqueue(["{\"event_type\":\"attempt\",\"schema\":4,\"event_id\":\"event-good-a\"}"]);
+        queue.Enqueue(["{\"event_type\":\"mailbox_poll\",\"schema\":4,\"event_id\":\"event-poison\",\"newest_id_delta\":-2500000}"]);
+        queue.Enqueue(["{\"event_type\":\"attempt\",\"schema\":4,\"event_id\":\"event-good-b\"}"]);
+
+        var accepted = new HashSet<string>(StringComparer.Ordinal);
+        var posts = 0;
+        using var http = new HttpClient(new DelegateHandler(async (request, cancellationToken) =>
+        {
+            posts++;
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            using var payload = JsonDocument.Parse(body);
+            var eventIds = payload.RootElement.GetProperty("events").EnumerateArray()
+                .Select(item => item.GetProperty("event_id").GetString()!)
+                .ToArray();
+            if (eventIds.Contains("event-poison", StringComparer.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"ok\":false,\"error\":\"invalid_newest_id_delta\"}")
+                };
+            }
+
+            foreach (var eventId in eventIds)
+            {
+                accepted.Add(eventId);
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent($"{{\"ok\":true,\"accepted\":{eventIds.Length}}}")
+            };
+        }));
+        var states = new TelemetryUploadStateStore(paths, new JsonFileStore());
+        var clock = new UploadTestClock();
+        var uploader = new TelemetryUploader(queue, states,
+            new TelemetryClient(http, new Uri("https://backend.example.test/exec")),
+            new AppSettings
+            {
+                AnonymousStatisticsConsent = AnonymousStatisticsConsent.Allowed,
+                TelemetryMaxBatchesPerFlush = 1
+            },
+            new DiagnosticLogger(paths), timeProvider: clock);
+
+        for (var flush = 0; flush < 6 && queue.HasPending; flush++)
+        {
+            await uploader.TryFlushIfDueAsync();
+            if (!queue.HasPending)
+            {
+                break;
+            }
+
+            var state = states.Load();
+            Assert(state.NextAttemptUtc is not null, "poison recovery did not schedule its next isolation step");
+            clock.Now = state.NextAttemptUtc!.Value;
+        }
+
+        var status = queue.GetStatus();
+        Assert(!queue.HasPending, "poison trace still blocked later telemetry");
+        Assert(status.RejectedFiles == 1, "poison trace was not quarantined exactly once");
+        Assert(accepted.SetEquals(new[] { "event-good-a", "event-good-b" }),
+            "valid traces next to poison telemetry were lost");
+        Assert(posts is >= 3 and <= 4, "poison isolation used an unexpected number of requests");
+        var finalState = states.Load();
+        Assert(finalState.ConsecutiveFailures == 0 && finalState.NextAttemptUtc is null &&
+               !finalState.IsolatingPermanentFailure,
+            "handled poison telemetry left the uploader in recovery/backoff state");
     }
 
     private static async Task TestServerRetryDelayAsync()

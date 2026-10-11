@@ -251,7 +251,8 @@ public sealed record LeaderboardControlRequest
 public sealed record TelemetryUploadState(
     DateTimeOffset? LastSuccessfulUploadUtc,
     DateTimeOffset? NextAttemptUtc,
-    int ConsecutiveFailures);
+    int ConsecutiveFailures,
+    bool IsolatingPermanentFailure = false);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,

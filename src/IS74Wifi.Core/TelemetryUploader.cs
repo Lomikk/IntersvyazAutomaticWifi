@@ -54,11 +54,13 @@ public sealed class TelemetryUploader(
         // existing settings.json files may still contain the old 1–3s value.
         var timeout = GetHttpTimeout(settings);
         var sentAny = false;
-        var maxBatches = Math.Clamp(settings.TelemetryMaxBatchesPerFlush, 1, 8);
+        var rejectedAny = false;
+        var isolatePermanentFailure = state.IsolatingPermanentFailure;
+        var maxRequests = Math.Clamp(settings.TelemetryMaxBatchesPerFlush, 1, 8);
 
-        for (var index = 0; index < maxBatches; index++)
+        for (var index = 0; index < maxRequests; index++)
         {
-            var batch = queue.ReadOldestBatch();
+            var batch = queue.ReadOldestBatch(maxFiles: isolatePermanentFailure ? 1 : int.MaxValue);
             if (batch is null)
             {
                 break;
@@ -67,12 +69,40 @@ public sealed class TelemetryUploader(
             var result = await client.SendTelemetryBatchAsync(batch, timeout, cancellationToken).ConfigureAwait(false);
             if (!result.Success)
             {
+                if (IsPermanentContractError(result.Error))
+                {
+                    if (batch.Files.Count > 1)
+                    {
+                        // A batch may contain several independently queued traces. Do
+                        // not quarantine all of them just because one event is invalid:
+                        // isolate the oldest trace and identify the poison file first.
+                        isolatePermanentFailure = true;
+                        var isolateRetryAt = clock.GetUtcNow() + TimeSpan.FromMinutes(1);
+                        stateStore.Save(new TelemetryUploadState(
+                            state.LastSuccessfulUploadUtc,
+                            isolateRetryAt,
+                            0,
+                            true));
+                        logger.Write(DiagnosticLevel.Warn,
+                            $"telemetry.upload isolate reason={result.Error ?? "unknown"} files={batch.Files.Count} events={batch.EventJson.Count}");
+                        continue;
+                    }
+
+                    queue.Reject(batch);
+                    rejectedAny = true;
+                    isolatePermanentFailure = false;
+                    logger.Write(DiagnosticLevel.Warn,
+                        $"telemetry.upload rejected reason={result.Error ?? "unknown"} files={batch.Files.Count} events={batch.EventJson.Count}");
+                    continue;
+                }
+
                 var failures = Math.Min(20, state.ConsecutiveFailures + 1);
                 var retry = GetRetryDelay(result, failures);
                 stateStore.Save(new TelemetryUploadState(
                     state.LastSuccessfulUploadUtc,
                     clock.GetUtcNow() + retry,
-                    failures));
+                    failures,
+                    isolatePermanentFailure));
                 logger.Write(DiagnosticLevel.Warn,
                     $"telemetry.upload deferred reason={result.Error ?? "unknown"} retryMinutes={retry.TotalMinutes:0}");
                 return;
@@ -82,15 +112,45 @@ public sealed class TelemetryUploader(
             sentAny = true;
         }
 
-        if (sentAny)
+        if (sentAny || rejectedAny)
         {
+            var completedAt = clock.GetUtcNow();
             DateTimeOffset? nextAttempt = queue.HasPending
-                ? now + TimeSpan.FromHours(6)
+                ? completedAt + (rejectedAny || isolatePermanentFailure
+                    ? TimeSpan.FromMinutes(1)
+                    : TimeSpan.FromHours(6))
                 : null;
-            stateStore.Save(new TelemetryUploadState(now, nextAttempt, 0));
+            stateStore.Save(new TelemetryUploadState(
+                sentAny ? completedAt : state.LastSuccessfulUploadUtc,
+                nextAttempt,
+                0,
+                queue.HasPending && isolatePermanentFailure));
             logger.Write(DiagnosticLevel.Info,
-                $"telemetry.upload success pending={queue.HasPending}");
+                $"telemetry.upload progress sent={sentAny} rejected={rejectedAny} pending={queue.HasPending}");
         }
+    }
+
+    private static bool IsPermanentContractError(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            return false;
+        }
+
+        if (error.StartsWith("invalid_", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return error.ToLowerInvariant() is
+            "missing_payload" or
+            "payload_too_large" or
+            "object_required" or
+            "empty_payload" or
+            "unknown_field" or
+            "route_event_mismatch" or
+            "duplicate_event_id_in_batch" or
+            "path_context_requires_schema_5";
     }
 
     private static TimeSpan GetRetryDelay(TelemetryWriteResult result, int failures)
