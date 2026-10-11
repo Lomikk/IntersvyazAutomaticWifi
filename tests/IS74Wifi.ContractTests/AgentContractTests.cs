@@ -17,6 +17,7 @@ internal static class AgentContractTests
         TestAutostartRegistrationState();
         TestAgentSupervisorRestartPolicy();
         TestAgentPidRecord();
+        TestNcsiInternetAccessTracker();
         await TestDaytimeTickDoesNotProbeAsync();
         await TestExpiryIsAuthoritativeAsync();
         await TestNetworkCheckPolicyAsync();
@@ -29,6 +30,27 @@ internal static class AgentContractTests
         await TestNotificationLifecycleAsync();
         await TestFinalAttemptShowsSingleTerminalToastAsync();
         await TestExhaustedCycleNotifiesWithoutTargetWifiAsync();
+    }
+
+    private static void TestNcsiInternetAccessTracker()
+    {
+        var tracker = new NcsiInternetAccessTracker(initialInternetAccess: true);
+        Assert(!tracker.Observe(true),
+            "repeated NCSI InternetAccess callbacks must not trigger a probe");
+        Assert(tracker.Observe(false),
+            "loss of NCSI InternetAccess must trigger one synchronization probe");
+        Assert(!tracker.Observe(false),
+            "repeated non-Internet NCSI callbacks must not trigger repeated probes");
+        Assert(tracker.Observe(true),
+            "restored NCSI InternetAccess must trigger one synchronization probe");
+        Assert(!tracker.Observe(true),
+            "stable restored NCSI InternetAccess must remain silent");
+
+        var unknownAtStartup = new NcsiInternetAccessTracker();
+        Assert(unknownAtStartup.Observe(false),
+            "first usable NCSI callback must synchronize when startup state was unavailable");
+        Assert(!unknownAtStartup.Observe(false),
+            "NCSI synchronization must become edge-triggered after its first usable state");
     }
 
     private static void TestSettingsDefaults()

@@ -13,7 +13,7 @@ internal enum ConfirmationRequestFailureDisposition
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.36";
+    private const string ProductVersion = "v0.1.0-alpha.37";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
@@ -3259,6 +3259,21 @@ internal static class Program
             app.Logger);
         using var stopEvent = AgentProcessControl.CreateWorkerStopEvent();
         using var networkWake = new AutoResetEvent(false);
+        var initialNcsiInternetAccess = ReadNcsiInternetAccess(app.Logger);
+        var ncsiInternetAccess = new NcsiInternetAccessTracker(initialNcsiInternetAccess);
+        if (initialNcsiInternetAccess is { } initialInternetAccess)
+        {
+            app.Logger.Write(DiagnosticLevel.Info,
+                $"agent.ncsi initial internet-access={initialInternetAccess.ToString().ToLowerInvariant()}");
+        }
+        if (initialNcsiInternetAccess == false)
+        {
+            // The worker may start after the authorization has already expired,
+            // so no NetworkStatusChanged edge is guaranteed to arrive. Perform
+            // one synchronization probe for untimed paths when NCSI already says
+            // Internet access is absent; this is not a periodic poll.
+            app.Agent.NotifyNetworkConnectivityChanged();
+        }
         // A laptop may join the campus Wi-Fi after a long idle wait or after
         // resuming from sleep. Network change events shorten that wait without
         // introducing a polling loop or a timer that wakes the sleeping PC.
@@ -3271,9 +3286,18 @@ internal static class Program
         void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs __) => WakeForNetworkChange();
         void OnNetworkStatusChanged(object? _)
         {
-            // Windows NCSI/NLM connectivity changes are authoritative only as a
-            // wake trigger. Untimed paths perform one bound SUSU probe after
-            // this event; known-expiry paths keep their normal timer schedule.
+            // NetworkStatusChanged is noisy on some Windows systems. Treat the
+            // callback only as a request to re-read NCSI and wake untimed paths
+            // when InternetAccess actually changed. Repeated Internet->Internet
+            // callbacks must not become an accidental SUSU polling loop.
+            var currentInternetAccess = ReadNcsiInternetAccess(app.Logger);
+            if (currentInternetAccess is null || !ncsiInternetAccess.Observe(currentInternetAccess.Value))
+            {
+                return;
+            }
+
+            app.Logger.Write(DiagnosticLevel.Info,
+                $"agent.ncsi internet-access-changed value={currentInternetAccess.Value.ToString().ToLowerInvariant()}");
             app.Agent.NotifyNetworkConnectivityChanged();
             WakeForNetworkChange();
         }
@@ -3403,6 +3427,22 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    private static bool? ReadNcsiInternetAccess(DiagnosticLogger logger)
+    {
+        try
+        {
+            var profile = Windows.Networking.Connectivity.NetworkInformation.GetInternetConnectionProfile();
+            return profile?.GetNetworkConnectivityLevel() ==
+                   Windows.Networking.Connectivity.NetworkConnectivityLevel.InternetAccess;
+        }
+        catch (Exception ex)
+        {
+            logger.Write(DiagnosticLevel.Warn,
+                $"agent.ncsi status-read failed error={ex.GetType().Name}");
+            return null;
+        }
     }
 
     private static string NormalizePhone(string? input)
