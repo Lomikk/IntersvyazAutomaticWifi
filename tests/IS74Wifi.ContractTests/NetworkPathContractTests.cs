@@ -201,6 +201,31 @@ internal static class NetworkPathContractTests
                    []) == preferredWifi.Identity,
             "a single gateway-capable physical path should be used as conservative underlay fallback");
 
+        var manualSelector = new ManualAuthorizationPathSelector(
+            () => [preferredWifi, preferredUsb],
+            new PreferredNetworkPathResolver(_ => preferredUsb.Identity));
+        var manualPreferred = manualSelector.Select(PhysicalAdapterSelection.SystemRoute);
+        Assert(manualPreferred?.Path.AdapterId == preferredUsb.AdapterId && manualPreferred.Preferred,
+            "manual authorization must select the preferred physical path without a captive probe");
+
+        var manualConfigured = manualSelector.Select(preferredWifi.AdapterId);
+        Assert(manualConfigured?.Path.AdapterId == preferredWifi.AdapterId && !manualConfigured.Preferred,
+            "an explicit manual adapter selection must override preferred-path arbitration");
+        Assert(manualSelector.Select("missing-adapter") is null,
+            "manual authorization must not silently fall back when an explicitly configured adapter is unavailable");
+
+        var ambiguousManualSelector = new ManualAuthorizationPathSelector(
+            () => [preferredWifi, preferredUsb],
+            new PreferredNetworkPathResolver(_ => null));
+        Assert(ambiguousManualSelector.Select(null) is null,
+            "manual authorization must not guess between multiple equally plausible physical paths");
+
+        var singleManualSelector = new ManualAuthorizationPathSelector(
+            () => [preferredUsb],
+            new PreferredNetworkPathResolver(_ => null));
+        Assert(singleManualSelector.Select(null)?.Path.AdapterId == preferredUsb.AdapterId,
+            "a single live physical path must be selectable for manual authorization without SUSU");
+
         using (var temp = TestDirectory.Create())
         {
             var paths = new AppPaths(temp.Path);

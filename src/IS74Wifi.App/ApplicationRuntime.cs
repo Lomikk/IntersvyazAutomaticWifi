@@ -35,6 +35,7 @@ internal sealed class ApplicationRuntime : IDisposable
         CampusSpeedToolsService campusSpeedTools,
         PathAuthorizationStateStore pathState,
         NetworkPathDiagnosticsService networkPathDiagnostics,
+        ManualAuthorizationPathSelector manualAuthorizationPathSelector,
         IPathAuthorizationRunner pathAuthorization,
         HttpClient apiHttp,
         HttpClient portalHttp,
@@ -63,6 +64,7 @@ internal sealed class ApplicationRuntime : IDisposable
         CampusSpeedTools = campusSpeedTools;
         PathState = pathState;
         NetworkPathDiagnostics = networkPathDiagnostics;
+        ManualAuthorizationPathSelector = manualAuthorizationPathSelector;
         PathAuthorization = pathAuthorization;
         this.apiHttp = apiHttp;
         this.portalHttp = portalHttp;
@@ -92,6 +94,7 @@ internal sealed class ApplicationRuntime : IDisposable
     public CampusSpeedToolsService CampusSpeedTools { get; }
     public PathAuthorizationStateStore PathState { get; }
     public NetworkPathDiagnosticsService NetworkPathDiagnostics { get; }
+    public ManualAuthorizationPathSelector ManualAuthorizationPathSelector { get; }
     public IPathAuthorizationRunner PathAuthorization { get; }
 
     public static ApplicationRuntime Create(string appVersion = "dev")
@@ -202,6 +205,9 @@ internal sealed class ApplicationRuntime : IDisposable
             pathProbe,
             preferredPath,
             logger);
+        var manualAuthorizationPathSelector = new ManualAuthorizationPathSelector(
+            pathEnumerator.EnumerateAutomaticCandidates,
+            preferredPath);
         var pathAwareAgent = new PathAwareAgentCoordinator(
             secrets.Load,
             deviceIdentity.GetOrCreate,
@@ -249,6 +255,7 @@ internal sealed class ApplicationRuntime : IDisposable
             campusSpeedTools,
             pathState,
             networkPathDiagnostics,
+            manualAuthorizationPathSelector,
             pathAuthorization,
             apiHttp,
             portalHttp,

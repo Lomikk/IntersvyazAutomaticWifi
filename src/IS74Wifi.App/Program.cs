@@ -426,34 +426,24 @@ internal static class Program
         var secrets = app.Secrets.Load() ?? throw new InvalidOperationException("Устройство не зарегистрировано. Сначала выполните register.");
         var deviceId = app.DeviceIdentity.GetOrCreate();
 
-        var diagnostics = await app.NetworkPathDiagnostics
-            .InspectAsync(TimeSpan.FromSeconds(2))
-            .ConfigureAwait(false);
-        var captive = diagnostics.FirstOrDefault(item => item.Status == NetworkPathProbeStatus.Captive);
-        if (captive is null)
+        var selection = app.ManualAuthorizationPathSelector.Select(app.Settings.DirectNetworkAdapterId);
+        if (selection is null)
         {
-            if (diagnostics.Any(item => item.Status == NetworkPathProbeStatus.Internet))
-            {
-                return new AuthorizationOutcome(
-                    AuthorizationOutcomeKind.AlreadyOnline,
-                    InternetConfirmed: true,
-                    AuthorizedAtUtc: null,
-                    RetryAfter: null,
-                    Timing: null);
-            }
-
+            app.Logger.Write(DiagnosticLevel.Warn,
+                "manual.path-selection unavailable reason=no-unambiguous-physical-path");
             return new AuthorizationOutcome(
                 AuthorizationOutcomeKind.RetryableBeforeStepOne,
-                InternetConfirmed: false,
+                InternetConfirmed: null,
                 AuthorizedAtUtc: null,
                 RetryAfter: null,
                 Timing: null);
         }
 
+        var stateBefore = app.PathState.Find(selection.Path.Identity) ?? app.PathState.Observe(selection.Path);
         app.Logger.Write(DiagnosticLevel.Info,
-            $"manual.path-selected adapter={captive.Path.Name.Replace('\r', ' ').Replace('\n', ' ')} preferred={captive.Preferred}");
+            $"manual.path-selected adapter={selection.Path.Name.Replace('\r', ' ').Replace('\n', ' ')} preferred={selection.Preferred} probeGate=none");
         return await app.PathAuthorization.RunAsync(
-            captive.Path,
+            selection.Path,
             new AuthorizationRequest(
                 secrets.Token,
                 secrets.Phone,
@@ -461,7 +451,7 @@ internal static class Program
                 AuthorizationAttemptReason.Manual,
                 Force: true,
                 Progress: progress),
-            new PathAuthorizationExecutionContext(captive.Preferred, NetworkVpnDetector.IsActive())).ConfigureAwait(false);
+            new PathAuthorizationExecutionContext(selection.Preferred, NetworkVpnDetector.IsActive(), stateBefore)).ConfigureAwait(false);
     }
 
     private static int PrintAuthorizationOutcome(AuthorizationOutcome outcome)
@@ -489,7 +479,7 @@ internal static class Program
                 Console.Error.WriteLine("Bearer отклонён сервером. Выполните reset и register заново.");
                 return 1;
             case AuthorizationOutcomeKind.RetryableBeforeStepOne:
-                Console.Error.WriteLine("Сервер Интерсвязи временно недоступен до отправки captive-запроса. Попробуйте ещё раз.");
+                Console.Error.WriteLine("Не удалось подготовить прямой путь к captive portal до stepOne. Проверьте подключение и выбранный сетевой адаптер.");
                 return 1;
             case AuthorizationOutcomeKind.RetryableStepOne:
                 Console.Error.WriteLine("Captive portal временно не завершил stepOne. Попробуйте ещё раз.");
@@ -2423,7 +2413,7 @@ internal static class Program
             $"Авторизация работает только в сети {ProtocolContract.CampusSsidPrefix}*. Подключитесь к кампусной сети.",
         AuthorizationOutcomeKind.Busy => "Другая Wi-Fi авторизация уже выполняется.",
         AuthorizationOutcomeKind.BearerInvalid => "API-сессия отклонена сервером. Сбросьте регистрацию и зарегистрируйте устройство заново.",
-        AuthorizationOutcomeKind.RetryableBeforeStepOne => "Сервер Интерсвязи временно недоступен до отправки captive-запроса. Попробуйте ещё раз.",
+        AuthorizationOutcomeKind.RetryableBeforeStepOne => "Не удалось подготовить прямой путь к captive portal до stepOne. Проверьте подключение и выбранный сетевой адаптер.",
         AuthorizationOutcomeKind.RetryableStepOne => "Captive portal временно не завершил stepOne. Попробуйте ещё раз.",
         AuthorizationOutcomeKind.StepTwoAmbiguous => "Ответ stepTwo потерян, а Интернет не подтвердился. Код повторно не отправлялся.",
         AuthorizationOutcomeKind.UserActionRequired => "Автоматическое продолжение остановлено. Подробности есть в diagnostic.log.",

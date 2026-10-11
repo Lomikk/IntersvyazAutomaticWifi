@@ -143,6 +143,11 @@ assert 'BindSocket(socket, adapter)' in csharp_dns and 'SystemFallback' in cshar
 assert 'CanReachPortalAsync' in csharp_direct and 'ConnectHostAsync("w.is74.ru", 80' in csharp_direct, 'portal preflight must use HTTP port 80'
 csharp_diagnostic_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8')
 assert 'NetworkPathDiagnostics' in csharp_diagnostic_program and 'InspectAsync(TimeSpan.FromSeconds(3))' in csharp_diagnostic_program, 'network diagnostics must inspect all bound physical paths'
+manual_start = csharp_diagnostic_program.index('private static async Task<AuthorizationOutcome> RunManualAuthorizationAsync')
+manual_end = csharp_diagnostic_program.index('private static int PrintAuthorizationOutcome', manual_start)
+manual_block = csharp_diagnostic_program[manual_start:manual_end]
+assert 'NetworkPathDiagnostics' not in manual_block and 'InspectAsync' not in manual_block, 'manual authorization must not use SUSU/path diagnostics as a gate'
+assert 'ManualAuthorizationPathSelector.Select' in manual_block and 'Force: true' in manual_block, 'manual authorization must select a physical path directly and keep the explicit-user flow'
 assert 'http://online.susu.ru/' in csharp_internet_probe and 'https://online.susu.ru/' in csharp_internet_probe, 'local SUSU connectivity probe contract missing'
 assert 'readBody: false' in csharp_internet_probe, 'SUSU success probe must be headers-only'
 assert 'www.msftconnecttest.com' not in csharp_internet_probe, 'Microsoft Connect Test must not remain the primary C# probe'
