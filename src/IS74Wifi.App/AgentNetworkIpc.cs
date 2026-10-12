@@ -193,7 +193,7 @@ internal sealed class AgentNetworkOperations(
             adapters.Where(adapter => adapter.IsWifi && !string.IsNullOrWhiteSpace(adapter.Ssid))
                 .Select(adapter => adapter.Ssid)
                 .FirstOrDefault();
-        var internetAvailable = pathSnapshots.Length == 0
+        bool? internetAvailable = pathSnapshots.Length == 0
             ? null
             : pathSnapshots.Any(path => path.Status == PathAuthorizationStatus.Internet);
         var snapshot = new AgentNetworkSnapshot(
