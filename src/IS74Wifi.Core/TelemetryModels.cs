@@ -252,7 +252,8 @@ public sealed record TelemetryUploadState(
     DateTimeOffset? LastSuccessfulUploadUtc,
     DateTimeOffset? NextAttemptUtc,
     int ConsecutiveFailures,
-    bool IsolatingPermanentFailure = false);
+    bool IsolatingPermanentFailure = false,
+    string? UploaderVersion = null);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,

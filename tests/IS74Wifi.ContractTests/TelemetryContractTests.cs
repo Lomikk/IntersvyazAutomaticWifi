@@ -163,6 +163,8 @@ internal static class TelemetryContractTests
         await TestUploadConsentGateAsync();
         await TestMixedQueueRetryAsync();
         await TestPoisonBatchIsolationAsync();
+        await TestBacklogDrainCadenceAsync();
+        await TestUpgradeRecoveryRespectsFreshServerBackoffAsync();
         await TestServerRetryDelayAsync();
     }
 
@@ -310,8 +312,8 @@ internal static class TelemetryContractTests
         File.WriteAllText(paths.TelemetryUploadStateFile,
             "{\"lastSuccessfulUploadUtc\":null,\"nextAttemptUtc\":null,\"consecutiveFailures\":3}");
         var state = new TelemetryUploadStateStore(paths, new JsonFileStore()).Load();
-        Assert(state.ConsecutiveFailures == 3 && !state.IsolatingPermanentFailure,
-            "legacy telemetry upload state did not default poison isolation to false");
+        Assert(state.ConsecutiveFailures == 3 && !state.IsolatingPermanentFailure && state.UploaderVersion is null,
+            "legacy telemetry upload state did not preserve defaults for new recovery fields");
     }
 
     private static async Task TestUploadConsentGateAsync()
@@ -492,6 +494,112 @@ internal static class TelemetryContractTests
         Assert(finalState.ConsecutiveFailures == 0 && finalState.NextAttemptUtc is null &&
                !finalState.IsolatingPermanentFailure,
             "handled poison telemetry left the uploader in recovery/backoff state");
+    }
+
+    private static async Task TestBacklogDrainCadenceAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var queue = new TelemetryQueue(paths);
+        for (var index = 0; index < TelemetryContract.MaxUploadEvents + 1; index++)
+        {
+            queue.Enqueue([$"{{\"event_type\":\"attempt\",\"schema\":4,\"event_id\":\"event-backlog-{index}\"}}"]);
+        }
+
+        var posts = 0;
+        using var http = new HttpClient(new DelegateHandler((_, _) =>
+        {
+            posts++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"ok\":true}")
+            });
+        }));
+        var states = new TelemetryUploadStateStore(paths, new JsonFileStore());
+        var clock = new UploadTestClock();
+        var uploader = new TelemetryUploader(queue, states,
+            new TelemetryClient(http, new Uri("https://backend.example.test/exec")),
+            new AppSettings
+            {
+                AnonymousStatisticsConsent = AnonymousStatisticsConsent.Allowed,
+                TelemetryMaxBatchesPerFlush = 1
+            },
+            new DiagnosticLogger(paths),
+            uploaderVersion: "v-backlog-test",
+            timeProvider: clock);
+
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 1 && queue.HasPending, "first backlog batch was not sent");
+        var state = states.Load();
+        Assert(state.NextAttemptUtc is { } next &&
+               next >= clock.Now.AddMinutes(1) && next <= clock.Now.AddMinutes(3),
+            "backlog drain was not scheduled inside the bounded 1-3 minute window");
+        Assert(state.ConsecutiveFailures == 0 && state.UploaderVersion == "v-backlog-test",
+            "successful backlog progress was recorded as a failure");
+
+        clock.Now = state.NextAttemptUtc!.Value.AddSeconds(-1);
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 1, "backlog uploader ignored its recovery cadence");
+
+        clock.Now = state.NextAttemptUtc.Value;
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 2 && !queue.HasPending, "backlog did not finish on the next bounded recovery attempt");
+        Assert(states.Load().NextAttemptUtc is null, "empty queue kept a recovery retry scheduled");
+    }
+
+    private static async Task TestUpgradeRecoveryRespectsFreshServerBackoffAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var queue = new TelemetryQueue(paths);
+        queue.Enqueue(["{\"event_type\":\"attempt\",\"schema\":4,\"event_id\":\"event-upgrade-recovery\"}"]);
+        var states = new TelemetryUploadStateStore(paths, new JsonFileStore());
+        var clock = new UploadTestClock();
+        states.Save(new TelemetryUploadState(
+            LastSuccessfulUploadUtc: null,
+            NextAttemptUtc: clock.Now.AddHours(6),
+            ConsecutiveFailures: 4,
+            IsolatingPermanentFailure: false,
+            UploaderVersion: "v-old"));
+
+        var posts = 0;
+        using var http = new HttpClient(new DelegateHandler((_, _) =>
+        {
+            posts++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(posts == 1
+                    ? "{\"ok\":false,\"error\":\"daily_limit_reached\"}"
+                    : "{\"ok\":true}")
+            });
+        }));
+        var uploader = new TelemetryUploader(queue, states,
+            new TelemetryClient(http, new Uri("https://backend.example.test/exec")),
+            new AppSettings { AnonymousStatisticsConsent = AnonymousStatisticsConsent.Allowed },
+            new DiagnosticLogger(paths),
+            uploaderVersion: "v-new",
+            timeProvider: clock);
+
+        await uploader.TryFlushIfDueAsync();
+        var recovery = states.Load();
+        Assert(posts == 0 && recovery.NextAttemptUtc == clock.Now.AddMinutes(2) &&
+               recovery.UploaderVersion == "v-new",
+            "new uploader version did not bound the inherited long client backoff");
+
+        clock.Now = recovery.NextAttemptUtc!.Value;
+        await uploader.TryFlushIfDueAsync();
+        var serverBackoff = states.Load();
+        Assert(posts == 1 && serverBackoff.NextAttemptUtc == clock.Now.AddHours(6),
+            "fresh server daily-limit backoff was not stored");
+
+        clock.Now = clock.Now.AddMinutes(1);
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 1 && states.Load().NextAttemptUtc == serverBackoff.NextAttemptUtc,
+            "current-version recovery bypassed an authoritative server backoff");
+
+        clock.Now = serverBackoff.NextAttemptUtc!.Value;
+        await uploader.TryFlushIfDueAsync();
+        Assert(posts == 2 && !queue.HasPending, "upload did not resume after the authoritative server delay");
     }
 
     private static async Task TestServerRetryDelayAsync()

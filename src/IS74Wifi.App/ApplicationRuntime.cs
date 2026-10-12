@@ -160,7 +160,8 @@ internal sealed class ApplicationRuntime : IDisposable
             telemetryClient,
             settings,
             logger,
-            AnonymousStatisticsAllowed);
+            AnonymousStatisticsAllowed,
+            uploaderVersion: appVersion);
         var campusSpeedTools = new CampusSpeedToolsService(
             new Is74SpeedTestProvider(speedTestHttp),
             telemetryClient,

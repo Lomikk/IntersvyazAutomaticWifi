@@ -293,7 +293,7 @@ public sealed class TelemetryUploadStateStore(AppPaths paths, JsonFileStore json
 {
     public TelemetryUploadState Load() =>
         json.Read(paths.TelemetryUploadStateFile, PersistenceJsonContext.Default.TelemetryUploadState)
-        ?? new TelemetryUploadState(null, null, 0, false);
+        ?? new TelemetryUploadState(null, null, 0, false, null);
 
     public void Save(TelemetryUploadState state) =>
         json.Write(paths.TelemetryUploadStateFile, state, PersistenceJsonContext.Default.TelemetryUploadState);

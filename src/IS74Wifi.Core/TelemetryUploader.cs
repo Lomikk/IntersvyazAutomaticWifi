@@ -7,6 +7,7 @@ public sealed class TelemetryUploader(
     AppSettings settings,
     DiagnosticLogger logger,
     Func<bool>? anonymousStatisticsAllowed = null,
+    string uploaderVersion = "dev",
     TimeProvider? timeProvider = null)
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
@@ -27,6 +28,32 @@ public sealed class TelemetryUploader(
 
         var state = stateStore.Load();
         var now = clock.GetUtcNow();
+
+        if (!string.Equals(state.UploaderVersion, uploaderVersion, StringComparison.Ordinal))
+        {
+            // A release that changes telemetry recovery semantics gets one bounded
+            // chance to shorten an inherited long client-side failure backoff. This
+            // never bypasses a fresh server delay: once the current version receives
+            // rate_limited/daily_limit_reached, the stored version matches and that
+            // authoritative retry deadline is preserved.
+            var recoveryAt = now + TimeSpan.FromMinutes(2);
+            var nextAttempt = state.NextAttemptUtc;
+            if (state.ConsecutiveFailures > 0 &&
+                nextAttempt is { } scheduled &&
+                scheduled > recoveryAt)
+            {
+                nextAttempt = recoveryAt;
+                logger.Write(DiagnosticLevel.Info,
+                    $"telemetry.upload recovery-scheduled fromVersion={state.UploaderVersion ?? "unknown"} toVersion={uploaderVersion} failures={state.ConsecutiveFailures}");
+            }
+
+            state = state with
+            {
+                NextAttemptUtc = nextAttempt,
+                UploaderVersion = uploaderVersion
+            };
+            stateStore.Save(state);
+        }
         if (state.NextAttemptUtc is { } next)
         {
             if (now < next)
@@ -55,6 +82,7 @@ public sealed class TelemetryUploader(
         var timeout = GetHttpTimeout(settings);
         var sentAny = false;
         var rejectedAny = false;
+        TelemetryQueueBatch? lastSuccessfulBatch = null;
         var isolatePermanentFailure = state.IsolatingPermanentFailure;
         var maxRequests = Math.Clamp(settings.TelemetryMaxBatchesPerFlush, 1, 8);
 
@@ -82,7 +110,8 @@ public sealed class TelemetryUploader(
                             state.LastSuccessfulUploadUtc,
                             isolateRetryAt,
                             0,
-                            true));
+                            true,
+                            uploaderVersion));
                         logger.Write(DiagnosticLevel.Warn,
                             $"telemetry.upload isolate reason={result.Error ?? "unknown"} files={batch.Files.Count} events={batch.EventJson.Count}");
                         continue;
@@ -102,7 +131,8 @@ public sealed class TelemetryUploader(
                     state.LastSuccessfulUploadUtc,
                     clock.GetUtcNow() + retry,
                     failures,
-                    isolatePermanentFailure));
+                    isolatePermanentFailure,
+                    uploaderVersion));
                 logger.Write(DiagnosticLevel.Warn,
                     $"telemetry.upload deferred reason={result.Error ?? "unknown"} retryMinutes={retry.TotalMinutes:0}");
                 return;
@@ -110,6 +140,7 @@ public sealed class TelemetryUploader(
 
             queue.Complete(batch);
             sentAny = true;
+            lastSuccessfulBatch = batch;
         }
 
         if (sentAny || rejectedAny)
@@ -118,16 +149,37 @@ public sealed class TelemetryUploader(
             DateTimeOffset? nextAttempt = queue.HasPending
                 ? completedAt + (rejectedAny || isolatePermanentFailure
                     ? TimeSpan.FromMinutes(1)
-                    : TimeSpan.FromHours(6))
+                    : GetBacklogDrainDelay(lastSuccessfulBatch?.BatchId))
                 : null;
             stateStore.Save(new TelemetryUploadState(
                 sentAny ? completedAt : state.LastSuccessfulUploadUtc,
                 nextAttempt,
                 0,
-                queue.HasPending && isolatePermanentFailure));
+                queue.HasPending && isolatePermanentFailure,
+                uploaderVersion));
             logger.Write(DiagnosticLevel.Info,
                 $"telemetry.upload progress sent={sentAny} rejected={rejectedAny} pending={queue.HasPending}");
         }
+    }
+
+    private static TimeSpan GetBacklogDrainDelay(string? batchId)
+    {
+        // Spread recovering clients across a small 1-3 minute window. The batch
+        // identity is stable across retries but differs between installations/traces,
+        // avoiding a synchronized post-update burst without using mutable randomness.
+        if (!string.IsNullOrEmpty(batchId))
+        {
+            var c = char.ToLowerInvariant(batchId[^1]);
+            var value = c switch
+            {
+                >= '0' and <= '9' => c - '0',
+                >= 'a' and <= 'f' => c - 'a' + 10,
+                _ => 1
+            };
+            return TimeSpan.FromMinutes(1 + value % 3);
+        }
+
+        return TimeSpan.FromMinutes(2);
     }
 
     private static bool IsPermanentContractError(string? error)
