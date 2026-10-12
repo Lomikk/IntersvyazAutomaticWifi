@@ -8,6 +8,8 @@ public static class AgentProcessControl
     public const string StopEventName = @"Local\IS74Wifi.CSharp.AgentStop";
     public const string AgentWorkerGateName = @"Local\IS74Wifi.CSharp.AgentWorker";
     public const string WorkerStopEventName = @"Local\IS74Wifi.CSharp.AgentWorkerStop";
+    public const string NetworkCommandPipeName = "IS74Wifi.CSharp.AgentNetwork.v1";
+    public const string NetworkOperationGateName = @"Local\IS74Wifi.CSharp.AgentNetworkOperation";
 
     private const string PidFileName = "agent.pid";
 

@@ -142,12 +142,23 @@ csharp_dns = (root / 'src' / 'IS74Wifi.Core' / 'InterfaceDnsResolver.cs').read_t
 assert 'BindSocket(socket, adapter)' in csharp_dns and 'SystemFallback' in csharp_dns, 'adapter DNS and address-only fallback required'
 assert 'CanReachPortalAsync' in csharp_direct and 'ConnectHostAsync("w.is74.ru", 80' in csharp_direct, 'portal preflight must use HTTP port 80'
 csharp_diagnostic_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_text(encoding='utf-8')
-assert 'NetworkPathDiagnostics' in csharp_diagnostic_program and 'InspectAsync(TimeSpan.FromSeconds(3))' in csharp_diagnostic_program, 'network diagnostics must inspect all bound physical paths'
+csharp_agent_network_ipc = (root / 'src' / 'IS74Wifi.App' / 'AgentNetworkIpc.cs').read_text(encoding='utf-8')
+assert 'NetworkPathDiagnostics' in csharp_agent_network_ipc and '.InspectAsync(DiagnosticProbeTimeout' in csharp_agent_network_ipc, 'agent-owned network diagnostics must inspect all bound physical paths'
+assert 'AgentNetworkClient.ProbeOnlyAsync' in csharp_diagnostic_program, 'interactive network diagnostics must delegate probing to the agent'
+for forbidden in ('app.NetworkPathDiagnostics', 'app.PathAuthorization.RunAsync', 'app.Internet.ProbeAsync', 'app.ManualAuthorizationPathSelector'):
+    assert forbidden not in csharp_diagnostic_program, f'interactive Program.cs must not own authorization-network operation: {forbidden}'
+auth_network_owner_files = {'ApplicationRuntime.cs', 'AgentNetworkIpc.cs'}
+for app_file in (root / 'src' / 'IS74Wifi.App').glob('*.cs'):
+    if app_file.name in auth_network_owner_files:
+        continue
+    app_text = app_file.read_text(encoding='utf-8')
+    for forbidden in ('NetworkPathDiagnostics', 'PathAuthorization.RunAsync', 'Internet.ProbeAsync', 'ManualAuthorizationPathSelector'):
+        assert forbidden not in app_text, f'authorization-network operation escaped agent owner into {app_file.name}: {forbidden}'
 manual_start = csharp_diagnostic_program.index('private static async Task<AuthorizationOutcome> RunManualAuthorizationAsync')
 manual_end = csharp_diagnostic_program.index('private static int PrintAuthorizationOutcome', manual_start)
 manual_block = csharp_diagnostic_program[manual_start:manual_end]
-assert 'NetworkPathDiagnostics' not in manual_block and 'InspectAsync' not in manual_block, 'manual authorization must not use SUSU/path diagnostics as a gate'
-assert 'ManualAuthorizationPathSelector.Select' in manual_block and 'Force: true' in manual_block, 'manual authorization must select a physical path directly and keep the explicit-user flow'
+assert 'AgentNetworkClient.AuthorizeNowAsync' in manual_block, 'manual authorization must be delegated to the agent IPC owner'
+assert 'ManualAuthorizationPathSelector.Select' in csharp_agent_network_ipc and 'Force: true' in csharp_agent_network_ipc, 'agent-owned manual authorization must select a physical path directly and keep the explicit-user flow'
 assert 'http://online.susu.ru/' in csharp_internet_probe and 'https://online.susu.ru/' in csharp_internet_probe, 'local SUSU connectivity probe contract missing'
 assert 'readBody: false' in csharp_internet_probe, 'SUSU success probe must be headers-only'
 assert 'www.msftconnecttest.com' not in csharp_internet_probe, 'Microsoft Connect Test must not remain the primary C# probe'

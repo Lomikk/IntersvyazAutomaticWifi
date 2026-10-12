@@ -14,11 +14,11 @@
 | Запуск, CLI, меню, регистрация, вызов действий | `App/Program.cs`; создание/освобождение сервисов — `App/ApplicationRuntime.cs` | App; при изменении сценариев/сервисов Full |
 | Компоновка и сессия терминала | `App/InteractiveTerminalUi.cs`; примитивы кадра — `App/Ui/TerminalCanvas.cs`, геометрия — `App/Ui/TerminalLayout.cs`, framebuffer/diff/вывод — `App/Ui/TerminalOutput.cs`; общая геометрия больших списков — `App/Ui/ListWindow.cs`; история — `InteractiveActionHistory.cs` | App + ручная проверка затронутого экрана |
 | Выбор сетевого адаптера | `App/Ui/AdapterSelectionScreen.cs` — пункты, selection/scroll, клавиши и кадр; `InteractiveTerminalUi.cs` — единственный reader клавиатуры и compact fallback; перечисление/сохранение остаются в `Program.cs`/Core | App + ручная проверка экрана |
-| Снимок состояния и подробный отчёт | `App/StatusService.cs` — локальный snapshot, явное сетевое refresh и сбор строк отчёта; модель — `InteractiveStatusSnapshot.cs`; `Program.cs` только подключает probe/update и открывает готовый файл | App (`status-service` + Python live-status) |
+| Снимок состояния и подробный отчёт | `App/StatusService.cs` — локальный snapshot и сбор строк отчёта; live refresh авторизационного пути запрашивается через `AgentNetworkClient`, а probe выполняет agent-owned `AgentNetworkOperations`; модель — `InteractiveStatusSnapshot.cs` | App (`status-service` + `agent-network-ipc` + Python live-status) |
 | Экран скорости/рейтинга | `App/InteractiveTerminalUi.SpeedTools.cs` (partial того же UI; пока содержит и действия, и состояние) | App; бизнес-правила/запросы — Full + Backend |
-| Прогресс ручной авторизации | `App/ManualAuthorizationRunner.cs`, подключение в `Program.cs` | App: исполняемый контракт runner + структурная проверка подключения |
+| Прогресс ручной авторизации | `App/ManualAuthorizationRunner.cs` отображает progress; сама операция идёт через `AgentNetworkClient` → agent-owned `AgentNetworkOperations` | App: `manual-authorization-progress` + `agent-network-ipc` |
 | Авторизация и polling | `Core/AuthorizationFlow.cs`, `PushPollingEngine.cs`, `AuthorizationStateManager.cs`; инварианты — `ProtocolContract.cs` | Core |
-| Когда просыпается и повторяет попытку агент | `Core/AgentService.cs`, `AgentPowerResumeMonitor.cs` | Core |
+| Когда просыпается и повторяет попытку агент | `Core/AgentService.cs`, `AgentPowerResumeMonitor.cs`; интерактивные refresh/manual-auth команды приходят в worker через named-pipe host `App/AgentNetworkIpc.cs` | Full |
 | HTTP, ошибки API, captive portal, probe | `Core/HttpTransport.cs`, `HttpClientProfiles.cs`, `Is74ApiClient.cs`, `CaptivePortalClient.cs`, `InternetConnectivityProbe.cs` | Core; подключение профилей — Full |
 | Выбор адаптера, DNS, прямой маршрут | `Core/PhysicalAdapterSelection.cs`, `DirectNetworkConnector.cs`, `InterfaceDnsResolver.cs`; wiring — `App/ApplicationRuntime.cs` | Full; полевая проверка отдельно |
 | Настройки, секреты, локальное состояние | `Core/AppPaths.cs`, `SettingsStore.cs`, `DpapiSecretStore.cs`, `DeviceIdentityStore.cs`, `RuntimeStateStore.cs`, `SessionMetadata.cs` | Core |
@@ -42,6 +42,7 @@
   **CachedDnsConnector + HostAddressCache** — другой, старый persisted cached-IP-first
   эксперимент: код и тесты остались, в runtime он не подключён.
 - Локальный `StatusService.ReadLocalSnapshot()` не выполняет HTTP и не создаёт `ApplicationRuntime`, но сохраняет прежние локальные нормализации: `SettingsStore.Load()` может создать default `settings.json`, а `UpdateMaintenanceService.LoadState()` — очистить и сохранить устаревшее состояние доступного обновления. Сетевые побочные эффекты находятся только в явно переданных delegate для `RefreshNetworkSnapshotAsync`/подробного отчёта.
+- Авторизационная сеть имеет одного владельца: interactive/CLI код не вызывает `NetworkPathDiagnostics`, `Internet.ProbeAsync`, `ManualAuthorizationPathSelector` или `PathAuthorization.RunAsync` напрямую. Он использует `AgentNetworkClient`; long-lived worker обслуживает named pipe, а при выключенном/недоступном фоне запускается короткоживущий `agent-network-worker` той же версии. `probe-only` сохраняет диагностический контракт без stepOne/stepTwo.
 - Авторизация не должна зависеть от скорости отрисовки: callback кладёт прогресс
   в очередь, App читает её отдельно. Не добавлять Console/HTTP/disk I/O в callback.
 - Согласие на анонимную статистику и явное участие в публичном рейтинге — разные

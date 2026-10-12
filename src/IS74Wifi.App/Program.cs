@@ -52,6 +52,11 @@ internal static class Program
             return await RunAgentWorkerAsync().ConfigureAwait(false);
         }
 
+        if (command == "agent-network-worker")
+        {
+            return await RunAgentNetworkWorkerAsync(args.Skip(1).ToArray()).ConfigureAwait(false);
+        }
+
         if (command == "update-auto")
         {
             return await RunAutomaticUpdateAsync().ConfigureAwait(false);
@@ -421,37 +426,10 @@ internal static class Program
     private static async Task<AuthorizationOutcome> RunManualAuthorizationAsync(
         Action<AuthorizationProgressStage>? progress = null)
     {
-        using var app = ApplicationRuntime.Create(ProductVersion);
-        app.Logger.Write(DiagnosticLevel.Info, "cli.start command=connect runtime=csharp");
-        var secrets = app.Secrets.Load() ?? throw new InvalidOperationException("Устройство не зарегистрировано. Сначала выполните register.");
-        var deviceId = app.DeviceIdentity.GetOrCreate();
-
-        var selection = app.ManualAuthorizationPathSelector.Select(app.Settings.DirectNetworkAdapterId);
-        if (selection is null)
-        {
-            app.Logger.Write(DiagnosticLevel.Warn,
-                "manual.path-selection unavailable reason=no-unambiguous-physical-path");
-            return new AuthorizationOutcome(
-                AuthorizationOutcomeKind.RetryableBeforeStepOne,
-                InternetConfirmed: null,
-                AuthorizedAtUtc: null,
-                RetryAfter: null,
-                Timing: null);
-        }
-
-        var stateBefore = app.PathState.Find(selection.Path.Identity) ?? app.PathState.Observe(selection.Path);
-        app.Logger.Write(DiagnosticLevel.Info,
-            $"manual.path-selected adapter={selection.Path.Name.Replace('\r', ' ').Replace('\n', ' ')} preferred={selection.Preferred} probeGate=none");
-        return await app.PathAuthorization.RunAsync(
-            selection.Path,
-            new AuthorizationRequest(
-                secrets.Token,
-                secrets.Phone,
-                deviceId,
-                AuthorizationAttemptReason.Manual,
-                Force: true,
-                Progress: progress),
-            new PathAuthorizationExecutionContext(selection.Preferred, NetworkVpnDetector.IsActive(), stateBefore)).ConfigureAwait(false);
+        new DiagnosticLogger(new AppPaths()).Write(
+            DiagnosticLevel.Info,
+            "cli.start command=connect runtime=csharp owner=agent-ipc");
+        return await AgentNetworkClient.AuthorizeNowAsync(progress).ConfigureAwait(false);
     }
 
     private static int PrintAuthorizationOutcome(AuthorizationOutcome outcome)
@@ -502,13 +480,23 @@ internal static class Program
     private static async Task<int> PrintStatusAsync()
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
-        app.Logger.Write(DiagnosticLevel.Info, "cli.start command=status runtime=csharp");
+        app.Logger.Write(DiagnosticLevel.Info, "cli.start command=status runtime=csharp owner=agent-ipc");
+        AgentNetworkRefreshResult? refreshedNetwork = null;
+        try
+        {
+            refreshedNetwork = await AgentNetworkClient.RefreshAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            app.Logger.Write(DiagnosticLevel.Warn,
+                $"agent.ipc status-refresh failed type={ex.GetType().Name}:{ex.Message}");
+        }
+
+        var statusSnapshot = CreateStatusService().ReadLocalSnapshot();
         var secrets = app.Secrets.Load();
         var session = app.Session.Load();
-        var pathDiagnostics = await app.NetworkPathDiagnostics
-            .InspectAsync(TimeSpan.FromSeconds(3))
-            .ConfigureAwait(false);
-        var internetAvailable = pathDiagnostics.Any(item => item.Status == NetworkPathProbeStatus.Internet);
+        var internetAvailable = (refreshedNetwork?.InternetAvailable ?? statusSnapshot.InternetAvailable) == true;
+        var networkPaths = statusSnapshot.NetworkPaths ?? [];
 
         Console.WriteLine();
         Console.WriteLine("=== IS74 Automatic Wi-Fi ===");
@@ -549,23 +537,19 @@ internal static class Program
         }
         Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
         Console.WriteLine($"Интернет                     : {(internetAvailable ? "доступен" : "не подтверждён")}");
-        Console.WriteLine($"Физические пути              : {pathDiagnostics.Count}");
+        Console.WriteLine($"Физические пути              : {refreshedNetwork?.PathCount ?? statusSnapshot.ActivePhysicalPathCount}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
         {
             Console.WriteLine($"API-сессия  : до {session.AccessEnd}");
         }
-        if (pathDiagnostics.Count > 0)
+        if (networkPaths.Count > 0)
         {
             Console.WriteLine("Сетевые пути:");
-            foreach (var item in pathDiagnostics)
+            foreach (var path in networkPaths)
             {
-                var path = item.Path;
-                var label = path.Ssid is null ? path.Name : $"{path.Name} · {path.Ssid}";
-                Console.WriteLine($"  {(item.Preferred ? ">" : "-")} {label}: {StatusService.FormatPathStatus(item.State.Status)}");
-                if (item.State.ExpectedExpiryUtc is { } pathExpiry)
+                Console.WriteLine($"  {(path.Preferred ? ">" : "-")} {path.Name}: {StatusService.FormatPathStatus(path.Status)}");
+                if (path.ExpectedExpiryUtc is { } pathExpiry)
                     Console.WriteLine($"      ожидаемая граница: {pathExpiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-                if (item.State.LastSuccessfulAuthUtc is { } pathAuth)
-                    Console.WriteLine($"      последняя авторизация: {pathAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
             }
         }
         var telemetryStatus = app.TelemetryQueue.GetStatus();
@@ -2428,10 +2412,8 @@ internal static class Program
         var lines = await statusService.BuildDetailedReportAsync(
             async cancellationToken =>
             {
-                var probe = await app.Internet.ProbeAsync(
-                    TimeSpan.FromSeconds(3),
-                    cancellationToken).ConfigureAwait(false);
-                return probe.Online;
+                var result = await AgentNetworkClient.RefreshAsync(cancellationToken).ConfigureAwait(false);
+                return result.InternetAvailable;
             }).ConfigureAwait(false);
 
         var reportPath = Path.Combine(Path.GetTempPath(), "IS74Wifi-status.txt");
@@ -2681,12 +2663,8 @@ internal static class Program
         return await statusService.RefreshNetworkSnapshotAsync(
             async cancellationToken =>
             {
-                var diagnostics = await app.NetworkPathDiagnostics
-                    .InspectAsync(TimeSpan.FromSeconds(3), cancellationToken)
-                    .ConfigureAwait(false);
-                return diagnostics.Count == 0
-                    ? null
-                    : diagnostics.Any(item => item.Status == NetworkPathProbeStatus.Internet);
+                var result = await AgentNetworkClient.RefreshAsync(cancellationToken).ConfigureAwait(false);
+                return result.InternetAvailable;
             },
             _ => TryCheckForUpdatesIfDueAsync(app)).ConfigureAwait(false);
     }
@@ -2854,10 +2832,16 @@ internal static class Program
 
     private static async Task<IReadOnlyList<string>> CollectDirectNetworkDiagnosticsAsync()
     {
+        await AgentNetworkClient.ProbeOnlyAsync().ConfigureAwait(false);
+
         using var app = ApplicationRuntime.Create(ProductVersion);
-        var diagnostics = await app.NetworkPathDiagnostics
-            .InspectAsync(TimeSpan.FromSeconds(3))
-            .ConfigureAwait(false);
+        var paths = new NetworkPathEnumerator()
+            .EnumerateAutomaticCandidates()
+            .Where(path => path.CanAutomaticallyAuthorize)
+            .GroupBy(path => path.Identity)
+            .Select(group => group.First())
+            .ToArray();
+        var preferredIdentity = new PreferredNetworkPathResolver().Resolve(paths);
 
         var result = new List<string>
         {
@@ -2865,41 +2849,50 @@ internal static class Program
             "VPN/виртуальные адаптеры не являются путями captive-авторизации."
         };
 
-        if (diagnostics.Count == 0)
+        if (paths.Length == 0)
         {
             result.Add("Активные физические пути с IPv4 не обнаружены.");
             result.Add("Диагностика не отправляет stepOne/stepTwo и не расходует SMS-попытки.");
             return result;
         }
 
-        foreach (var item in diagnostics)
+        foreach (var path in paths
+                     .OrderByDescending(path => preferredIdentity is not null && SameNetworkPath(path.Identity, preferredIdentity))
+                     .ThenBy(path => path.Name, StringComparer.OrdinalIgnoreCase))
         {
-            var path = item.Path;
-            var preferred = item.Preferred ? " · основной" : string.Empty;
+            var state = app.PathState.Find(path.Identity);
+            var preferred = preferredIdentity is not null && SameNetworkPath(path.Identity, preferredIdentity)
+                ? " · основной"
+                : string.Empty;
             var network = string.IsNullOrWhiteSpace(path.Ssid) ? path.Name : $"{path.Name} · {path.Ssid}";
             result.Add(string.Empty);
             result.Add($"{network}{preferred}");
-            result.Add($"  Состояние: {StatusService.FormatPathStatus(item.State.Status)}");
+            result.Add($"  Состояние: {StatusService.FormatPathStatus(state?.Status ?? PathAuthorizationStatus.Unknown)}");
             result.Add($"  IPv4: {path.SourceIPv4?.ToString() ?? "—"}; gateway: {path.GatewayIPv4?.ToString() ?? "—"}; ifIndex: {path.InterfaceIndex}");
-            if (item.State.ExpectedExpiryUtc is { } expiry)
+            if (state?.ExpectedExpiryUtc is { } expiry)
             {
                 result.Add($"  Ожидаемая граница: {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
             }
-            if (item.State.LastSuccessfulAuthUtc is { } lastAuth)
+            if (state?.LastSuccessfulAuthUtc is { } lastAuth)
             {
                 result.Add($"  Последняя авторизация: {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
             }
-            if (item.State.UserActionRequired)
+            if (state?.UserActionRequired == true)
             {
                 result.Add("  Автоавторизация: остановлена до действия пользователя");
             }
         }
 
         result.Add(string.Empty);
-        result.Add("Диагностика использует bound probe каждого пути, не меняет default route и не отключает VPN.");
+        result.Add("Bound probe каждого пути выполнен фоновым агентом; default route и VPN не изменялись.");
         result.Add("Никаких stepOne/stepTwo/SMS-запросов не отправлено.");
         return result;
     }
+
+    private static bool SameNetworkPath(NetworkPathIdentity left, NetworkPathIdentity right) =>
+        left.InterfaceType == right.InterfaceType &&
+        string.Equals(left.AdapterId, right.AdapterId, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.NetworkDiscriminator, right.NetworkDiscriminator, StringComparison.OrdinalIgnoreCase);
 
     private static void SetDirectNetworkAdapter(string? adapterId, Action<string>? progress = null)
     {
@@ -3224,6 +3217,53 @@ internal static class Program
         return await AgentSupervisor.RunAsync(executable, logger).ConfigureAwait(false);
     }
 
+    private static async Task<int> RunAgentNetworkWorkerAsync(string[] args)
+    {
+        if (args.Length != 1 || string.IsNullOrWhiteSpace(args[0]))
+        {
+            return 2;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        using var app = ApplicationRuntime.Create(ProductVersion);
+        using var operationGate = new SemaphoreSlim(1, 1);
+        var operations = new AgentNetworkOperations(app, IsAutomaticAuthorizationEnabledForInstalledCopy);
+        try
+        {
+            await AgentNetworkCommandServer.RunSingleAsync(
+                args[0],
+                operations,
+                operationGate,
+                timeout.Token).ConfigureAwait(false);
+            return 0;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            app.Logger.Write(DiagnosticLevel.Warn, "agent.ipc one-shot timeout");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            app.Logger.Write(DiagnosticLevel.Error,
+                $"agent.ipc one-shot error={ex.GetType().Name}:{ex.Message}");
+            return 1;
+        }
+    }
+
+    private static bool IsAutomaticAuthorizationEnabledForInstalledCopy()
+    {
+        try
+        {
+            var installation = new ProgramInstallation();
+            return installation.IsInstalled &&
+                   new WindowsAutostartService().IsEnabledFor(installation.ExecutablePath);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static async Task<int> RunAgentWorkerAsync()
     {
         try
@@ -3314,6 +3354,17 @@ internal static class Program
             stopCts,
             Timeout.Infinite,
             executeOnlyOnce: true);
+        using var networkOperationGate = new SemaphoreSlim(1, 1);
+        var networkOperations = new AgentNetworkOperations(
+            app,
+            IsAutomaticAuthorizationEnabledForInstalledCopy);
+        var ipcTask = AgentNetworkCommandServer.RunLoopAsync(
+            AgentProcessControl.NetworkCommandPipeName,
+            networkOperations,
+            networkOperationGate,
+            app.Logger,
+            stopCts.Token,
+            WakeForNetworkChange);
         app.Logger.Write(DiagnosticLevel.Info, "agent.worker start runtime=csharp");
         try
         {
@@ -3322,7 +3373,18 @@ internal static class Program
                 tray?.SetState(TrayIconStateResolver.Working);
                 try
                 {
-                    await app.Agent.TickAsync(stopCts.Token).ConfigureAwait(false);
+                    await networkOperationGate.WaitAsync(stopCts.Token).ConfigureAwait(false);
+                    try
+                    {
+                        using var crossProcessGate = await AgentNetworkOperationGate
+                            .AcquireAsync(stopCts.Token)
+                            .ConfigureAwait(false);
+                        await app.Agent.TickAsync(stopCts.Token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        networkOperationGate.Release();
+                    }
                     tray?.SetState(TrayIconStateResolver.Resolve(app.PathState.Load()));
                 }
                 catch (OperationCanceledException) when (stopCts.IsCancellationRequested)
@@ -3419,10 +3481,18 @@ internal static class Program
         }
         finally
         {
+            stopCts.Cancel();
             NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
             NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
             Windows.Networking.Connectivity.NetworkInformation.NetworkStatusChanged -= OnNetworkStatusChanged;
             stopRegistration.Unregister(null);
+            try
+            {
+                await ipcTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stopCts.IsCancellationRequested)
+            {
+            }
             app.Logger.Write(DiagnosticLevel.Info, "agent.worker stop runtime=csharp");
         }
 
