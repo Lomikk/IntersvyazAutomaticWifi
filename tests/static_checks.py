@@ -145,6 +145,8 @@ csharp_diagnostic_program = (root / 'src' / 'IS74Wifi.App' / 'Program.cs').read_
 csharp_agent_network_ipc = (root / 'src' / 'IS74Wifi.App' / 'AgentNetworkIpc.cs').read_text(encoding='utf-8')
 assert 'NetworkPathDiagnostics' in csharp_agent_network_ipc and '.InspectAsync(DiagnosticProbeTimeout' in csharp_agent_network_ipc, 'agent-owned network diagnostics must inspect all bound physical paths'
 assert 'AgentNetworkClient.ProbeOnlyAsync' in csharp_diagnostic_program, 'interactive network diagnostics must delegate probing to the agent'
+assert 'PhysicalAdapterSelection.Enumerate()' not in csharp_diagnostic_program, 'interactive adapter selection must be supplied by the agent instead of enumerating interfaces in UI'
+assert 'AgentNetworkClient.GetAdapterOptionsAsync' in csharp_diagnostic_program, 'interactive adapter selection must request agent-owned adapter options'
 for forbidden in ('app.NetworkPathDiagnostics', 'app.PathAuthorization.RunAsync', 'app.Internet.ProbeAsync', 'app.ManualAuthorizationPathSelector'):
     assert forbidden not in csharp_diagnostic_program, f'interactive Program.cs must not own authorization-network operation: {forbidden}'
 auth_network_owner_files = {'ApplicationRuntime.cs', 'AgentNetworkIpc.cs'}
@@ -154,6 +156,13 @@ for app_file in (root / 'src' / 'IS74Wifi.App').glob('*.cs'):
     app_text = app_file.read_text(encoding='utf-8')
     for forbidden in ('NetworkPathDiagnostics', 'PathAuthorization.RunAsync', 'Internet.ProbeAsync', 'ManualAuthorizationPathSelector'):
         assert forbidden not in app_text, f'authorization-network operation escaped agent owner into {app_file.name}: {forbidden}'
+status_service_owner = (root / 'src' / 'IS74Wifi.App' / 'StatusService.cs').read_text(encoding='utf-8')
+for forbidden in ('NetworkPathEnumerator', 'WindowsWifiService', 'NetworkVpnDetector', 'PathAuthorizationStateStore'):
+    assert forbidden not in status_service_owner, f'UI status must consume agent snapshot instead of inspecting authorization network: {forbidden}'
+assert 'AgentNetworkSnapshotStore' in status_service_owner, 'UI status must consume the persisted agent-owned network snapshot'
+assert 'AgentNetworkSnapshotStore' in csharp_agent_network_ipc and 'CaptureAndPersistSnapshot' in csharp_agent_network_ipc, 'agent must own and persist the canonical network/auth snapshot'
+assert 'await app.Agent.TickAsync(stopCts.Token)' in csharp_diagnostic_program and 'networkOperations.CaptureAndPersistSnapshot();' in csharp_diagnostic_program, 'long-lived agent must refresh the canonical network snapshot after ordinary scheduler ticks'
+assert 'JsonSerializer.SerializeToUtf8Bytes(snapshot, AppJsonContext.Default.AgentNetworkSnapshot)' in csharp_agent_network_ipc, 'agent IPC must return the full network/auth snapshot rather than an independent summary'
 manual_start = csharp_diagnostic_program.index('private static async Task<AuthorizationOutcome> RunManualAuthorizationAsync')
 manual_end = csharp_diagnostic_program.index('private static int PrintAuthorizationOutcome', manual_start)
 manual_block = csharp_diagnostic_program[manual_start:manual_end]

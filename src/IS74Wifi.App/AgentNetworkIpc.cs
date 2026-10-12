@@ -3,14 +3,10 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
-
-internal sealed record AgentNetworkRefreshResult(
-    bool? InternetAvailable,
-    int PathCount,
-    int CaptivePathCount);
 
 internal static class AgentNetworkOperationGate
 {
@@ -31,8 +27,11 @@ internal static class AgentNetworkOperationGate
 
 internal interface IAgentNetworkOperations
 {
-    Task<AgentNetworkRefreshResult> RefreshAsync(
+    Task<AgentNetworkSnapshot> RefreshAsync(
         bool allowAutomaticAuthorization,
+        CancellationToken cancellationToken = default);
+
+    Task<AgentNetworkAdapterOption[]> GetAdapterOptionsAsync(
         CancellationToken cancellationToken = default);
 
     Task<AuthorizationOutcome> AuthorizeNowAsync(
@@ -41,17 +40,19 @@ internal interface IAgentNetworkOperations
 }
 
 /// <summary>
-/// Owns authorization-related network operations for both the long-lived agent
-/// and the short-lived on-demand agent worker. Interactive processes only use
-/// AgentNetworkClient and never probe captive paths or run stepOne/stepTwo.
+/// Owns authorization-related network operations and the canonical network/auth
+/// snapshot for both the long-lived agent and the short-lived on-demand worker.
+/// Interactive processes only use AgentNetworkClient and the persisted snapshot;
+/// they never enumerate/probe captive paths or mutate PathAuthorizationState.
 /// </summary>
 internal sealed class AgentNetworkOperations(
     ApplicationRuntime app,
     Func<bool> automaticAuthorizationEnabled) : IAgentNetworkOperations
 {
     private static readonly TimeSpan DiagnosticProbeTimeout = TimeSpan.FromSeconds(3);
+    private readonly AgentNetworkSnapshotStore snapshotStore = new(app.Paths, app.Json);
 
-    public async Task<AgentNetworkRefreshResult> RefreshAsync(
+    public async Task<AgentNetworkSnapshot> RefreshAsync(
         bool allowAutomaticAuthorization,
         CancellationToken cancellationToken = default)
     {
@@ -66,24 +67,26 @@ internal sealed class AgentNetworkOperations(
             automaticAuthorizationEnabled() &&
             diagnostics.Any(item => item.Status == NetworkPathProbeStatus.Captive))
         {
-            // Diagnostics established that a captive path exists. The agent still
-            // performs its own normal probe/confirmation before any SMS-producing
-            // authorization flow, so an interactive refresh never becomes a second
-            // authorization implementation.
             app.Agent.NotifyNetworkConnectivityChanged();
             await app.Agent.TickAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        var finalStates = diagnostics
-            .Select(item => app.PathState.Find(item.Path.Identity) ?? item.State)
+        return CaptureAndPersistSnapshot();
+    }
+
+    public Task<AgentNetworkAdapterOption[]> GetAdapterOptionsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var options = PhysicalAdapterSelection.Enumerate()
+            .Select(adapter => new AgentNetworkAdapterOption(
+                adapter.Id,
+                adapter.Name,
+                adapter.Ssid,
+                adapter.CanConnect,
+                adapter.LooksVirtual))
             .ToArray();
-        var internetAvailable = finalStates.Length == 0
-            ? null
-            : finalStates.Any(state => state.Status == PathAuthorizationStatus.Internet);
-        return new AgentNetworkRefreshResult(
-            internetAvailable,
-            diagnostics.Count,
-            finalStates.Count(state => state.Status == PathAuthorizationStatus.Captive));
+        return Task.FromResult(options);
     }
 
     public async Task<AuthorizationOutcome> AuthorizeNowAsync(
@@ -103,6 +106,7 @@ internal sealed class AgentNetworkOperations(
         {
             app.Logger.Write(DiagnosticLevel.Warn,
                 "manual.path-selection unavailable reason=no-unambiguous-physical-path");
+            CaptureAndPersistSnapshot();
             return new AuthorizationOutcome(
                 AuthorizationOutcomeKind.RetryableBeforeStepOne,
                 InternetConfirmed: null,
@@ -114,20 +118,106 @@ internal sealed class AgentNetworkOperations(
         var stateBefore = app.PathState.Find(selection.Path.Identity) ?? app.PathState.Observe(selection.Path);
         app.Logger.Write(DiagnosticLevel.Info,
             $"manual.path-selected adapter={Safe(selection.Path.Name)} preferred={selection.Preferred} probeGate=none");
-        return await app.PathAuthorization.RunAsync(
-            selection.Path,
-            new AuthorizationRequest(
-                secrets.Token,
-                secrets.Phone,
-                deviceId,
-                AuthorizationAttemptReason.Manual,
-                Force: true,
-                Progress: progress),
-            new PathAuthorizationExecutionContext(
-                selection.Preferred,
-                NetworkVpnDetector.IsActive(),
-                stateBefore),
-            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await app.PathAuthorization.RunAsync(
+                selection.Path,
+                new AuthorizationRequest(
+                    secrets.Token,
+                    secrets.Phone,
+                    deviceId,
+                    AuthorizationAttemptReason.Manual,
+                    Force: true,
+                    Progress: progress),
+                new PathAuthorizationExecutionContext(
+                    selection.Preferred,
+                    NetworkVpnDetector.IsActive(),
+                    stateBefore),
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            CaptureAndPersistSnapshot();
+        }
+    }
+
+    internal AgentNetworkSnapshot CaptureAndPersistSnapshot()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var adapters = PhysicalAdapterSelection.Enumerate();
+        var paths = adapters
+            .Select(NetworkPathSnapshot.FromAdapter)
+            .Where(path => path.IsAutomaticAuthorizationCandidate && path.CanAutomaticallyAuthorize)
+            .GroupBy(path => path.Identity)
+            .Select(group => group.First())
+            .ToArray();
+        var preferred = new PreferredNetworkPathResolver().Resolve(paths);
+        var state = app.PathState.Load();
+        var schedulingActive = automaticAuthorizationEnabled() && AgentProcessControl.IsAgentRunning();
+
+        var pathSnapshots = paths
+            .OrderByDescending(path => preferred is not null && SameIdentity(path.Identity, preferred))
+            .ThenBy(path => path.Ssid ?? path.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(path =>
+            {
+                var pathState = state.Paths.FirstOrDefault(item => SameIdentity(item.Identity, path.Identity));
+                return new AgentNetworkPathSnapshot(
+                    Name: path.IsWifi ? $"Wi-Fi · {path.Ssid ?? path.Name}" : path.Name,
+                    Ssid: path.Ssid,
+                    InterfaceIndex: path.InterfaceIndex,
+                    SourceIPv4: path.SourceIPv4?.ToString(),
+                    GatewayIPv4: path.GatewayIPv4?.ToString(),
+                    Status: pathState?.Status ?? PathAuthorizationStatus.Unknown,
+                    Preferred: preferred is not null && SameIdentity(path.Identity, preferred),
+                    ExpectedExpiryUtc: pathState?.ExpectedExpiryUtc,
+                    LastResult: pathState?.LastResult,
+                    LastAttemptUtc: pathState?.LastAttemptUtc,
+                    NextCheckUtc: PathAuthorizationSchedule.GetNextCheckUtc(
+                        pathState,
+                        path,
+                        app.Settings,
+                        now,
+                        schedulingActive),
+                    CheckOnConnectivityEvent: schedulingActive && pathState is not null &&
+                        PathAuthorizationSchedule.IsConnectivityEventDriven(pathState, path),
+                    LastSuccessfulAuthUtc: pathState?.LastSuccessfulAuthUtc,
+                    UserActionRequired: pathState?.UserActionRequired == true,
+                    AuthorizationWindowApproximate: IsAuthorizationWindowApproximate(path));
+            })
+            .ToArray();
+
+        var wifiSsid = adapters
+            .Where(adapter => adapter.IsWifi && !string.IsNullOrWhiteSpace(adapter.Ssid))
+            .Select(adapter => adapter.Ssid)
+            .FirstOrDefault(SsidPolicy.IsTarget) ??
+            adapters.Where(adapter => adapter.IsWifi && !string.IsNullOrWhiteSpace(adapter.Ssid))
+                .Select(adapter => adapter.Ssid)
+                .FirstOrDefault();
+        var internetAvailable = pathSnapshots.Length == 0
+            ? null
+            : pathSnapshots.Any(path => path.Status == PathAuthorizationStatus.Internet);
+        var snapshot = new AgentNetworkSnapshot(
+            CapturedAtUtc: now,
+            InternetAvailable: internetAvailable,
+            VpnActive: SafeVpnActive(),
+            WifiSsid: wifiSsid,
+            Paths: pathSnapshots);
+        snapshotStore.Save(snapshot);
+        return snapshot;
+    }
+
+    internal static bool IsAuthorizationWindowApproximate(NetworkPathSnapshot path) =>
+        !(path.IsWifi && SsidPolicy.IsTarget(path.Ssid));
+
+    private static bool SameIdentity(NetworkPathIdentity left, NetworkPathIdentity right) =>
+        left.InterfaceType == right.InterfaceType &&
+        string.Equals(left.AdapterId, right.AdapterId, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.NetworkDiscriminator, right.NetworkDiscriminator, StringComparison.OrdinalIgnoreCase);
+
+    private static bool SafeVpnActive()
+    {
+        try { return NetworkVpnDetector.IsActive(); }
+        catch { return false; }
     }
 
     private static string Safe(string value) => value.Replace('\r', ' ').Replace('\n', ' ');
@@ -138,7 +228,9 @@ internal static class AgentNetworkProtocol
     internal const string Refresh = "refresh";
     internal const string ProbeOnly = "probe-only";
     internal const string Authorize = "authorize";
+    internal const string Adapters = "adapters";
     internal const string StatusPrefix = "status|";
+    internal const string AdaptersPrefix = "adapters|";
     internal const string ProgressPrefix = "progress|";
     internal const string ResultPrefix = "result|";
     internal const string ErrorPrefix = "error|";
@@ -163,28 +255,63 @@ internal static class AgentNetworkProtocol
         }
     }
 
-    internal static string FormatStatus(AgentNetworkRefreshResult result) =>
-        $"{StatusPrefix}{FormatNullableBool(result.InternetAvailable)}|{result.PathCount}|{result.CaptivePathCount}";
-
-    internal static AgentNetworkRefreshResult ParseStatus(string line)
+    internal static string FormatStatus(AgentNetworkSnapshot snapshot)
     {
-        var fields = line.Split('|');
-        if (fields.Length != 4 || !string.Equals(fields[0], "status", StringComparison.Ordinal) ||
-            !int.TryParse(fields[2], out var pathCount) || pathCount < 0 ||
-            !int.TryParse(fields[3], out var captivePathCount) || captivePathCount < 0 ||
-            captivePathCount > pathCount)
+        var json = JsonSerializer.SerializeToUtf8Bytes(snapshot, AppJsonContext.Default.AgentNetworkSnapshot);
+        return StatusPrefix + Convert.ToBase64String(json);
+    }
+
+    internal static AgentNetworkSnapshot ParseStatus(string line)
+    {
+        if (!line.StartsWith(StatusPrefix, StringComparison.Ordinal))
         {
             throw new InvalidDataException("Фоновый агент вернул некорректный статус сети.");
         }
 
-        bool? internet = fields[1] switch
+        try
         {
-            "1" => true,
-            "0" => false,
-            "-" => null,
-            _ => throw new InvalidDataException("Фоновый агент вернул некорректный статус Интернета.")
-        };
-        return new AgentNetworkRefreshResult(internet, pathCount, captivePathCount);
+            var bytes = Convert.FromBase64String(line[StatusPrefix.Length..]);
+            return JsonSerializer.Deserialize(bytes, AppJsonContext.Default.AgentNetworkSnapshot) ??
+                throw new InvalidDataException("Фоновый агент вернул пустой статус сети.");
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidDataException("Фоновый агент вернул некорректный статус сети.", ex);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException("Фоновый агент вернул некорректный статус сети.", ex);
+        }
+    }
+
+    internal static string FormatAdapters(AgentNetworkAdapterOption[] adapters)
+    {
+        var json = JsonSerializer.SerializeToUtf8Bytes(
+            new AgentNetworkAdapterList(adapters),
+            AppJsonContext.Default.AgentNetworkAdapterList);
+        return AdaptersPrefix + Convert.ToBase64String(json);
+    }
+
+    internal static AgentNetworkAdapterOption[] ParseAdapters(string line)
+    {
+        if (!line.StartsWith(AdaptersPrefix, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Фоновый агент вернул некорректный список адаптеров.");
+        }
+
+        try
+        {
+            var bytes = Convert.FromBase64String(line[AdaptersPrefix.Length..]);
+            return JsonSerializer.Deserialize(bytes, AppJsonContext.Default.AgentNetworkAdapterList)?.Adapters ?? [];
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidDataException("Фоновый агент вернул некорректный список адаптеров.", ex);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException("Фоновый агент вернул некорректный список адаптеров.", ex);
+        }
     }
 
     internal static string FormatResult(AuthorizationOutcome outcome) =>
@@ -317,6 +444,13 @@ internal static class AgentNetworkCommandServer
                     break;
                 }
 
+                case AgentNetworkProtocol.Adapters:
+                {
+                    var adapters = await operations.GetAdapterOptionsAsync(cancellationToken).ConfigureAwait(false);
+                    await writer.WriteLineAsync(AgentNetworkProtocol.FormatAdapters(adapters)).ConfigureAwait(false);
+                    break;
+                }
+
                 case AgentNetworkProtocol.Authorize:
                     await RunAuthorizationAsync(operations, writer, cancellationToken).ConfigureAwait(false);
                     break;
@@ -415,18 +549,22 @@ internal static class AgentNetworkClient
     private static readonly TimeSpan ExistingAgentConnectTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan OneShotConnectTimeout = TimeSpan.FromSeconds(8);
 
-    internal static Task<AgentNetworkRefreshResult> RefreshAsync(CancellationToken cancellationToken = default) =>
+    internal static Task<AgentNetworkSnapshot> RefreshAsync(CancellationToken cancellationToken = default) =>
         ExecuteRefreshAsync(AgentNetworkProtocol.Refresh, cancellationToken);
 
-    internal static Task<AgentNetworkRefreshResult> ProbeOnlyAsync(CancellationToken cancellationToken = default) =>
+    internal static Task<AgentNetworkSnapshot> ProbeOnlyAsync(CancellationToken cancellationToken = default) =>
         ExecuteRefreshAsync(AgentNetworkProtocol.ProbeOnly, cancellationToken);
+
+    internal static Task<AgentNetworkAdapterOption[]> GetAdapterOptionsAsync(
+        CancellationToken cancellationToken = default) =>
+        ExecuteAdaptersAsync(cancellationToken);
 
     internal static Task<AuthorizationOutcome> AuthorizeNowAsync(
         Action<AuthorizationProgressStage>? progress = null,
         CancellationToken cancellationToken = default) =>
         ExecuteAuthorizationAsync(progress, cancellationToken);
 
-    private static async Task<AgentNetworkRefreshResult> ExecuteRefreshAsync(
+    private static async Task<AgentNetworkSnapshot> ExecuteRefreshAsync(
         string command,
         CancellationToken cancellationToken)
     {
@@ -447,6 +585,30 @@ internal static class AgentNetworkClient
                     throw new InvalidOperationException(AgentNetworkProtocol.DecodeError(line));
                 }
                 throw new IOException("Фоновый агент закрыл соединение без статуса сети.");
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<AgentNetworkAdapterOption[]> ExecuteAdaptersAsync(
+        CancellationToken cancellationToken)
+    {
+        return await ExecuteWithAgentAsync(
+            async (pipeName, timeout) =>
+            {
+                using var pipe = await ConnectAsync(pipeName, timeout, cancellationToken).ConfigureAwait(false);
+                using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+                using var writer = new StreamWriter(pipe, new UTF8Encoding(false), bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+                await writer.WriteLineAsync(AgentNetworkProtocol.Adapters).ConfigureAwait(false);
+                var line = await reader.ReadLineAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (line is not null && line.StartsWith(AgentNetworkProtocol.AdaptersPrefix, StringComparison.Ordinal))
+                {
+                    return AgentNetworkProtocol.ParseAdapters(line);
+                }
+                if (line is not null && line.StartsWith(AgentNetworkProtocol.ErrorPrefix, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(AgentNetworkProtocol.DecodeError(line));
+                }
+                throw new IOException("Фоновый агент закрыл соединение без списка адаптеров.");
             },
             cancellationToken).ConfigureAwait(false);
     }

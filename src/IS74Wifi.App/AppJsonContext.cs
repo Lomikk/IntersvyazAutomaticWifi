@@ -12,4 +12,6 @@ internal sealed record DeviceMetadataSnapshot(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     WriteIndented = true)]
 [JsonSerializable(typeof(DeviceMetadataSnapshot))]
+[JsonSerializable(typeof(AgentNetworkSnapshot))]
+[JsonSerializable(typeof(AgentNetworkAdapterList))]
 internal sealed partial class AppJsonContext : JsonSerializerContext;

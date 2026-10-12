@@ -8,6 +8,7 @@ internal static class AgentNetworkIpcContractTests
     public static async Task RunAsync()
     {
         await RefreshCommandsStayAgentOwnedAsync();
+        await AdapterEnumerationStaysAgentOwnedAsync();
         await AuthorizationProgressAndResultRoundTripAsync();
         await AgentErrorsRoundTripAsync();
     }
@@ -23,8 +24,10 @@ internal static class AgentNetworkIpcContractTests
             Assert(line is not null && line.StartsWith(AgentNetworkProtocol.StatusPrefix, StringComparison.Ordinal),
                 "refresh IPC did not return network status");
             var status = AgentNetworkProtocol.ParseStatus(line!);
-            Assert(status.InternetAvailable == true && status.PathCount == 2 && status.CaptivePathCount == 1,
-                "refresh IPC status payload changed");
+            Assert(status.InternetAvailable == true && status.Paths.Length == 2 && status.CaptivePathCount == 1,
+                "refresh IPC snapshot payload changed");
+            Assert(status.Paths[0].SourceIPv4 == "10.0.0.2" && status.Paths[1].Status == PathAuthorizationStatus.Captive,
+                "refresh IPC must return agent-owned path details");
         }, () => schedulerWakes++);
         Assert(schedulerWakes == 1,
             "completed agent IPC command must wake the main scheduler to recompute deadlines");
@@ -40,6 +43,23 @@ internal static class AgentNetworkIpcContractTests
         });
         Assert(operations.RefreshCalls == 2 && operations.LastAllowAutomaticAuthorization == false,
             "diagnostic probe-only command must never authorize");
+    }
+
+    private static async Task AdapterEnumerationStaysAgentOwnedAsync()
+    {
+        var operations = new FakeOperations();
+        await WithServerAsync(operations, async (pipe, reader, writer) =>
+        {
+            await writer.WriteLineAsync(AgentNetworkProtocol.Adapters);
+            var line = await reader.ReadLineAsync();
+            Assert(line is not null && line.StartsWith(AgentNetworkProtocol.AdaptersPrefix, StringComparison.Ordinal),
+                "adapter IPC did not return agent-owned options");
+            var adapters = AgentNetworkProtocol.ParseAdapters(line!);
+            Assert(adapters.Length == 2 && adapters[0].Id == "wifi-1" && adapters[1].LooksVirtual,
+                "adapter options did not round-trip through agent IPC");
+        });
+        Assert(operations.AdapterCalls == 1,
+            "interactive adapter selection must enumerate interfaces only inside the agent owner");
     }
 
     private static async Task AuthorizationProgressAndResultRoundTripAsync()
@@ -139,6 +159,7 @@ internal static class AgentNetworkIpcContractTests
     {
         public int RefreshCalls { get; private set; }
         public int AuthorizationCalls { get; private set; }
+        public int AdapterCalls { get; private set; }
         public bool? LastAllowAutomaticAuthorization { get; private set; }
         public Exception? RefreshError { get; init; }
         public AuthorizationOutcome AuthorizationResult { get; init; } = new(
@@ -148,7 +169,7 @@ internal static class AgentNetworkIpcContractTests
             RetryAfter: null,
             Timing: null);
 
-        public Task<AgentNetworkRefreshResult> RefreshAsync(
+        public Task<AgentNetworkSnapshot> RefreshAsync(
             bool allowAutomaticAuthorization,
             CancellationToken cancellationToken = default)
         {
@@ -158,10 +179,33 @@ internal static class AgentNetworkIpcContractTests
             {
                 throw RefreshError;
             }
-            return Task.FromResult(new AgentNetworkRefreshResult(
+            return Task.FromResult(new AgentNetworkSnapshot(
+                CapturedAtUtc: DateTimeOffset.UtcNow,
                 InternetAvailable: true,
-                PathCount: 2,
-                CaptivePathCount: 1));
+                VpnActive: false,
+                WifiSsid: "Campus Wi-Fi test",
+                Paths:
+                [
+                    new AgentNetworkPathSnapshot(
+                        "Wi-Fi · Campus Wi-Fi test", "Campus Wi-Fi test", 7, "10.0.0.2", "10.0.0.1",
+                        PathAuthorizationStatus.Internet, true, null, "success", DateTimeOffset.UtcNow,
+                        DateTimeOffset.UtcNow.AddMinutes(1), false, DateTimeOffset.UtcNow, false, false),
+                    new AgentNetworkPathSnapshot(
+                        "Ethernet", null, 9, "10.1.0.2", "10.1.0.1",
+                        PathAuthorizationStatus.Captive, false, null, null, null,
+                        null, true, null, false, true)
+                ]));
+        }
+
+        public Task<AgentNetworkAdapterOption[]> GetAdapterOptionsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            AdapterCalls++;
+            return Task.FromResult(new[]
+            {
+                new AgentNetworkAdapterOption("wifi-1", "Wi-Fi", "Campus Wi-Fi test", true, false),
+                new AgentNetworkAdapterOption("vpn-1", "VPN", null, true, true)
+            });
         }
 
         public async Task<AuthorizationOutcome> AuthorizeNowAsync(

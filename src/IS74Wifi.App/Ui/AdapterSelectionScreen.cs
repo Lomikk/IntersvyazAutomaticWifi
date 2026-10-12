@@ -32,7 +32,7 @@ internal sealed class AdapterSelectionScreen
     private readonly string? originalId;
     private readonly List<AdapterSelectionItem> items;
 
-    internal AdapterSelectionScreen(IReadOnlyList<PhysicalAdapter> adapters, string? currentId)
+    internal AdapterSelectionScreen(IReadOnlyList<AgentNetworkAdapterOption> adapters, string? currentId)
     {
         originalId = currentId;
         items = BuildItems(adapters, currentId);
@@ -160,7 +160,7 @@ internal sealed class AdapterSelectionScreen
     }
 
     private static List<AdapterSelectionItem> BuildItems(
-        IReadOnlyList<PhysicalAdapter> adapters,
+        IReadOnlyList<AgentNetworkAdapterOption> adapters,
         string? currentId)
     {
         var result = new List<AdapterSelectionItem>

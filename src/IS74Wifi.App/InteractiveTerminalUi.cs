@@ -405,7 +405,7 @@ internal sealed partial class InteractiveTerminalUi
     }
 
     public async Task<(bool Confirmed, string? SelectedId)> ChooseNetworkAdapterAsync(
-        IReadOnlyList<PhysicalAdapter> adapters,
+        IReadOnlyList<AgentNetworkAdapterOption> adapters,
         string? currentId,
         CancellationToken cancellationToken = default)
     {

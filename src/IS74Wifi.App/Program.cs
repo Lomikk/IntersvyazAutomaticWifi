@@ -481,7 +481,7 @@ internal static class Program
     {
         using var app = ApplicationRuntime.Create(ProductVersion);
         app.Logger.Write(DiagnosticLevel.Info, "cli.start command=status runtime=csharp owner=agent-ipc");
-        AgentNetworkRefreshResult? refreshedNetwork = null;
+        AgentNetworkSnapshot? refreshedNetwork = null;
         try
         {
             refreshedNetwork = await AgentNetworkClient.RefreshAsync().ConfigureAwait(false);
@@ -492,10 +492,13 @@ internal static class Program
                 $"agent.ipc status-refresh failed type={ex.GetType().Name}:{ex.Message}");
         }
 
-        var statusSnapshot = CreateStatusService().ReadLocalSnapshot();
+        var statusService = CreateStatusService();
+        var statusSnapshot = refreshedNetwork is null
+            ? statusService.ReadLocalSnapshot()
+            : statusService.ReadSnapshot(refreshedNetwork);
         var secrets = app.Secrets.Load();
         var session = app.Session.Load();
-        var internetAvailable = (refreshedNetwork?.InternetAvailable ?? statusSnapshot.InternetAvailable) == true;
+        var internetAvailable = statusSnapshot.InternetAvailable == true;
         var networkPaths = statusSnapshot.NetworkPaths ?? [];
 
         Console.WriteLine();
@@ -537,7 +540,7 @@ internal static class Program
         }
         Console.WriteLine($"Запуск вместе с Windows    : {(automaticAuthorizationEnabled ? "включён" : "выключен")}");
         Console.WriteLine($"Интернет                     : {(internetAvailable ? "доступен" : "не подтверждён")}");
-        Console.WriteLine($"Физические пути              : {refreshedNetwork?.PathCount ?? statusSnapshot.ActivePhysicalPathCount}");
+        Console.WriteLine($"Физические пути              : {statusSnapshot.ActivePhysicalPathCount}");
         if (!string.IsNullOrWhiteSpace(session?.AccessEnd))
         {
             Console.WriteLine($"API-сессия  : до {session.AccessEnd}");
@@ -1862,7 +1865,7 @@ internal static class Program
 
                     case InteractiveMenuAction.ChooseDirectNetworkAdapter:
                     {
-                        var adapters = PhysicalAdapterSelection.Enumerate();
+                        var adapters = await AgentNetworkClient.GetAdapterOptionsAsync().ConfigureAwait(false);
                         var current = new SettingsStore(new AppPaths(), new JsonFileStore()).Load().DirectNetworkAdapterId;
                         var adapterChoice = await ui.ChooseNetworkAdapterAsync(adapters, current).ConfigureAwait(false);
                         if (adapterChoice.Confirmed)
@@ -2410,11 +2413,7 @@ internal static class Program
         using var app = ApplicationRuntime.Create(ProductVersion);
         var statusService = new StatusService(ProductVersion, app.Paths, app.Json);
         var lines = await statusService.BuildDetailedReportAsync(
-            async cancellationToken =>
-            {
-                var result = await AgentNetworkClient.RefreshAsync(cancellationToken).ConfigureAwait(false);
-                return result.InternetAvailable;
-            }).ConfigureAwait(false);
+            AgentNetworkClient.RefreshAsync).ConfigureAwait(false);
 
         var reportPath = Path.Combine(Path.GetTempPath(), "IS74Wifi-status.txt");
         await File.WriteAllLinesAsync(
@@ -2650,8 +2649,8 @@ internal static class Program
     private static StatusService CreateStatusService() =>
         new(ProductVersion, new AppPaths(), new JsonFileStore());
 
-    private static InteractiveStatusSnapshot GetInteractiveStatusSnapshot(bool? internetOverride = null) =>
-        CreateStatusService().ReadLocalSnapshot(internetOverride);
+    private static InteractiveStatusSnapshot GetInteractiveStatusSnapshot() =>
+        CreateStatusService().ReadLocalSnapshot();
 
     private static InteractiveStatusSnapshot ReadLocalInteractiveStatusSnapshot() =>
         CreateStatusService().ReadLocalSnapshot();
@@ -2661,18 +2660,8 @@ internal static class Program
         using var app = ApplicationRuntime.Create(ProductVersion);
         var statusService = new StatusService(ProductVersion, app.Paths, app.Json);
         return await statusService.RefreshNetworkSnapshotAsync(
-            async cancellationToken =>
-            {
-                var result = await AgentNetworkClient.RefreshAsync(cancellationToken).ConfigureAwait(false);
-                return result.InternetAvailable;
-            },
+            AgentNetworkClient.RefreshAsync,
             _ => TryCheckForUpdatesIfDueAsync(app)).ConfigureAwait(false);
-    }
-
-    private static string? GetDisplayedWifiSsid()
-    {
-        var connectedSsids = WindowsWifiService.GetConnectedSsids();
-        return connectedSsids.FirstOrDefault(SsidPolicy.IsTarget) ?? connectedSsids.FirstOrDefault();
     }
 
     private static string FormatWifiNetwork(string? ssid) => StatusService.FormatWifiNetwork(ssid);
@@ -2832,52 +2821,36 @@ internal static class Program
 
     private static async Task<IReadOnlyList<string>> CollectDirectNetworkDiagnosticsAsync()
     {
-        await AgentNetworkClient.ProbeOnlyAsync().ConfigureAwait(false);
-
-        using var app = ApplicationRuntime.Create(ProductVersion);
-        var paths = new NetworkPathEnumerator()
-            .EnumerateAutomaticCandidates()
-            .Where(path => path.CanAutomaticallyAuthorize)
-            .GroupBy(path => path.Identity)
-            .Select(group => group.First())
-            .ToArray();
-        var preferredIdentity = new PreferredNetworkPathResolver().Resolve(paths);
-
+        var snapshot = await AgentNetworkClient.ProbeOnlyAsync().ConfigureAwait(false);
         var result = new List<string>
         {
             "Физические сетевые пути",
             "VPN/виртуальные адаптеры не являются путями captive-авторизации."
         };
 
-        if (paths.Length == 0)
+        if (snapshot.Paths.Length == 0)
         {
             result.Add("Активные физические пути с IPv4 не обнаружены.");
             result.Add("Диагностика не отправляет stepOne/stepTwo и не расходует SMS-попытки.");
             return result;
         }
 
-        foreach (var path in paths
-                     .OrderByDescending(path => preferredIdentity is not null && SameNetworkPath(path.Identity, preferredIdentity))
-                     .ThenBy(path => path.Name, StringComparer.OrdinalIgnoreCase))
+        foreach (var path in snapshot.Paths)
         {
-            var state = app.PathState.Find(path.Identity);
-            var preferred = preferredIdentity is not null && SameNetworkPath(path.Identity, preferredIdentity)
-                ? " · основной"
-                : string.Empty;
-            var network = string.IsNullOrWhiteSpace(path.Ssid) ? path.Name : $"{path.Name} · {path.Ssid}";
+            var preferred = path.Preferred ? " · основной" : string.Empty;
             result.Add(string.Empty);
-            result.Add($"{network}{preferred}");
-            result.Add($"  Состояние: {StatusService.FormatPathStatus(state?.Status ?? PathAuthorizationStatus.Unknown)}");
-            result.Add($"  IPv4: {path.SourceIPv4?.ToString() ?? "—"}; gateway: {path.GatewayIPv4?.ToString() ?? "—"}; ifIndex: {path.InterfaceIndex}");
-            if (state?.ExpectedExpiryUtc is { } expiry)
+            result.Add($"{path.Name}{preferred}");
+            result.Add($"  Состояние: {StatusService.FormatPathStatus(path.Status)}");
+            result.Add($"  IPv4: {path.SourceIPv4 ?? "—"}; gateway: {path.GatewayIPv4 ?? "—"}; ifIndex: {path.InterfaceIndex}");
+            if (path.ExpectedExpiryUtc is { } expiry)
             {
                 result.Add($"  Ожидаемая граница: {expiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
             }
-            if (state?.LastSuccessfulAuthUtc is { } lastAuth)
+            if (path.LastSuccessfulAuthUtc is { } lastAuth)
             {
                 result.Add($"  Последняя авторизация: {lastAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
             }
-            if (state?.UserActionRequired == true)
+            if (path.UserActionRequired)
             {
                 result.Add("  Автоавторизация: остановлена до действия пользователя");
             }
@@ -2889,10 +2862,6 @@ internal static class Program
         return result;
     }
 
-    private static bool SameNetworkPath(NetworkPathIdentity left, NetworkPathIdentity right) =>
-        left.InterfaceType == right.InterfaceType &&
-        string.Equals(left.AdapterId, right.AdapterId, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(left.NetworkDiscriminator, right.NetworkDiscriminator, StringComparison.OrdinalIgnoreCase);
 
     private static void SetDirectNetworkAdapter(string? adapterId, Action<string>? progress = null)
     {
@@ -3380,6 +3349,7 @@ internal static class Program
                             .AcquireAsync(stopCts.Token)
                             .ConfigureAwait(false);
                         await app.Agent.TickAsync(stopCts.Token).ConfigureAwait(false);
+                        networkOperations.CaptureAndPersistSnapshot();
                     }
                     finally
                     {

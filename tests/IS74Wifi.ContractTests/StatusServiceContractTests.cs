@@ -13,8 +13,7 @@ internal static class StatusServiceContractTests
             InstalledVersion: null,
             InstalledExecutablePath: Path.Combine(temp.Path, "Programs", "IS74Wifi", "IS74Wifi.exe"),
             AutomaticAuthorizationEnabled: false,
-            AgentRunning: false,
-            WifiSsid: null);
+            AgentRunning: false);
         var service = new StatusService("1.2.3", paths, json, () => machine);
 
         var fresh = service.ReadLocalSnapshot();
@@ -41,9 +40,24 @@ internal static class StatusServiceContractTests
         Assert(!alreadyAuthorized.AuthorizationAlreadyActive,
             "legacy global already-authorized state must not be promoted to an active physical path");
 
-        var overridden = service.ReadLocalSnapshot(internetOverride: true);
-        Assert(overridden.InternetAvailable == true,
-            "explicit Internet override must take precedence over persisted runtime state");
+        var agentSnapshot = new AgentNetworkSnapshot(
+            CapturedAtUtc: DateTimeOffset.UtcNow,
+            InternetAvailable: true,
+            VpnActive: true,
+            WifiSsid: "Campus Wi-Fi test",
+            Paths:
+            [
+                new AgentNetworkPathSnapshot(
+                    "Wi-Fi · Campus Wi-Fi test", "Campus Wi-Fi test", 7, "10.0.0.2", "10.0.0.1",
+                    PathAuthorizationStatus.Internet, true, DateTimeOffset.UtcNow.AddHours(2), "success",
+                    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddHours(1), false, DateTimeOffset.UtcNow, false, false)
+            ]);
+        new AgentNetworkSnapshotStore(paths, json).Save(agentSnapshot);
+        var agentOwned = service.ReadLocalSnapshot();
+        Assert(agentOwned.InternetAvailable == true && agentOwned.ActivePhysicalPathCount == 1 && agentOwned.VpnActive,
+            "local UI status must be built from the last agent-owned network snapshot");
+        Assert(agentOwned.WifiSsid == "Campus Wi-Fi test" && agentOwned.NetworkPaths?.Single().Status == PathAuthorizationStatus.Internet,
+            "agent-owned SSID/path status must flow into the UI snapshot");
 
         var settingsStore = new SettingsStore(paths, json);
         settingsStore.Save(settingsStore.Load() with
@@ -77,31 +91,39 @@ internal static class StatusServiceContractTests
         Assert(updateStore.Load().AvailableVersion is null && updateStore.Load().AvailableReleasePageUrl is null,
             "stale update normalization must still be persisted locally");
 
-        var probeCalls = 0;
+        var refreshCalls = 0;
         var updateCalls = 0;
+        var refreshedSnapshot = agentSnapshot with
+        {
+            InternetAvailable = false,
+            Paths =
+            [
+                agentSnapshot.Paths[0] with { Status = PathAuthorizationStatus.Captive }
+            ]
+        };
         var refreshed = await service.RefreshNetworkSnapshotAsync(
             _ =>
             {
-                probeCalls++;
-                return Task.FromResult<bool?>(true);
+                refreshCalls++;
+                return Task.FromResult(refreshedSnapshot);
             },
             _ =>
             {
                 updateCalls++;
                 return Task.CompletedTask;
             });
-        Assert(probeCalls == 1 && updateCalls == 1,
+        Assert(refreshCalls == 1 && updateCalls == 1,
             "network refresh must make its network/update side effects explicit and single-shot");
-        Assert(refreshed.InternetAvailable == true,
-            "network refresh result must flow into the returned snapshot");
+        Assert(refreshed.InternetAvailable == false && refreshed.CaptivePathCount == 1,
+            "agent refresh snapshot must flow into the returned UI status");
 
-        var reportProbeCalls = 0;
+        var reportRefreshCalls = 0;
         var report = await service.BuildDetailedReportAsync(_ =>
         {
-            reportProbeCalls++;
-            return Task.FromResult<bool?>(true);
+            reportRefreshCalls++;
+            return Task.FromResult(agentSnapshot);
         });
-        Assert(reportProbeCalls == 1, "detailed report must use only the supplied Internet probe");
+        Assert(reportRefreshCalls == 1, "detailed report must use only the supplied agent network refresh");
         Assert(report.Any(line => line == $"Данные приложения: {paths.Root}"),
             "detailed report must use the supplied temporary AppPaths");
         Assert(report.Any(line => line == "Интернет: доступен"),

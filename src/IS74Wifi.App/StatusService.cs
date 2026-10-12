@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Net;
-using System.Net.NetworkInformation;
 using IS74Wifi.Core;
 
 namespace IS74Wifi.App;
@@ -10,8 +8,7 @@ internal sealed record StatusMachineState(
     string? InstalledVersion,
     string InstalledExecutablePath,
     bool AutomaticAuthorizationEnabled,
-    bool AgentRunning,
-    string? WifiSsid);
+    bool AgentRunning);
 
 internal sealed class StatusService
 {
@@ -32,25 +29,31 @@ internal sealed class StatusService
         this.readMachineState = readMachineState ?? ReadDefaultMachineState;
     }
 
-    public InteractiveStatusSnapshot ReadLocalSnapshot(bool? internetOverride = null)
+    public InteractiveStatusSnapshot ReadLocalSnapshot()
     {
         var local = ReadLocalState();
-        return BuildSnapshot(local, internetOverride);
+        return BuildSnapshot(local, networkOverride: null);
+    }
+
+    internal InteractiveStatusSnapshot ReadSnapshot(AgentNetworkSnapshot networkSnapshot)
+    {
+        ArgumentNullException.ThrowIfNull(networkSnapshot);
+        return BuildSnapshot(ReadLocalState(), networkSnapshot);
     }
 
     public async Task<InteractiveStatusSnapshot> RefreshNetworkSnapshotAsync(
-        Func<CancellationToken, Task<bool?>> probeInternet,
+        Func<CancellationToken, Task<AgentNetworkSnapshot>> refreshNetwork,
         Func<CancellationToken, Task> checkUpdates,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(probeInternet);
+        ArgumentNullException.ThrowIfNull(refreshNetwork);
         ArgumentNullException.ThrowIfNull(checkUpdates);
 
         var updateTask = checkUpdates(cancellationToken);
-        bool? online;
+        AgentNetworkSnapshot? network = null;
         try
         {
-            online = await probeInternet(cancellationToken).ConfigureAwait(false);
+            network = await refreshNetwork(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -58,7 +61,7 @@ internal sealed class StatusService
         }
         catch
         {
-            online = null;
+            // Agent refresh is best-effort for the UI; retain the last persisted snapshot.
         }
 
         try
@@ -74,18 +77,18 @@ internal sealed class StatusService
             // Update discovery is best-effort and must never block the main UI.
         }
 
-        return ReadLocalSnapshot(online);
+        var local = ReadLocalState();
+        return BuildSnapshot(local, network);
     }
 
     public async Task<IReadOnlyList<string>> BuildDetailedReportAsync(
-        Func<CancellationToken, Task<bool?>> probeInternet,
+        Func<CancellationToken, Task<AgentNetworkSnapshot>> refreshNetwork,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(probeInternet);
+        ArgumentNullException.ThrowIfNull(refreshNetwork);
 
-        var internet = await probeInternet(cancellationToken).ConfigureAwait(false);
+        var network = await refreshNetwork(cancellationToken).ConfigureAwait(false);
         var local = ReadLocalState();
-        var state = local.Runtime;
         var settings = local.Settings;
         var machine = local.Machine;
 
@@ -102,9 +105,9 @@ internal sealed class StatusService
             $"Установленный EXE: {(machine.Installed ? machine.InstalledExecutablePath : "—")}",
             string.Empty,
             "=== Состояние ===",
-            $"Интернет: {(internet == true ? "доступен" : "не подтверждён")}",
-            $"Физические пути: {local.CurrentPaths.Count}",
-            $"Авторизация: {FormatPathAuthorizationSummary(local.PathState, local.CurrentPaths)}",
+            $"Интернет: {(network.InternetAvailable == true ? "доступен" : "не подтверждён")}",
+            $"Физические пути: {network.Paths.Length}",
+            $"Авторизация: {FormatPathAuthorizationSummary(network)}",
             $"Регистрация: {(local.Secrets is null ? "нет" : "сохранена")}",
             $"Телефон: {MaskPhone(local.Secrets?.Phone)}",
             $"Автовход: {(machine.AutomaticAuthorizationEnabled ? "включён" : "выключен")}",
@@ -140,34 +143,25 @@ internal sealed class StatusService
 
         lines.Add(string.Empty);
         lines.Add("=== Сетевые пути ===");
-        if (local.CurrentPaths.Count == 0)
+        if (network.Paths.Length == 0)
         {
             lines.Add("Активные физические пути не обнаружены.");
         }
         else
         {
-            foreach (var path in local.CurrentPaths)
+            foreach (var path in network.Paths)
             {
-                var pathState = local.PathState.Paths.FirstOrDefault(item => SamePathIdentity(item.Identity, path.Identity));
-                var label = path.Ssid is null ? path.Name : $"{path.Name} · {path.Ssid}";
-                lines.Add($"{label}: {FormatPathStatus(pathState?.Status ?? PathAuthorizationStatus.Unknown)}");
-                lines.Add($"  IPv4: {path.SourceIPv4?.ToString() ?? "—"}; gateway: {path.GatewayIPv4?.ToString() ?? "—"}; ifIndex: {path.InterfaceIndex}");
-                if (pathState?.ExpectedExpiryUtc is { } pathExpiry)
+                lines.Add($"{path.Name}: {FormatPathStatus(path.Status)}");
+                lines.Add($"  IPv4: {path.SourceIPv4 ?? "—"}; gateway: {path.GatewayIPv4 ?? "—"}; ifIndex: {path.InterfaceIndex}");
+                if (path.ExpectedExpiryUtc is { } pathExpiry)
                     lines.Add($"  Ожидаемая граница: {pathExpiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-                var nextCheck = PathAuthorizationSchedule.GetNextCheckUtc(
-                    pathState,
-                    path,
-                    settings,
-                    DateTimeOffset.UtcNow,
-                    machine.AgentRunning);
-                if (nextCheck is { } scheduledCheck)
+                if (path.NextCheckUtc is { } scheduledCheck)
                     lines.Add($"  Следующая проверка: {scheduledCheck.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-                else if (machine.AgentRunning && pathState is not null &&
-                         PathAuthorizationSchedule.IsConnectivityEventDriven(pathState, path))
+                else if (path.CheckOnConnectivityEvent)
                     lines.Add("  Следующая проверка: по событию Windows/NCSI");
-                if (pathState?.LastSuccessfulAuthUtc is { } pathAuth)
+                if (path.LastSuccessfulAuthUtc is { } pathAuth)
                     lines.Add($"  Последняя авторизация: {pathAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
-                if (pathState?.UserActionRequired == true)
+                if (path.UserActionRequired)
                     lines.Add("  Требуется действие пользователя: да");
             }
         }
@@ -189,79 +183,53 @@ internal sealed class StatusService
         var logger = new DiagnosticLogger(paths);
         var updateMaintenance = new UpdateMaintenanceService(currentVersion, paths, json, logger);
         var updateState = updateMaintenance.LoadState();
-        var pathState = new PathAuthorizationStateStore(paths, json).Load();
-        var enumerator = new NetworkPathEnumerator();
-        var allPaths = enumerator.EnumerateAll();
-        var currentPaths = allPaths
-            .Where(path => path.CanAutomaticallyAuthorize)
-            .ToArray();
-        var vpnActive = DetectActiveVpnRoute(allPaths);
+        var network = new AgentNetworkSnapshotStore(paths, json).Load() ?? AgentNetworkSnapshot.Empty;
         return new LocalStatusState(
             settings,
             new DpapiSecretStore(paths).Load(),
             new SessionMetadataStore(paths, json).Load(),
             new RuntimeStateStore(paths, json).Load(),
-            pathState,
-            currentPaths,
-            vpnActive,
+            network,
             updateState,
             updateMaintenance.IncludePrereleases(settings),
             readMachineState());
     }
 
-    private InteractiveStatusSnapshot BuildSnapshot(LocalStatusState local, bool? internetOverride)
+    private InteractiveStatusSnapshot BuildSnapshot(
+        LocalStatusState local,
+        AgentNetworkSnapshot? networkOverride)
     {
-        var wifiNetwork = SsidPolicy.IsTarget(local.Machine.WifiSsid)
+        var network = networkOverride ?? local.Network;
+        var wifiNetwork = SsidPolicy.IsTarget(network.WifiSsid)
             ? WifiNetworkState.Campus
-            : local.Machine.WifiSsid is not null
+            : network.WifiSsid is not null
                 ? WifiNetworkState.Other
                 : WifiNetworkState.Unknown;
-        var activeStates = local.CurrentPaths
-            .Select(path => local.PathState.Paths.FirstOrDefault(state => SamePathIdentity(state.Identity, path.Identity)))
-            .Where(state => state is not null)
-            .Cast<PathAuthorizationState>()
-            .ToArray();
-        var internetPathCount = activeStates.Count(state => state.Status == PathAuthorizationStatus.Internet);
-        var captivePathCount = activeStates.Count(state => state.Status == PathAuthorizationStatus.Captive);
-        var problemPathCount = Math.Max(0, local.CurrentPaths.Count - internetPathCount - captivePathCount);
-        var internet = internetOverride ?? (internetPathCount > 0 ? true : local.Runtime.InternetConfirmed);
-        var nextExpiry = activeStates
-            .Where(state => state.ExpectedExpiryUtc is not null)
-            .Select(state => state.ExpectedExpiryUtc!.Value)
+        var internetPathCount = network.Paths.Count(path => path.Status == PathAuthorizationStatus.Internet);
+        var captivePathCount = network.Paths.Count(path => path.Status == PathAuthorizationStatus.Captive);
+        var problemPathCount = Math.Max(0, network.Paths.Length - internetPathCount - captivePathCount);
+        var internet = network.InternetAvailable ??
+            (internetPathCount > 0 ? true : local.Runtime.InternetConfirmed);
+        var nextExpiry = network.Paths
+            .Where(path => path.ExpectedExpiryUtc is not null)
+            .Select(path => path.ExpectedExpiryUtc!.Value)
             .OrderBy(value => value)
             .Cast<DateTimeOffset?>()
             .FirstOrDefault();
-        var latestPathResult = activeStates
-            .Where(state => !string.IsNullOrWhiteSpace(state.LastResult))
-            .OrderByDescending(state => state.LastAttemptUtc ?? DateTimeOffset.MinValue)
+        var latestPathResult = network.Paths
+            .Where(path => !string.IsNullOrWhiteSpace(path.LastResult))
+            .OrderByDescending(path => path.LastAttemptUtc ?? DateTimeOffset.MinValue)
             .FirstOrDefault();
-        var preferredPath = new PreferredNetworkPathResolver().Resolve(local.CurrentPaths);
-        var snapshotNow = DateTimeOffset.UtcNow;
-        var networkPaths = local.CurrentPaths
-            .OrderByDescending(path => preferredPath is not null && SamePathIdentity(path.Identity, preferredPath))
-            .ThenBy(path => path.Ssid is null ? path.Name : path.Ssid, StringComparer.OrdinalIgnoreCase)
-            .Select(path =>
-            {
-                var pathState = local.PathState.Paths.FirstOrDefault(state => SamePathIdentity(state.Identity, path.Identity));
-                var displayName = path.IsWifi
-                    ? $"Wi-Fi · {path.Ssid ?? path.Name}"
-                    : path.Name;
-                return new InteractiveNetworkPathStatus(
-                    displayName,
-                    pathState?.Status ?? PathAuthorizationStatus.Unknown,
-                    preferredPath is not null && SamePathIdentity(path.Identity, preferredPath),
-                    pathState?.ExpectedExpiryUtc,
-                    pathState?.LastResult,
-                    AuthorizationWindowApproximate: IsAuthorizationWindowApproximate(path),
-                    NextCheckUtc: PathAuthorizationSchedule.GetNextCheckUtc(
-                        pathState,
-                        path,
-                        local.Settings,
-                        snapshotNow,
-                        local.Machine.AgentRunning),
-                    CheckOnConnectivityEvent: local.Machine.AgentRunning && pathState is not null &&
-                        PathAuthorizationSchedule.IsConnectivityEventDriven(pathState, path));
-            })
+        var networkPaths = network.Paths
+            .Select(path => new InteractiveNetworkPathStatus(
+                path.Name,
+                path.Status,
+                path.Preferred,
+                path.ExpectedExpiryUtc,
+                path.LastResult,
+                path.AuthorizationWindowApproximate,
+                path.NextCheckUtc,
+                path.CheckOnConnectivityEvent))
             .ToArray();
 
         return new InteractiveStatusSnapshot(
@@ -269,9 +237,10 @@ internal sealed class StatusService
             Registered: local.Secrets is not null,
             InternetAvailable: internet,
             WifiNetwork: wifiNetwork,
-            WifiSsid: local.Machine.WifiSsid,
+            WifiSsid: network.WifiSsid,
             AuthorizationExpectedExpiryUtc: nextExpiry,
-            AuthorizationAlreadyActive: activeStates.Any(state => string.Equals(state.LastResult, "already-authorized", StringComparison.Ordinal)),
+            AuthorizationAlreadyActive: network.Paths.Any(path =>
+                string.Equals(path.LastResult, "already-authorized", StringComparison.Ordinal)),
             NetworkCheckIgnored: false,
             DirectNetworkMode: local.Settings.DirectNetworkAdapterId switch
             {
@@ -292,85 +261,23 @@ internal sealed class StatusService
             ApiSessionEnd: FormatSessionEnd(local.Session?.AccessEnd),
             LastResult: FormatRuntimeResultForUi(latestPathResult?.LastResult ?? local.Runtime.LastResult),
             Version: currentVersion,
-            ActivePhysicalPathCount: local.CurrentPaths.Count,
+            ActivePhysicalPathCount: network.Paths.Length,
             InternetPathCount: internetPathCount,
             CaptivePathCount: captivePathCount,
             ProblemPathCount: problemPathCount,
             NetworkPaths: networkPaths,
-            VpnActive: local.VpnActive);
-    }
-
-
-    private static bool DetectActiveVpnRoute(IReadOnlyList<NetworkPathSnapshot> allPaths)
-    {
-        try
-        {
-            var route = new SystemNetworkRouteResolver().Resolve(IPAddress.Parse("1.1.1.1"), allPaths);
-            if (route.LocalPath is { LooksVirtual: true })
-            {
-                return true;
-            }
-            if (route.SourceAddress is null)
-            {
-                return false;
-            }
-
-            foreach (var network in NetworkInterface.GetAllNetworkInterfaces())
-            {
-                try
-                {
-                    if (network.OperationalStatus != OperationalStatus.Up)
-                    {
-                        continue;
-                    }
-                    var properties = network.GetIPProperties();
-                    var ownsRouteSource = properties.UnicastAddresses.Any(address =>
-                        address.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
-                        address.Address.Equals(route.SourceAddress));
-                    if (!ownsRouteSource)
-                    {
-                        continue;
-                    }
-
-                    var index = properties.GetIPv4Properties()?.Index ?? 0;
-                    return PhysicalAdapterSelection.LooksVirtual(
-                        network.NetworkInterfaceType,
-                        network.Name,
-                        network.Description,
-                        index);
-                }
-                catch (NetworkInformationException)
-                {
-                    // The interface may disappear while the status pane is refreshing.
-                }
-            }
-            return false;
-        }
-        catch
-        {
-            // Route inspection is best-effort UI diagnostics. Failure must not
-            // affect authorization or make the status screen unavailable.
-            return false;
-        }
+            VpnActive: network.VpnActive);
     }
 
     private static StatusMachineState ReadDefaultMachineState()
     {
         var installation = new ProgramInstallation();
-        var displayedSsid = ReadDisplayedWifiSsid();
         return new StatusMachineState(
             Installed: installation.IsInstalled,
             InstalledVersion: installation.ReadInstalledVersion(),
             InstalledExecutablePath: installation.ExecutablePath,
             AutomaticAuthorizationEnabled: installation.IsInstalled && new WindowsAutostartService().IsEnabledFor(installation.ExecutablePath),
-            AgentRunning: AgentProcessControl.IsAgentRunning(),
-            WifiSsid: displayedSsid);
-    }
-
-    private static string? ReadDisplayedWifiSsid()
-    {
-        var connectedSsids = WindowsWifiService.GetConnectedSsids();
-        return connectedSsids.FirstOrDefault(SsidPolicy.IsTarget) ?? connectedSsids.FirstOrDefault();
+            AgentRunning: AgentProcessControl.IsAgentRunning());
     }
 
     internal static string FormatWifiNetwork(string? ssid) => ssid switch
@@ -427,20 +334,13 @@ internal sealed class StatusService
         _ => "ещё не проверен"
     };
 
-    private static string FormatPathAuthorizationSummary(
-        PathAuthorizationStateDocument document,
-        IReadOnlyList<NetworkPathSnapshot> currentPaths)
+    private static string FormatPathAuthorizationSummary(AgentNetworkSnapshot network)
     {
-        if (currentPaths.Count == 0) return "нет активных физических путей";
-        var states = currentPaths
-            .Select(path => document.Paths.FirstOrDefault(state => SamePathIdentity(state.Identity, path.Identity)))
-            .Where(state => state is not null)
-            .Cast<PathAuthorizationState>()
-            .ToArray();
-        var captive = states.Count(state => state.Status == PathAuthorizationStatus.Captive);
+        if (network.Paths.Length == 0) return "нет активных физических путей";
+        var captive = network.Paths.Count(path => path.Status == PathAuthorizationStatus.Captive);
         if (captive > 0) return $"требуют авторизацию: {captive}";
-        var internet = states.Count(state => state.Status == PathAuthorizationStatus.Internet);
-        if (internet > 0) return $"Internet: {internet}/{currentPaths.Count}";
+        var internet = network.Paths.Count(path => path.Status == PathAuthorizationStatus.Internet);
+        if (internet > 0) return $"Internet: {internet}/{network.Paths.Length}";
         return "ожидает проверки";
     }
 
@@ -489,28 +389,12 @@ internal sealed class StatusService
         return $"{bytes / (1024d * 1024d):0.0} МБ";
     }
 
-    internal static bool IsAuthorizationWindowApproximate(NetworkPathSnapshot path)
-    {
-        // Only the known direct Campus Wi-Fi SSID family gets an exact-looking
-        // countdown. Any other Wi-Fi SSID may be a phone/laptop hotspot, and
-        // Ethernet/USB may hide an upstream that can switch to LTE or another
-        // network without changing the locally visible path.
-        return !(path.IsWifi && SsidPolicy.IsTarget(path.Ssid));
-    }
-
-    private static bool SamePathIdentity(NetworkPathIdentity left, NetworkPathIdentity right) =>
-        left.InterfaceType == right.InterfaceType &&
-        string.Equals(left.AdapterId, right.AdapterId, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(left.NetworkDiscriminator, right.NetworkDiscriminator, StringComparison.OrdinalIgnoreCase);
-
     private sealed record LocalStatusState(
         AppSettings Settings,
         StoredSecrets? Secrets,
         SessionMetadata? Session,
         RuntimeState Runtime,
-        PathAuthorizationStateDocument PathState,
-        IReadOnlyList<NetworkPathSnapshot> CurrentPaths,
-        bool VpnActive,
+        AgentNetworkSnapshot Network,
         UpdateState UpdateState,
         bool IncludePrereleases,
         StatusMachineState Machine);

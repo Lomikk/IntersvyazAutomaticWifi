@@ -305,13 +305,13 @@ internal static class TerminalUiContractTests
             DnsServers: [IPAddress.Parse("192.0.2.53")],
             Ssid: null,
             LooksVirtual: false);
-        Assert(!StatusService.IsAuthorizationWindowApproximate(directCampus),
+        Assert(!AgentNetworkOperations.IsAuthorizationWindowApproximate(directCampus),
             "Campus Wi-Fi is the only trusted direct SSID family and must use the ordinary timer");
-        Assert(StatusService.IsAuthorizationWindowApproximate(hiddenCampus),
+        Assert(AgentNetworkOperations.IsAuthorizationWindowApproximate(hiddenCampus),
             "SUSU Hide may itself be a hotspot and must use an approximate timer");
-        Assert(StatusService.IsAuthorizationWindowApproximate(hotspot),
+        Assert(AgentNetworkOperations.IsAuthorizationWindowApproximate(hotspot),
             "Wi-Fi hotspot may change upstream behind NAT and must use an approximate timer");
-        Assert(StatusService.IsAuthorizationWindowApproximate(usb),
+        Assert(AgentNetworkOperations.IsAuthorizationWindowApproximate(usb),
             "USB/Ethernet tethering may change upstream behind NAT and must use an approximate timer");
     }
 
@@ -353,17 +353,13 @@ internal static class TerminalUiContractTests
             "a captive secondary path must outrank a healthy path in the tray summary");
     }
 
-    private static PhysicalAdapter Adapter(string id, string name, string? ssid) =>
+    private static AgentNetworkAdapterOption Adapter(string id, string name, string? ssid) =>
         new(
             id,
             name,
-            NetworkInterfaceType.Wireless80211,
-            IsUp: true,
-            IPv4Index: 12,
-            SourceIPv4: IPAddress.Parse("10.0.0.10"),
-            DnsServers: [IPAddress.Parse("10.0.0.1")],
-            HasGateway: true,
-            Ssid: ssid);
+            ssid,
+            CanConnect: true,
+            LooksVirtual: false);
 
     private static ConsoleKeyInfo Key(ConsoleKey key, char keyChar = '\0') =>
         new(keyChar, key, shift: false, alt: false, control: false);

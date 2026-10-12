@@ -43,10 +43,11 @@ assert 'CreateStatusService().ReadLocalSnapshot()' in local
 assert 'new RuntimeStateStore(paths, json).Load()' in local_state
 assert 'new SettingsStore(paths, json).Load()' in local_state
 assert 'updateMaintenance.LoadState()' in local_state
-for forbidden in ('ApplicationRuntime.Create', 'ProbeAsync(', 'CheckAsync(', 'HttpClient', 'HttpTransport'):
+assert 'AgentNetworkSnapshotStore(paths, json).Load()' in local_state
+for forbidden in ('ApplicationRuntime.Create', 'ProbeAsync(', 'CheckAsync(', 'HttpClient', 'HttpTransport', 'NetworkPathEnumerator', 'WindowsWifiService', 'NetworkVpnDetector', 'PathAuthorizationStateStore'):
     assert forbidden not in local_state, f'periodic status refresh must remain local: {forbidden}'
 assert 'RefreshNetworkSnapshotAsync(' in status_service
-assert 'probeInternet' in status_service and 'checkUpdates' in status_service
+assert 'refreshNetwork' in status_service and 'checkUpdates' in status_service
 assert 'BuildDetailedReportAsync(' in status_service
 assert 'Process.Start' not in status_service, 'status collection must not open external applications'
 assert 'statusService.BuildDetailedReportAsync(' in program and 'FileName = "notepad.exe"' in program
