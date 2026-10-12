@@ -8,12 +8,16 @@ public static class AgentProcessControl
     public const string StopEventName = @"Local\IS74Wifi.CSharp.AgentStop";
     public const string AgentWorkerGateName = @"Local\IS74Wifi.CSharp.AgentWorker";
     public const string WorkerStopEventName = @"Local\IS74Wifi.CSharp.AgentWorkerStop";
+    public const string WorkerWakeEventName = @"Local\IS74Wifi.CSharp.AgentWorkerWake";
 
     private const string PidFileName = "agent.pid";
 
     public static EventWaitHandle CreateStopEvent() => CreateResetEvent(StopEventName);
 
     public static EventWaitHandle CreateWorkerStopEvent() => CreateResetEvent(WorkerStopEventName);
+
+    public static EventWaitHandle CreateWorkerWakeEvent() =>
+        new(false, EventResetMode.AutoReset, WorkerWakeEventName);
 
     public static void SignalStop()
     {
@@ -22,6 +26,8 @@ public static class AgentProcessControl
     }
 
     public static void SignalWorkerStop() => SignalEvent(WorkerStopEventName);
+
+    public static void SignalWorkerWake() => SignalEvent(WorkerWakeEventName);
 
     public static bool IsAgentRunning() =>
         IsGateHeld(AgentGateName) || IsGateHeld(AgentWorkerGateName);

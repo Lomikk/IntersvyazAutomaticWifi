@@ -3258,7 +3258,7 @@ internal static class Program
             new SettingsStore(app.Paths, app.Json),
             app.Logger);
         using var stopEvent = AgentProcessControl.CreateWorkerStopEvent();
-        using var networkWake = new AutoResetEvent(false);
+        using var workerWake = AgentProcessControl.CreateWorkerWakeEvent();
         var initialNcsiInternetAccess = ReadNcsiInternetAccess(app.Logger);
         var ncsiInternetAccess = new NcsiInternetAccessTracker(initialNcsiInternetAccess);
         if (initialNcsiInternetAccess is { } initialInternetAccess)
@@ -3280,7 +3280,7 @@ internal static class Program
         void WakeForNetworkChange()
         {
             // A callback already queued by Windows may race with shutdown.
-            try { networkWake.Set(); } catch (ObjectDisposedException) { }
+            try { workerWake.Set(); } catch (ObjectDisposedException) { }
         }
         void OnNetworkAddressChanged(object? _, EventArgs __) => WakeForNetworkChange();
         void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs __) => WakeForNetworkChange();
@@ -3411,7 +3411,7 @@ internal static class Program
                 // The first handle remains the existing cross-process stop
                 // signal. Joining/leaving a network may wake the idle agent,
                 // but does not override the user's IgnoreNetworkCheck choice.
-                if (WaitHandle.WaitAny([stopEvent, networkWake], delay) == 0)
+                if (WaitHandle.WaitAny([stopEvent, workerWake], delay) == 0)
                 {
                     break;
                 }

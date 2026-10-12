@@ -302,6 +302,10 @@ agent_process_control = (root / 'src' / 'IS74Wifi.Core' / 'AgentProcessControl.c
 assert 'agent-worker' in csharp_program and 'AgentSupervisor.RunAsync' in csharp_program, 'autostart agent must isolate the restartable worker behind a supervisor'
 assert 'agent.worker exited' in agent_supervisor and 'GetRestartDelay' in agent_supervisor, 'agent supervisor must restart a worker that exits unexpectedly'
 assert 'AgentWorkerGateName' in agent_process_control and 'SignalWorkerStop' in agent_process_control, 'agent stop control must cover both supervisor and worker'
+assert 'WorkerWakeEventName' in agent_process_control and 'SignalWorkerWake' in agent_process_control, 'live captive diagnostics must be able to wake the background worker'
+assert 'CreateWorkerWakeEvent()' in csharp_program and 'WaitHandle.WaitAny([stopEvent, workerWake], delay)' in csharp_program, 'background worker must wait on the cross-process wake event'
+assert 'AgentProcessControl.SignalWorkerWake' in csharp_runtime, 'runtime diagnostics must wake autoauthorization after observing captive'
+
 assert 'TryRecoverAutomaticAuthorizationAgent();' in csharp_program, 'interactive menu must recover an enabled but missing background agent'
 assert 'MissingNetworkFallbackInterval' in agent_service and 'PublishAutomaticLimitNotification()' in agent_service, 'overdue agent must use sparse fallback and notify on exhausted attempts'
 

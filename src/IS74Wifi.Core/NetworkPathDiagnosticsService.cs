@@ -17,7 +17,8 @@ public sealed class NetworkPathDiagnosticsService(
     PathAuthorizationStateStore state,
     NetworkPathProbe probe,
     PreferredNetworkPathResolver preferredPathResolver,
-    DiagnosticLogger? logger = null)
+    DiagnosticLogger? logger = null,
+    Action? authorizationRequired = null)
 {
     public async Task<IReadOnlyList<NetworkPathDiagnostic>> InspectAsync(
         TimeSpan timeout,
@@ -42,6 +43,7 @@ public sealed class NetworkPathDiagnosticsService(
             .ToArray();
 
         var result = new List<NetworkPathDiagnostic>(ordered.Length);
+        var captiveDetected = false;
         foreach (var path in ordered)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -69,11 +71,27 @@ public sealed class NetworkPathDiagnosticsService(
             }
 
             var persisted = state.RecordProbe(path, probeResult);
+            captiveDetected |= probeResult.Status == NetworkPathProbeStatus.Captive;
             result.Add(new NetworkPathDiagnostic(
                 path,
                 preferred is not null && SameIdentity(path.Identity, preferred),
                 probeResult.Status,
                 persisted));
+        }
+
+        if (captiveDetected && authorizationRequired is not null)
+        {
+            logger?.Write(DiagnosticLevel.Info,
+                "network.path-diagnostics captive-detected action=wake-agent");
+            try
+            {
+                authorizationRequired();
+            }
+            catch (Exception ex)
+            {
+                logger?.Write(DiagnosticLevel.Warn,
+                    $"network.path-diagnostics wake-failed error={ex.GetType().Name}");
+            }
         }
 
         return result;

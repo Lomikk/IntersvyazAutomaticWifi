@@ -239,11 +239,13 @@ internal static class NetworkPathContractTests
                     ? Probe(HttpStatusCode.OK, online: false)
                     : Probe(HttpStatusCode.Found, online: true, location: InternetConnectivityProbe.ExpectedLocation));
             });
+            var captiveWakeCount = 0;
             var diagnostics = new NetworkPathDiagnosticsService(
                 () => [NetworkPathSnapshot.FromAdapter(vpn), campusPath, usbPath],
                 pathStore,
                 diagnosticProbe,
-                new PreferredNetworkPathResolver(_ => usbPath.Identity));
+                new PreferredNetworkPathResolver(_ => usbPath.Identity),
+                authorizationRequired: () => captiveWakeCount++);
 
             var inspected = await diagnostics.InspectAsync(TimeSpan.FromSeconds(1));
             Assert(inspected.Count == 2 && inspected[0].Path.AdapterId == usb.Id && inspected[0].Preferred,
@@ -256,6 +258,8 @@ internal static class NetworkPathContractTests
             Assert(pathStore.Find(usbPath.Identity)?.Status == PathAuthorizationStatus.Internet &&
                    pathStore.Find(campusPath.Identity)?.Status == PathAuthorizationStatus.Captive,
                 "network diagnostics did not persist per-path observations");
+            Assert(captiveWakeCount == 1,
+                "captive diagnostics did not wake automatic authorization exactly once");
         }
     }
 

@@ -205,7 +205,8 @@ internal sealed class ApplicationRuntime : IDisposable
             pathState,
             pathProbe,
             preferredPath,
-            logger);
+            logger,
+            AgentProcessControl.SignalWorkerWake);
         var manualAuthorizationPathSelector = new ManualAuthorizationPathSelector(
             pathEnumerator.EnumerateAutomaticCandidates,
             preferredPath);
