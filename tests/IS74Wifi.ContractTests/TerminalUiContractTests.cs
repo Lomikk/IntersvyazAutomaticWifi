@@ -291,9 +291,9 @@ internal static class TerminalUiContractTests
         Assert(stoppedPresentation.StateText == "онлайн" && stoppedPresentation.TimerText == "—",
             "path without a running/scheduled background check must keep the explicit dash");
 
-        var directCampus = NetworkPathSnapshot.FromAdapter(Adapter("campus", "Wi-Fi", "Campus Wi-Fi"));
-        var hiddenCampus = NetworkPathSnapshot.FromAdapter(Adapter("hidden", "Wi-Fi", "SUSU Hide"));
-        var hotspot = NetworkPathSnapshot.FromAdapter(Adapter("hotspot", "Wi-Fi", "DESKTOP-S327VD2 4631"));
+        var directCampus = WifiPath("campus", "Wi-Fi", "Campus Wi-Fi");
+        var hiddenCampus = WifiPath("hidden", "Wi-Fi", "SUSU Hide");
+        var hotspot = WifiPath("hotspot", "Wi-Fi", "DESKTOP-S327VD2 4631");
         var usb = new NetworkPathSnapshot(
             "usb",
             "Ethernet 4",
@@ -352,6 +352,19 @@ internal static class TerminalUiContractTests
                    State("captive", PathAuthorizationStatus.Captive)) == TrayIconSemanticState.Warning,
             "a captive secondary path must outrank a healthy path in the tray summary");
     }
+
+    private static NetworkPathSnapshot WifiPath(string id, string name, string ssid) =>
+        new(
+            id,
+            name,
+            NetworkInterfaceType.Wireless80211,
+            IsUp: true,
+            InterfaceIndex: 1,
+            SourceIPv4: IPAddress.Parse("192.0.2.10"),
+            GatewayIPv4: IPAddress.Parse("192.0.2.1"),
+            DnsServers: [IPAddress.Parse("192.0.2.53")],
+            Ssid: ssid,
+            LooksVirtual: false);
 
     private static AgentNetworkAdapterOption Adapter(string id, string name, string? ssid) =>
         new(
