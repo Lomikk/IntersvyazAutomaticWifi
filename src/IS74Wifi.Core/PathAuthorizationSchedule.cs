@@ -11,7 +11,7 @@ public static class PathAuthorizationSchedule
     public static readonly TimeSpan FailureRecheck = TimeSpan.FromMinutes(1);
     public static readonly TimeSpan MaximumWait = TimeSpan.FromDays(1);
     public static readonly TimeSpan MinimumDelay = TimeSpan.FromMilliseconds(100);
-    private static readonly TimeSpan FastStartLead = TimeSpan.FromSeconds(10);
+    public static readonly TimeSpan ObservationAfterExpiry = TimeSpan.FromMinutes(3);
 
     public static TimeSpan GetDelay(
         PathAuthorizationState state,
@@ -43,15 +43,20 @@ public static class PathAuthorizationSchedule
         {
             return MaximumWait;
         }
-        if (HasObservedInternetPastExpiry(state))
+        if (HasCompletedObservationWindow(state))
         {
-            // The old estimate is not evidence of lost authorization. A live
-            // Internet observation ends timer recovery; wait for a network event.
+            // A bound probe has completed the finite post-expiry watch.
+            // Further probes require a Windows connectivity event or explicit refresh.
             return MaximumWait;
         }
         if (state.NextAutomaticRetryUtc is { } retry && retry > now)
         {
-            return Clamp(retry - now);
+            var untilRetry = Clamp(retry - now);
+            return state.ExpectedExpiryUtc is { } retryExpiry && now >= retryExpiry
+                ? now >= retryExpiry + ObservationAfterExpiry
+                    ? MinimumDelay
+                    : Min(untilRetry, Clamp(retryExpiry + ObservationAfterExpiry - now))
+                : untilRetry;
         }
         if (IsPreStepRetryPending(state))
         {
@@ -75,13 +80,21 @@ public static class PathAuthorizationSchedule
             // background wakes must not turn this state into periodic HTTP probes.
             return MaximumWait;
         }
+        var expiry = state.ExpectedExpiryUtc.Value;
+        var watchEnd = expiry + ObservationAfterExpiry;
+        if (now >= watchEnd)
+        {
+            // Complete the watch with one final bound observation, even after
+            // suspend/resume, before switching to event-driven checks.
+            return MinimumDelay;
+        }
         if (state.Status is PathAuthorizationStatus.Unreachable or PathAuthorizationStatus.Ambiguous)
         {
-            return DueFromLastProbe(state.LastProbeUtc, FailureRecheck, now);
+            return Min(DueFromLastProbe(state.LastProbeUtc, FailureRecheck, now),
+                Clamp(watchEnd - now));
         }
 
-        var expiry = state.ExpectedExpiryUtc.Value;
-        var fastStart = expiry - FastStartLead;
+        var fastStart = expiry - TimeSpan.FromSeconds(Math.Max(10, settings.GuardWindowSeconds));
         if (now < fastStart)
         {
             return Clamp(fastStart - now);
@@ -92,7 +105,7 @@ public static class PathAuthorizationSchedule
         {
             return Min(fromProbe, Clamp(expiry - now));
         }
-        return fromProbe;
+        return Min(fromProbe, Clamp(watchEnd - now));
     }
 
     public static DateTimeOffset? GetNextCheckUtc(
@@ -122,7 +135,7 @@ public static class PathAuthorizationSchedule
         ArgumentNullException.ThrowIfNull(current);
 
         return (state.ExpectedExpiryUtc is null && state.NextAutomaticRetryUtc is null ||
-                HasObservedInternetPastExpiry(state)) &&
+                HasCompletedObservationWindow(state)) &&
                !state.UserActionRequired &&
                !SnapshotChanged(state, current) &&
                (state.Status is PathAuthorizationStatus.Internet or
@@ -144,6 +157,14 @@ public static class PathAuthorizationSchedule
     public static bool HasObservedInternetPastExpiry(PathAuthorizationState state) =>
         state.Status == PathAuthorizationStatus.Internet &&
         state.ExpectedExpiryUtc is { } expiry && state.LastProbeUtc >= expiry;
+
+    // Based on the actual last observation, not the wall clock alone: a machine
+    // waking after the window must still examine its own physical network path.
+    public static bool HasCompletedObservationWindow(PathAuthorizationState state) =>
+        state.ExpectedExpiryUtc is { } expiry &&
+        state.LastProbeUtc is { } lastProbe && lastProbe >= expiry + ObservationAfterExpiry &&
+        state.Status is PathAuthorizationStatus.Internet or PathAuthorizationStatus.Unreachable or
+            PathAuthorizationStatus.Ambiguous;
 
     private static TimeSpan DueFromLastProbe(DateTimeOffset? lastProbe, TimeSpan interval, DateTimeOffset now)
     {

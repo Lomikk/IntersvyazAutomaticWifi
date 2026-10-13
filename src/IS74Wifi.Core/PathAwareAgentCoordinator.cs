@@ -63,7 +63,7 @@ public sealed class PathAwareAgentCoordinator(
             {
                 continue;
             }
-            if (PathAuthorizationSchedule.HasObservedInternetPastExpiry(pathState)) continue;
+            if (PathAuthorizationSchedule.HasCompletedObservationWindow(pathState)) continue;
             if (pathState.Status == PathAuthorizationStatus.Captive)
             {
                 return false;
@@ -141,6 +141,8 @@ public sealed class PathAwareAgentCoordinator(
             var changed = observationReason != "scheduled_recheck";
             var observed = state.Observe(path, now);
             if (!changed && PathAuthorizationSchedule.IsPreStepRetryPending(observed) &&
+                observed.ExpectedExpiryUtc is { } retryExpiry &&
+                now < retryExpiry + PathAuthorizationSchedule.ObservationAfterExpiry &&
                 observed.NextAutomaticRetryUtc <= now)
             {
                 // Continue a previously started timer recovery even if its last
@@ -167,6 +169,7 @@ public sealed class PathAwareAgentCoordinator(
             var updated = state.RecordProbe(path, result, clock.GetUtcNow());
             logger.Write(DiagnosticLevel.Info,
                 $"agent.path-probe adapter={Safe(path.Name)} status={result.Status} expiry={updated.ExpectedExpiryUtc:O}");
+            NotifyCompletedUncertainWatch(path, updated);
 
             if (result.Status != NetworkPathProbeStatus.Captive &&
                 ShouldRecordObservation(before, observationReason, probeOutcome))
@@ -235,7 +238,7 @@ public sealed class PathAwareAgentCoordinator(
         {
             logger.Write(DiagnosticLevel.Warn,
                 $"agent.path-probe unavailable adapter={Safe(path.Name)} error={ex.GetType().Name}");
-            return null;
+            return UnreachableProbe(path, stopwatch.Elapsed.TotalMilliseconds);
         }
 
         if (!settlingAllowed ||
@@ -285,7 +288,7 @@ public sealed class PathAwareAgentCoordinator(
         {
             logger.Write(DiagnosticLevel.Warn,
                 $"agent.path-probe settling-unavailable adapter={Safe(path.Name)} error={ex.GetType().Name}");
-            return null;
+            return UnreachableProbe(path, stopwatch.Elapsed.TotalMilliseconds, first.Status, settlingRetryUsed: true);
         }
     }
 
@@ -309,7 +312,7 @@ public sealed class PathAwareAgentCoordinator(
 
         if (PathAuthorizationSchedule.IsPreStepRetryPending(pathState))
         {
-            return true;
+            return now < expiry + PathAuthorizationSchedule.ObservationAfterExpiry;
         }
         if (pathState.Status != PathAuthorizationStatus.Internet)
         {
@@ -416,6 +419,7 @@ public sealed class PathAwareAgentCoordinator(
             var updated = state.RecordProbe(path, result, clock.GetUtcNow());
             logger.Write(DiagnosticLevel.Info,
                 $"agent.path-probe adapter={Safe(path.Name)} status={result.Status} expiry={updated.ExpectedExpiryUtc:O} reason=pre-step-failure");
+            NotifyCompletedUncertainWatch(path, updated);
         }
     }
 
@@ -450,6 +454,15 @@ public sealed class PathAwareAgentCoordinator(
         outcome.Result.Status != NetworkPathProbeStatus.Internet ||
         before?.Status != PathAuthorizationStatus.Internet;
 
+    private static ProbePathOutcome UnreachableProbe(
+        NetworkPathSnapshot path, double durationMs,
+        NetworkPathProbeStatus initialStatus = NetworkPathProbeStatus.Unreachable,
+        bool settlingRetryUsed = false) => new(
+        new NetworkPathProbeResult(path.Identity, NetworkPathProbeStatus.Unreachable,
+            new InternetProbeResult(false, false, null, null,
+                TransportFailureKind.DirectRouteUnavailable, TimeSpan.Zero)),
+        initialStatus, settlingRetryUsed, durationMs);
+
     private sealed record ProbePathOutcome(
         NetworkPathProbeResult Result,
         NetworkPathProbeStatus InitialStatus,
@@ -476,6 +489,24 @@ public sealed class PathAwareAgentCoordinator(
         value < TimeSpan.FromMilliseconds(100) ? TimeSpan.FromMilliseconds(100) :
         value > PathAuthorizationSchedule.MaximumWait ? PathAuthorizationSchedule.MaximumWait : value;
     private static string Safe(string value) => value.Replace('\r', ' ').Replace('\n', ' ');
+
+    private void NotifyCompletedUncertainWatch(NetworkPathSnapshot path, PathAuthorizationState observed)
+    {
+        if (observed.ExpectedExpiryUtc is not { } expiry ||
+            !PathAuthorizationSchedule.HasCompletedObservationWindow(observed) ||
+            observed.Status is not (PathAuthorizationStatus.Unreachable or PathAuthorizationStatus.Ambiguous) ||
+            !state.MarkConnectivityErrorNotified(path, expiry))
+        {
+            return;
+        }
+        logger.Write(DiagnosticLevel.Warn,
+            $"agent.path-probe window-exhausted adapter={Safe(path.Name)} expiry={expiry:O} status={observed.Status}");
+        Publish(new AgentNotification(
+            "Не удалось проверить Wi-Fi",
+            $"Путь {path.Name}: состояние Интернета не определено. Откройте IS74Wifi и при необходимости выполните авторизацию вручную.",
+            AgentNotificationImportance.Important,
+            AgentNotificationSeverity.Error));
+    }
 
     private void NotifyOutcome(NetworkPathSnapshot path, AuthorizationOutcome outcome)
     {

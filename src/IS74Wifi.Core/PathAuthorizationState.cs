@@ -33,6 +33,8 @@ public sealed record PathAuthorizationState
     public DateTimeOffset? NextAutomaticRetryUtc { get; init; }
     public bool UserActionRequired { get; init; }
     public bool EdgeWatchActive { get; init; }
+    // Idempotent per authorization window, including across worker restarts.
+    public DateTimeOffset? ConnectivityErrorNotifiedExpiryUtc { get; init; }
     public PathAuthorizationStatus Status { get; init; }
 }
 
@@ -98,6 +100,7 @@ public sealed class PathAuthorizationStateStore(
             var observed = SnapshotState(path, state, now) with
             {
                 LastProbeUtc = bindingChanged ? null : state?.LastProbeUtc,
+                ConnectivityErrorNotifiedExpiryUtc = bindingChanged ? null : state?.ConnectivityErrorNotifiedExpiryUtc,
                 Status = bindingChanged || state?.Status == PathAuthorizationStatus.Disconnected
                     ? PathAuthorizationStatus.Unknown
                     : state?.Status ?? PathAuthorizationStatus.Unknown
@@ -159,10 +162,31 @@ public sealed class PathAuthorizationStateStore(
             NextAutomaticRetryUtc = null,
             UserActionRequired = false,
             EdgeWatchActive = false,
+            ConnectivityErrorNotifiedExpiryUtc = null,
             Status = PathAuthorizationStatus.Internet
         });
     }
 
+
+    public bool MarkConnectivityErrorNotified(NetworkPathSnapshot path, DateTimeOffset expiry)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        EnsurePhysical(path);
+        var updated = false;
+        Mutate(path.Identity, previous =>
+        {
+            if (previous is null || previous.ExpectedExpiryUtc != expiry ||
+                previous.ConnectivityErrorNotifiedExpiryUtc == expiry ||
+                !PathAuthorizationSchedule.HasCompletedObservationWindow(previous) ||
+                previous.Status is not (PathAuthorizationStatus.Unreachable or PathAuthorizationStatus.Ambiguous))
+            {
+                return previous ?? SnapshotState(path, null, clock.GetUtcNow());
+            }
+            updated = true;
+            return previous with { ConnectivityErrorNotifiedExpiryUtc = expiry };
+        });
+        return updated;
+    }
 
     public RuntimeState LoadRuntime(NetworkPathSnapshot path)
     {
@@ -191,6 +215,8 @@ public sealed class PathAuthorizationStateStore(
             NextAutomaticRetryUtc = runtime.NextAutomaticRetryUtc?.ToUniversalTime(),
             UserActionRequired = runtime.UserActionRequired,
             EdgeWatchActive = runtime.EdgeWatchActive,
+            ConnectivityErrorNotifiedExpiryUtc = previous?.ExpectedExpiryUtc == runtime.ExpectedExpiryUtc
+                ? previous?.ConnectivityErrorNotifiedExpiryUtc : null,
             Status = string.Equals(runtime.LastResult, "success", StringComparison.OrdinalIgnoreCase)
                 ? PathAuthorizationStatus.Internet
                 : previous?.Status ?? PathAuthorizationStatus.Unknown
@@ -327,6 +353,7 @@ public sealed class PathAuthorizationStateStore(
         NextAutomaticRetryUtc = previous?.NextAutomaticRetryUtc,
         UserActionRequired = previous?.UserActionRequired ?? false,
         EdgeWatchActive = previous?.EdgeWatchActive ?? false,
+        ConnectivityErrorNotifiedExpiryUtc = previous?.ConnectivityErrorNotifiedExpiryUtc,
         Status = previous?.Status ?? PathAuthorizationStatus.Unknown
     };
 
@@ -339,10 +366,27 @@ public sealed class PathAuthorizationStateStore(
         _ => PathAuthorizationStatus.Unknown
     };
 
-    private static PathAuthorizationState ClearObservedInternetRetry(PathAuthorizationState state) =>
-        PathAuthorizationSchedule.HasObservedInternetPastExpiry(state)
-            ? state with { NextAutomaticRetryUtc = null, EdgeWatchActive = false, PreStepFailureCount = 0 }
-            : state;
+    private static PathAuthorizationState ClearObservedInternetRetry(PathAuthorizationState state)
+    {
+        if (PathAuthorizationSchedule.HasObservedInternetPastExpiry(state))
+        {
+            // Internet cancels speculative portal retries immediately, NOT the
+            // 3-minute observation window after expiry.
+            return state with
+            {
+                NextAutomaticRetryUtc = null,
+                PreStepFailureCount = 0,
+                EdgeWatchActive = state.EdgeWatchActive && !PathAuthorizationSchedule.HasCompletedObservationWindow(state)
+            };
+        }
+        if (PathAuthorizationSchedule.HasCompletedObservationWindow(state))
+        {
+            // An unresolved probe also ends the finite watch. User intervention
+            // is offered via a one-off notification, not speculative stepOne.
+            return state with { NextAutomaticRetryUtc = null, EdgeWatchActive = false, PreStepFailureCount = 0 };
+        }
+        return state;
+    }
 
     private static void EnsurePhysical(NetworkPathSnapshot path)
     {

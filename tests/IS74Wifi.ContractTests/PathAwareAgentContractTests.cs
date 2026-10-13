@@ -64,6 +64,11 @@ internal static class PathAwareAgentContractTests
             "second captive path was not serviced after the preferred path completed");
         Assert(state.Find(usb.Identity)?.ExpectedExpiryUtc == now.AddHours(settings.AuthWindowHours),
             "second path did not receive an independent expiry");
+        Assert(PathAuthorizationSchedule.GetNextCheckUtc(state.Find(wifi.Identity), wifi, settings, now) ==
+                   now.AddHours(settings.AuthWindowHours).AddSeconds(-30) &&
+               PathAuthorizationSchedule.GetNextCheckUtc(state.Find(usb.Identity), usb, settings, now) ==
+                   now.AddHours(settings.AuthWindowHours).AddSeconds(-30),
+            "two different physical paths must use the same symmetric pre-expiry schedule");
 
         // Preserve the old latency-first edge behaviour for the path Windows says
         // currently carries Internet: at the known expiry, the first automatic
@@ -187,7 +192,7 @@ internal static class PathAwareAgentContractTests
         var knownExpiry = now.AddHours(10);
         state.RecordConfirmedAuthorization(settling, now.AddHours(-14), knownExpiry, now.AddHours(-14));
         var timedInternet = state.Find(settling.Identity)!;
-        Assert(PathAuthorizationSchedule.GetNextCheckUtc(timedInternet, settling, settings, now) == knownExpiry.AddSeconds(-10),
+        Assert(PathAuthorizationSchedule.GetNextCheckUtc(timedInternet, settling, settings, now) == knownExpiry.AddSeconds(-30),
             "known authorization boundary did not schedule the same pre-edge wake used by the agent");
         Assert(PathAuthorizationSchedule.GetNextCheckUtc(timedInternet, settling, settings, now, agentRunning: false) is null,
             "stopped agent must not advertise a background check that cannot occur");

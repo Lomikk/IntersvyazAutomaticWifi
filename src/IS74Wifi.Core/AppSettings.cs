@@ -38,8 +38,8 @@ public sealed record AppSettings
     // Cadence during the five-minute approach to expiry; distant daytime
     // checks use AgentTiming's 15-minute heartbeat instead.
     public int AgentPollSeconds { get; init; } = 15;
-    // Probe from T-30 s; once a timed stepOne returns AlreadyAuthorized, keep
-    // watching after T+30 s instead of spending the remaining portal sends.
+    // Timed paths probe from T-30 s: 2 s cadence until T-10, then 500 ms.
+    // AlreadyAuthorized observes through T+3 minutes without extra portal sends.
     public int GuardWindowSeconds { get; init; } = 30;
     public int GuardProbeIntervalMilliseconds { get; init; } = 500;
     public int GuardProbeTimeoutMilliseconds { get; init; } = 300;

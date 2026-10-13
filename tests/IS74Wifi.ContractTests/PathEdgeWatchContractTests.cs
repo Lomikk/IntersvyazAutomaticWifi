@@ -40,6 +40,23 @@ internal static class PathEdgeWatchContractTests
             preferredPathResolver: new PreferredNetworkPathResolver(_ => path.Identity));
         var coordinator = CreateCoordinator();
 
+        // The original ±30 s guard must be symmetric for every timed path.
+        var scheduled = state.Find(path.Identity)!;
+        Assert(PathAuthorizationSchedule.GetDelay(scheduled, settings, expiry.AddSeconds(-31)) == TimeSpan.FromSeconds(1),
+            "active checks must begin at T-30 rather than T-10");
+        foreach (var (offset, interval) in new (int Offset, TimeSpan Interval)[]
+        {
+            (-25, TimeSpan.FromSeconds(2)), (-5, TimeSpan.FromMilliseconds(500)),
+            (5, TimeSpan.FromMilliseconds(500)), (20, TimeSpan.FromSeconds(2)),
+            (40, TimeSpan.FromSeconds(5))
+        })
+        {
+            var at = expiry.AddSeconds(offset);
+            var sample = scheduled with { LastProbeUtc = at, Status = PathAuthorizationStatus.Internet };
+            Assert(PathAuthorizationSchedule.GetDelay(sample, settings, at) == interval,
+                $"symmetric guard cadence changed at T{offset:+#;-#;0} seconds");
+        }
+
         await coordinator.TickAsync();
         Assert(runner.Reasons.SequenceEqual([AuthorizationAttemptReason.Automatic]) && probeCalls == 0,
             "the first timer shot must precede any probe and receive AlreadyAuthorized");
@@ -49,18 +66,31 @@ internal static class PathEdgeWatchContractTests
 
         clock.Advance(coordinator.GetSleepDelay());
         await coordinator.TickAsync();
-        Assert(probeCalls == 1 && !state.Find(path.Identity)!.EdgeWatchActive &&
+        Assert(probeCalls == 1 && state.Find(path.Identity)!.EdgeWatchActive &&
+               !PathAuthorizationSchedule.IsConnectivityEventDriven(state.Find(path.Identity)!, path) &&
+               PathAuthorizationSchedule.GetNextCheckUtc(state.Find(path.Identity), path, settings, clock.GetUtcNow()) is not null,
+            "one post-expiry Internet response must NOT end the 3-minute observation window");
+        var ticks = 0;
+        while (clock.GetUtcNow() < expiry + PathAuthorizationSchedule.ObservationAfterExpiry)
+        {
+            Assert(ticks++ < 150, "observation failed to taper or reach its finite deadline");
+            clock.Advance(coordinator.GetSleepDelay());
+            await coordinator.TickAsync();
+            Assert(runner.Reasons.Count == 1, "healthy Internet caused an unnecessary second stepOne");
+        }
+        Assert(probeCalls > 25 && !state.Find(path.Identity)!.EdgeWatchActive &&
                PathAuthorizationSchedule.IsConnectivityEventDriven(state.Find(path.Identity)!, path) &&
                PathAuthorizationSchedule.GetNextCheckUtc(state.Find(path.Identity), path, settings, clock.GetUtcNow()) is null,
-            "confirmed Internet after the predicted boundary must end periodic checks");
+            "only the completed +3-minute observation may transition to Windows events");
+        var probesAtWindowEnd = probeCalls;
         for (var minute = 0; minute < 30; minute++)
         {
             clock.Advance(TimeSpan.FromMinutes(1));
             if (minute == 10) coordinator = CreateCoordinator();
             await coordinator.TickAsync();
-            Assert(probeCalls == 1 && runner.Reasons.Count == 1 &&
+            Assert(probeCalls == probesAtWindowEnd && runner.Reasons.Count == 1 &&
                    coordinator.GetSleepDelay() == PathAuthorizationSchedule.MaximumWait,
-                "ordinary wake/restart introduced another request on an authorized Internet path");
+                "ordinary wake/restart introduced a probe after the finite window");
             Assert(state.Find(path.Identity)!.ExpectedExpiryUtc == expiry,
                 "Internet observation manufactured a new 24-hour authorization window");
         }
@@ -91,7 +121,7 @@ internal static class PathEdgeWatchContractTests
                recovered.LastSuccessfulAuthUtc == clock.GetUtcNow() &&
                recovered.ExpectedExpiryUtc == clock.GetUtcNow().AddHours(settings.AuthWindowHours),
             "MarkSuccess must finish the old watch and establish the next authorization window");
-        Assert(coordinator.GetSleepDelay() == TimeSpan.FromHours(24) - TimeSpan.FromSeconds(10),
+        Assert(coordinator.GetSleepDelay() == TimeSpan.FromHours(24) - TimeSpan.FromSeconds(30),
             "successful renewal must leave edge-watch cadence");
     }
 

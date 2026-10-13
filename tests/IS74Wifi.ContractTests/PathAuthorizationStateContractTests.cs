@@ -115,7 +115,7 @@ internal static class PathAuthorizationStateContractTests
         Assert(stale?.Status == PathAuthorizationStatus.Internet && stale.ExpectedExpiryUtc == expiry,
             "post-expiry Internet probe must not silently manufacture a new 24-hour timer");
         Assert(PathAuthorizationSchedule.IsConnectivityEventDriven(stale!, wifi),
-            "observed Internet beyond the predicted boundary must wait for a connectivity event");
+            "observed Internet beyond the three-minute window must wait for a connectivity event");
         var rebound = store.Observe(renewedWifi, expiry.AddMinutes(6));
         Assert(rebound.Status == PathAuthorizationStatus.Unknown && rebound.LastProbeUtc is null &&
                !PathAuthorizationSchedule.IsConnectivityEventDriven(rebound, renewedWifi),
