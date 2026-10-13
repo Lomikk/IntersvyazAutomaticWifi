@@ -265,6 +265,7 @@ internal static class TerminalUiContractTests
             EdgeWatchActive = true
         };
         var overdue = edgeWatch with { NextCheckUtc = now.AddSeconds(-6) };
+        var running = overdue with { NetworkOperationRunning = true };
         var dueNow = edgeWatch with { NextCheckUtc = now.AddSeconds(-1) };
         var noScheduledCheck = untimed with { CheckOnConnectivityEvent = false };
 
@@ -304,6 +305,18 @@ internal static class TerminalUiContractTests
         var overduePresentation = InteractiveTerminalUi.FormatPathPaneStatus(overdue, now);
         Assert(overduePresentation.TimerText == "просрочено" && overduePresentation.TimerColor == Palette.Highlight,
             "an overdue scheduler snapshot must be visible instead of sticking at 00:00");
+        var runningPresentation = InteractiveTerminalUi.FormatPathPaneStatus(running, now);
+        Assert(runningPresentation.TimerText == "проверка..." && runningPresentation.TimerColor == Palette.Highlight,
+            "a started operation taking over five seconds was mistaken for a missed scheduler wake");
+        var futureBusy = InteractiveTerminalUi.FormatPathPaneStatus(edgeWatch with { NetworkOperationRunning = true }, now);
+        Assert(futureBusy.TimerText == "34с",
+            "an operation on another path hid this path's future deadline");
+        var completed = InteractiveTerminalUi.FormatPathPaneStatus(running with
+        {
+            NetworkOperationRunning = false,
+            NextCheckUtc = now.AddSeconds(60)
+        }, now);
+        Assert(completed.TimerText == "00:01", "completed operation did not return to its next deadline");
         var stoppedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(noScheduledCheck, now);
         Assert(stoppedPresentation.StateText == "онлайн" && stoppedPresentation.TimerText == "—",
             "path without a running/scheduled background check must keep the explicit dash");

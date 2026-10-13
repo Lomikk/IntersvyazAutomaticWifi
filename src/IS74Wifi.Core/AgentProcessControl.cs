@@ -37,6 +37,9 @@ public static class AgentProcessControl
     public static bool IsAgentRunning() =>
         IsGateHeld(AgentGateName) || IsGateHeld(AgentWorkerGateName);
 
+    public static bool IsNetworkOperationRunning(string? gateName = null) =>
+        IsGateHeld(gateName ?? NetworkOperationGateName);
+
     public static bool WaitForAgentExit(TimeSpan timeout)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;

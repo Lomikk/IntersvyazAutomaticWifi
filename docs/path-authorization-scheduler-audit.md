@@ -7,7 +7,7 @@
 описанное ниже; первоначальный guard-кандидат не использован. Ниже только синтетические сценарии;
 живые журналы, адреса и пользовательское состояние в репозиторий не включены.
 
-## Реализованное исправление
+## Реализованное исправление alpha.42 (история)
 
 По запросу владельца внесён вариант, сохраняющий pre-step recovery:
 
@@ -56,10 +56,72 @@ deadline, coalescing, отсутствие wake для adapters и публик�
 Причина недоступности реального портала не исправляется scheduler-патчем: новый
 лог нужен для её определения. Live authorization и установка на ПК не выполнялись.
 
-Остальные разделы сохраняют исходный диагноз и отвергнутый кандидат как историю
-аудита; они не описывают текущее исправленное поведение.
+Остальные исходные разделы сохраняют диагноз и отвергнутый кандидат как историю
+аудита; актуальное уточнение поведения описано ниже.
+
+## Уточнение после alpha.42: Internet прекращает speculative retry
+
+Alpha.42 сохраняла retry даже после свежей успешной Internet probe. Это повторяло
+попытки к порталу по старой расчётной границе, хотя потеря доступа не подтверждалась.
+`PathAuthorizationSchedule.HasObservedInternetPastExpiry` теперь отличает такую
+границу от реального captive: `Status=Internet && LastProbeUtc >= ExpectedExpiryUtc`.
+`GetDelay` возвращает ожидание, `GetNextCheckUtc` — null; `ShouldFirePreferredTimerImmediately`
+не повторяет shot. `RecordProbe`/`Observe` очищают retry, pre-step failure count и
+edge-watch. Expiry, дата успеха и потраченный send budget сохраняются как история;
+новая граница возникает только после MarkSuccess. Изменение binding сбрасывает
+достоверность предыдущей probe, чтобы старый Internet не скрывал отказ нового пути.
+
+После AlreadyAuthorized первая probe остаётся; если она подтверждает Internet,
+минутный edge-watch прекращается. При Unreachable/Ambiguous/Captive сохраняются
+существующие cadence, retry budget и captive confirmation. `CanUploadTelemetry`
+больше не блокируется истёкшей оценкой при подтверждённом Internet.
+
+App различает изменения уровней всех Windows connection profiles, даже когда VPN
+сохраняет глобальный InternetAccess. Повторные callbacks без изменения игнорируются;
+address/availability/resume передают coordinator признак изменения сети. IPC completion
+лишь будит worker для пересчёта deadline и не добавляет вторую probe.
+Это ожидание потока, не system wake timer. Background maintenance может будить worker,
+но обычный tick такого пути не выполняет HTTP probe/authorization.
+
+Цена отказа от periodic probes: Windows/NCSI должен обнаружить позднюю потерю доступа.
+Если события нет (например, профиль за NAT/VPN не изменился), верхней границы задержки
+авторизации нет до следующего события или explicit refresh. Per-profile tracking
+уменьшает маскировку VPN, но не гарантирует событие. Контракты моделируют событие;
+полевое поведение Windows этим не проверено.
+
+`path-edge-watch` и `path-pre-step-recovery` проверяют 30 виртуальных минут без
+повторных запросов при Internet, включая restart и позднее событие. Отдельно сохраняются
+30 минут pre-step recovery при недоступном direct route. `path-authorization-state`
+проверяет инвалидирование старой Internet probe при смене transport binding.
 
 ## Вывод
+
+### Дополнение: начало проверки и её завершение
+
+В alpha.42 устранено starvation probes, но осталась ошибка представления deadline.
+`NextCheckUtc` указывает на начало worker операции; snapshot меняется только после
+её завершения. Baseline + TCP preflight + post-failure probe может занимать больше
+пяти секунд даже при своевременном wake. UI считал прежний snapshot просроченным,
+не учитывая выполняющуюся операцию. Это не доказательство пропущенного scheduler wake.
+
+Исправленный `StatusService` читает владельца существующего named network gate
+вместе с локальным machine state. Если срок наступил и gate занят, колонка показывает
+«проверка...». Будущий deadline другого пути остаётся видимым. Когда gate свободен,
+действительно устаревший snapshot по-прежнему показывает «просрочено». Gate указывает
+занятость операции, а не гарантирует продвижение HTTP: зависание требует диагностики
+по логу. Само UI-исправление не меняет deadline или canonical/IPC schema.
+
+Контракты проверяют операцию на T+6 секунд после срока, завершение с новым deadline,
+будущий deadline другого пути, реальную занятость тестового gate и отсутствие
+записи snapshot при чтении transient статуса. Локальный log теперь также отмечает
+`agent.ipc refresh requested`, чтобы отличать explicit refresh/probe-only от scheduler.
+
+При этом повторный Full выявил дефект изоляции существующих проверок:
+`agent-policy` вызывал `WindowsAutostartService.Enable(startNow:false)` с отдельным
+Run value, но метод всё равно останавливал production agent через общий process
+owner. Fixture теперь подставляет stop delegate и проверяет его вызов; production
+stop behavior сохранён. PowerShell reference tests также импортируют модуль с
+временным data root: их ранние HTTP/state записи больше не попадают в рабочие файлы.
 
 Подтверждён дефект **до** `AlreadyAuthorized`: повторные pre-step failures
 предпочтительного пути могут бесконечно обходить его Internet/captive probe.

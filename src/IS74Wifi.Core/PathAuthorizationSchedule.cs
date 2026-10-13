@@ -43,6 +43,12 @@ public static class PathAuthorizationSchedule
         {
             return MaximumWait;
         }
+        if (HasObservedInternetPastExpiry(state))
+        {
+            // The old estimate is not evidence of lost authorization. A live
+            // Internet observation ends timer recovery; wait for a network event.
+            return MaximumWait;
+        }
         if (state.NextAutomaticRetryUtc is { } retry && retry > now)
         {
             return Clamp(retry - now);
@@ -115,8 +121,8 @@ public static class PathAuthorizationSchedule
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(current);
 
-        return state.ExpectedExpiryUtc is null &&
-               state.NextAutomaticRetryUtc is null &&
+        return (state.ExpectedExpiryUtc is null && state.NextAutomaticRetryUtc is null ||
+                HasObservedInternetPastExpiry(state)) &&
                !state.UserActionRequired &&
                !SnapshotChanged(state, current) &&
                (state.Status is PathAuthorizationStatus.Internet or
@@ -134,6 +140,10 @@ public static class PathAuthorizationSchedule
         !state.UserActionRequired && !state.EdgeWatchActive &&
         state.PreStepFailureCount > 0 && state.NextAutomaticRetryUtc is not null &&
         state.ExpectedExpiryUtc is { } expiry && state.LastAttemptUtc >= expiry;
+
+    public static bool HasObservedInternetPastExpiry(PathAuthorizationState state) =>
+        state.Status == PathAuthorizationStatus.Internet &&
+        state.ExpectedExpiryUtc is { } expiry && state.LastProbeUtc >= expiry;
 
     private static TimeSpan DueFromLastProbe(DateTimeOffset? lastProbe, TimeSpan interval, DateTimeOffset now)
     {

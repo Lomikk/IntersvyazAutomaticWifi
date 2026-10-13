@@ -39,8 +39,13 @@ captive, transport/DNS failure не считается доказательст�
 Winsock error (если есть) и длительность. Это использует уже полученный отказ,
 без повторного соединения; сведения не отправляются в backend telemetry.
 После неудачного timer shot agent выполняет одну bound-probe в пределах оставшегося
-retry backoff, чтобы UI не сохранял старый Internet status. Повторная попытка
-сохраняет свой deadline и не зависит от успешного captive-подтверждения этой probe.
+retry backoff, чтобы UI не сохранял старый Internet status. При Unreachable/Ambiguous
+retry сохраняет свой deadline и не требует успешного captive-подтверждения этой probe.
+Подтверждённый Internet на/после старой расчётной границы прекращает retry/edge-watch:
+дальше путь ждёт события Windows об изменении сети или явного refresh. Периодических
+HTTP probes в этом состоянии нет; если Windows не обнаружит потерю доступа,
+поздний captive останется незамеченным до следующего события/refresh. Наблюдение
+Internet не создаёт новый 24-часовой срок и не подменяет результат stepTwo.
 
 `IS74Wifi.exe network-diagnose` либо `Настройки → Сеть и диагностика` просит сетевой
 agent выполнить live bound-probe **каждого** активного physical path и показывает:

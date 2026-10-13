@@ -8,7 +8,8 @@ internal sealed record StatusMachineState(
     string? InstalledVersion,
     string InstalledExecutablePath,
     bool AutomaticAuthorizationEnabled,
-    bool AgentRunning);
+    bool AgentRunning,
+    bool NetworkOperationRunning = false);
 
 internal sealed class StatusService
 {
@@ -233,7 +234,8 @@ internal sealed class StatusService
                 path.AuthorizationWindowApproximate,
                 path.NextCheckUtc,
                 path.CheckOnConnectivityEvent,
-                path.EdgeWatchActive))
+                path.EdgeWatchActive,
+                local.Machine.NetworkOperationRunning))
             .ToArray();
 
         return new InteractiveStatusSnapshot(
@@ -281,7 +283,8 @@ internal sealed class StatusService
             InstalledVersion: installation.ReadInstalledVersion(),
             InstalledExecutablePath: installation.ExecutablePath,
             AutomaticAuthorizationEnabled: installation.IsInstalled && new WindowsAutostartService().IsEnabledFor(installation.ExecutablePath),
-            AgentRunning: AgentProcessControl.IsAgentRunning());
+            AgentRunning: AgentProcessControl.IsAgentRunning(),
+            NetworkOperationRunning: AgentProcessControl.IsNetworkOperationRunning());
     }
 
     internal static string FormatWifiNetwork(string? ssid) => ssid switch

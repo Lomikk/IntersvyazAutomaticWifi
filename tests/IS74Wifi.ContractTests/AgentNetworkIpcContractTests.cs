@@ -13,6 +13,7 @@ internal static class AgentNetworkIpcContractTests
         await AgentErrorsRoundTripAsync();
         await FallbackCompletionWakesWaitingSchedulerAsync();
         await PartialOperationStillPublishesSnapshotAsync();
+        OperationOwnershipIsReadWithoutStartingNetworkWork();
     }
 
     private static async Task RefreshCommandsStayAgentOwnedAsync()
@@ -210,6 +211,21 @@ internal static class AgentNetworkIpcContractTests
         var result = await AgentNetworkOperations.RunAndCaptureAsync(() => Task.CompletedTask, Capture, logger);
         Assert(result == refreshed && captureCalls == 2,
             "successful operation did not publish exactly once");
+    }
+
+    private static void OperationOwnershipIsReadWithoutStartingNetworkWork()
+    {
+        var gateName = $@"Local\IS74Wifi.Contract.OperationStatus.{Guid.NewGuid():N}";
+        Assert(!AgentProcessControl.IsNetworkOperationRunning(gateName), "unused operation gate was reported busy");
+        using (var operation = NamedSemaphoreLease.TryAcquire(gateName))
+        {
+            Assert(operation is not null && AgentProcessControl.IsNetworkOperationRunning(gateName),
+                "active operation owner was not visible to the local status reader");
+            Assert(AgentProcessControl.IsNetworkOperationRunning(gateName),
+                "reading operation ownership released the active owner's gate");
+        }
+        Assert(!AgentProcessControl.IsNetworkOperationRunning(gateName),
+            "completed operation remained busy to local readers");
     }
 
     private static async Task WithServerAsync(

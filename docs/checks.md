@@ -49,6 +49,9 @@ Full он также проверяет ошибку C# suite при фильт�
 - Windows + PowerShell 7 (`pwsh`); полноценный C# suite использует Windows DPAPI,
   WLAN и временные тестовые ключи HKCU. В ограниченной песочнице это может требовать
   разрешения. Ошибка доступа — не повод молча исключать тесты.
+- Autostart fixture использует отдельную Run-запись и подменённый stop delegate:
+  тест не останавливает рабочий агент. PowerShell reference suite импортирует модуль
+  с временным LOCALAPPDATA, чтобы ранние HTTP/state тесты не писали в рабочий лог/state.
 - .NET SDK 10 — App/Core/Full (целевой framework указан в `.csproj`).
 - Python 3 (`python` в PATH) — App/Full; сторонние Python-пакеты не нужны.
 - Node.js 22+ (`node` в PATH) — Backend/Full; `npm install` не нужен.
@@ -74,11 +77,12 @@ pwsh -NoProfile -File ./tests/check_runner_contract.ps1
 
 C# фильтр — подстрока имени группы; отсутствие совпадений возвращает ошибку.
 Список групп — в начале `tests/IS74Wifi.ContractTests/Program.cs`.
-Группа `path-edge-watch` моделирует 30 минут path-aware наблюдения виртуальными
-часами, включая AlreadyAuthorized, перезапуск coordinator и поздний captive/retry;
+Группа `path-edge-watch` моделирует AlreadyAuthorized → Internet → 30 минут ожидания
+сетевого события без HTTP, перезапуск coordinator и поздний captive/retry по событию;
 HTTP подменён, два коротких confirmation delay остаются настоящими.
 Группа `path-pre-step-recovery` проверяет 30 минут отказов до stepOne, сохранение
-backoff/budget, свежие probes и восстановление после рестарта/Unreachable.
+backoff/budget, свежие probes и восстановление после рестарта/Unreachable, а также
+прекращение retry после Internet и отсутствие запросов за 30 виртуальных минут.
 `agent-network-ipc` включает публикацию snapshot после ошибки и ожидание
 именованного wake event; тест использует уникальное имя и не будит рабочий агент.
 В приватном репозитории существующий `./verify.ps1 -ClientRepository <checkout>`

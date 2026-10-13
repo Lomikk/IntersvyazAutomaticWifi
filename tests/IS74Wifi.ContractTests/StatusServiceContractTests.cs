@@ -58,6 +58,13 @@ internal static class StatusServiceContractTests
             "local UI status must be built from the last agent-owned network snapshot");
         Assert(agentOwned.WifiSsid == "Campus Wi-Fi test" && agentOwned.NetworkPaths?.Single().Status == PathAuthorizationStatus.Internet,
             "agent-owned SSID/path status must flow into the UI snapshot");
+        machine = machine with { NetworkOperationRunning = true };
+        var running = service.ReadLocalSnapshot();
+        Assert(running.NetworkPaths?.Single().NetworkOperationRunning == true,
+            "local status failed to expose the network operation owner while the persisted snapshot was unchanged");
+        Assert(new AgentNetworkSnapshotStore(paths, json).Load()?.CapturedAtUtc == agentSnapshot.CapturedAtUtc,
+            "reading operation progress must not fabricate a fresh persisted network snapshot");
+        machine = machine with { NetworkOperationRunning = false };
 
         var edgeWatchSnapshot = agentSnapshot with
         {

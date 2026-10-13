@@ -11,7 +11,8 @@ internal sealed record InteractiveNetworkPathStatus(
     bool AuthorizationWindowApproximate = false,
     DateTimeOffset? NextCheckUtc = null,
     bool CheckOnConnectivityEvent = false,
-    bool EdgeWatchActive = false);
+    bool EdgeWatchActive = false,
+    bool NetworkOperationRunning = false);
 
 internal sealed record InteractiveStatusSnapshot(
     bool Installed,

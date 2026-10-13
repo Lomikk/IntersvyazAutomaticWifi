@@ -141,8 +141,19 @@ public sealed class IS74PortalDelayHandler : HttpMessageHandler
 '@
 
 $modulePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'src\IS74Wifi.psm1'
-$module = Import-Module $modulePath -Force -PassThru
+$contractDataRoot = Join-Path $env:TEMP ('is74-contract-data-' + [Guid]::NewGuid().ToString('N'))
+$savedContractLocalAppData = $env:LOCALAPPDATA
+try {
+    # The module captures its state/log paths at import. Early HTTP/state tests
+    # must be isolated too, not only the later Connect fixture.
+    $env:LOCALAPPDATA = $contractDataRoot
+    $module = Import-Module $modulePath -Force -PassThru
+}
+finally {
+    $env:LOCALAPPDATA = $savedContractLocalAppData
+}
 
+try {
 & $module {
     function Assert-True {
         param([bool]$Condition, [string]$Message)
@@ -525,3 +536,14 @@ $module = Import-Module $modulePath -Force -PassThru
 }
 
 Write-Host 'critical path contract checks: OK'
+}
+finally {
+    $contractAbsoluteRoot = [IO.Path]::GetFullPath($contractDataRoot)
+    $contractTempPrefix = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
+    if (-not $contractAbsoluteRoot.StartsWith($contractTempPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Contract cleanup escaped the temporary directory.'
+    }
+    if (Test-Path -LiteralPath $contractAbsoluteRoot) {
+        Remove-Item -LiteralPath $contractAbsoluteRoot -Recurse -Force
+    }
+}

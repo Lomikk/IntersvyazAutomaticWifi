@@ -47,58 +47,26 @@ internal static class PathEdgeWatchContractTests
                state.Find(path.Identity)!.ExpectedExpiryUtc == expiry,
             "AlreadyAuthorized must keep the old expiry and persist edge-watch");
 
-        var intervals = new HashSet<TimeSpan>();
-        var restarted = false;
-        // Exercise actual coordinator deadlines, rather than isolated samples of AgentTiming.
-        // Thirty minutes elapse only on this clock; no HTTP, worker or live adapter is used.
-        for (var ticks = 0; clock.GetUtcNow() < expiry.AddMinutes(30); ticks++)
+        clock.Advance(coordinator.GetSleepDelay());
+        await coordinator.TickAsync();
+        Assert(probeCalls == 1 && !state.Find(path.Identity)!.EdgeWatchActive &&
+               PathAuthorizationSchedule.IsConnectivityEventDriven(state.Find(path.Identity)!, path) &&
+               PathAuthorizationSchedule.GetNextCheckUtc(state.Find(path.Identity), path, settings, clock.GetUtcNow()) is null,
+            "confirmed Internet after the predicted boundary must end periodic checks");
+        for (var minute = 0; minute < 30; minute++)
         {
-            Assert(ticks < 1000, "edge-watch stopped making progress through virtual time");
-            var before = state.Find(path.Identity)!;
-            var now = clock.GetUtcNow();
-            var delay = coordinator.GetSleepDelay();
-            Assert(PathAuthorizationSchedule.GetNextCheckUtc(before, path, settings, now) == now + delay,
-                "snapshot deadline and coordinator sleep diverged");
-            Assert(delay > TimeSpan.Zero && delay <= TimeSpan.FromMinutes(1),
-                "edge-watch must continue at a bounded cadence");
-            var probesBeforeTick = probeCalls;
-            clock.Advance(delay);
+            clock.Advance(TimeSpan.FromMinutes(1));
+            if (minute == 10) coordinator = CreateCoordinator();
             await coordinator.TickAsync();
-            var after = state.Find(path.Identity)!;
-            if (probeCalls > probesBeforeTick)
-            {
-                Assert(after.LastProbeUtc == clock.GetUtcNow() && after.LastProbeUtc > before.LastProbeUtc,
-                    "each completed watch probe must persist a new probe time");
-                intervals.Add(coordinator.GetSleepDelay());
-            }
-            else
-            {
-                // Crossing a taper boundary recalculates the interval at wake time;
-                // the earlier deadline can become premature exactly at that transition.
-                Assert(AgentTiming.GetEdgeProbeInterval(settings, expiry, clock.GetUtcNow()) >
-                       AgentTiming.GetEdgeProbeInterval(settings, expiry, now),
-                    "a scheduled tick skipped its probe outside a cadence transition");
-            }
-            Assert(clock.GetUtcNow() - after.LastProbeUtc <= TimeSpan.FromMinutes(1),
-                "watch mode allowed its last observation to become stale");
-            Assert(after.Status == PathAuthorizationStatus.Internet && after.EdgeWatchActive &&
-                   after.ExpectedExpiryUtc == expiry && runner.Reasons.Count == 1,
-                "Internet during edge-watch must neither manufacture an expiry nor resend stepOne");
-
-            if (!restarted && clock.GetUtcNow() >= expiry.AddMinutes(10))
-            {
-                // New coordinator, with the same on-disk path store: watch mode survives restart.
-                coordinator = CreateCoordinator();
-                restarted = true;
-            }
+            Assert(probeCalls == 1 && runner.Reasons.Count == 1 &&
+                   coordinator.GetSleepDelay() == PathAuthorizationSchedule.MaximumWait,
+                "ordinary wake/restart introduced another request on an authorized Internet path");
+            Assert(state.Find(path.Identity)!.ExpectedExpiryUtc == expiry,
+                "Internet observation manufactured a new 24-hour authorization window");
         }
-        Assert(intervals.SetEquals([
-                TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(2),
-                TimeSpan.FromSeconds(5), TimeSpan.FromMinutes(1)]),
-            "path-aware watch did not exercise all four tapered cadence bands");
 
         captive = true;
-        clock.Advance(coordinator.GetSleepDelay());
+        coordinator.NotifyNetworkConnectivityChanged();
         var probesBeforeCaptive = probeCalls;
         await coordinator.TickAsync();
         Assert(probeCalls == probesBeforeCaptive + 2 && runner.Reasons[^1] == AuthorizationAttemptReason.Retry,

@@ -51,6 +51,13 @@ internal static class AgentContractTests
             "first usable NCSI callback must synchronize when startup state was unavailable");
         Assert(!unknownAtStartup.Observe(false),
             "NCSI synchronization must become edge-triggered after its first usable state");
+        var profiles = new NcsiInternetAccessTracker(true, "physical:Internet|vpn:Internet");
+        Assert(!profiles.ObserveProfiles("physical:Internet|vpn:Internet"),
+            "unchanged profile callbacks introduced periodic probes");
+        Assert(profiles.ObserveProfiles("physical:Local|vpn:Internet") && !profiles.Observe(true),
+            "VPN's global InternetAccess masked the physical profile losing authorization");
+        Assert(!profiles.ObserveProfiles("physical:Local|vpn:Internet"),
+            "repeated profile callbacks triggered more than one synchronization");
     }
 
     private static void TestSettingsDefaults()
@@ -311,7 +318,8 @@ internal static class AgentContractTests
         var valueName = "IS74WifiContract-" + Guid.NewGuid().ToString("N");
         var executable = Path.Combine(Path.GetTempPath(), valueName + ".exe");
         File.WriteAllText(executable, "placeholder");
-        var service = new WindowsAutostartService(valueName);
+        var stopCalls = 0;
+        var service = new WindowsAutostartService(valueName, () => stopCalls++);
 
         try
         {
@@ -334,6 +342,7 @@ internal static class AgentContractTests
                 "Windows-disabled StartupApproved registration still appeared enabled");
 
             service.Enable(executable, startNow: false);
+            Assert(stopCalls == 1, "enabling autostart must request stop through the supplied process owner");
             Assert(service.GetRegistrationState(executable) == AutostartRegistrationState.Enabled,
                 "explicit enable did not clear the Windows StartupApproved override");
             using (var approved = Registry.CurrentUser.OpenSubKey(startupApprovedRunKeyPath, writable: false))

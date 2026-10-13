@@ -11,8 +11,9 @@ public enum AutostartRegistrationState
     BlockedByWindows
 }
 
-public sealed class WindowsAutostartService(string valueName = "IS74Wifi")
+public sealed class WindowsAutostartService(string valueName = "IS74Wifi", Action? stopAgent = null)
 {
+    private readonly Action stop = stopAgent ?? (() => AgentProcessControl.StopAgentOrThrow());
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string StartupApprovedRunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
 
@@ -71,7 +72,7 @@ public sealed class WindowsAutostartService(string valueName = "IS74Wifi")
             throw new FileNotFoundException("IS74Wifi executable was not found.", fullPath);
         }
 
-        AgentProcessControl.StopAgentOrThrow();
+        stop();
 
         using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
                         ?? throw new InvalidOperationException("Could not open the current-user Run registry key.");
@@ -93,7 +94,7 @@ public sealed class WindowsAutostartService(string valueName = "IS74Wifi")
     public void Disable()
     {
         DeleteRunValue();
-        AgentProcessControl.StopAgentOrThrow();
+        stop();
     }
 
     private void DeleteRunValue()

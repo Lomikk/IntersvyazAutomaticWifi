@@ -45,10 +45,22 @@
 - Авторизационная сеть имеет одного владельца: interactive/CLI код не перечисляет адаптеры/SSID/VPN, не читает `PathAuthorizationState` и не вызывает `NetworkPathDiagnostics`, `Internet.ProbeAsync`, `ManualAuthorizationPathSelector` или `PathAuthorization.RunAsync` напрямую. Он использует `AgentNetworkClient`; agent возвращает полный network/auth snapshot и сохраняет его для локального первого кадра UI. Long-lived worker обслуживает named pipe, а при выключенном/недоступном фоне запускается короткоживущий `agent-network-worker` той же версии. `probe-only` сохраняет диагностический контракт без stepOne/stepTwo.
 - Авторизация не должна зависеть от скорости отрисовки: callback кладёт прогресс
   в очередь, App читает её отдельно. Не добавлять Console/HTTP/disk I/O в callback.
-- После pre-step отказа timer shot coordinator сохраняет прежний retry/backoff и
-  выполняет одну probe для свежего статуса; это не включение частого edge polling.
+- После pre-step отказа timer shot coordinator выполняет одну probe для свежего
+  статуса. Если Internet подтверждён на/после расчётной границы, retry и edge-watch
+  прекращаются: путь ждёт изменения сети, без периодических HTTP probes. При
+  Unreachable/Ambiguous прежний retry/backoff сохраняется. Новую 24-часовую границу
+  создаёт только успешная авторизация; изменение binding требует свежей probe.
+  App отслеживает также уровни Windows connection profiles: глобальный Internet
+  через VPN не должен маскировать изменение физического профиля. Address/availability
+  и resume будят coordinator с признаком изменения сети; IPC completion только
+  пересчитывает deadline, без второй probe. Без события Windows event-driven путь
+  может не обнаружить поздний captive до явного refresh.
   Agent-owned snapshot публикуется также после частичной ошибки операции, под
   теми же gates; ошибка публикации не маскирует исходную ошибку.
+- `NextCheckUtc` — срок начала операции, а canonical snapshot обновляется после её
+  окончания. `StatusService` локально читает занятость network operation gate:
+  UI показывает «проверка...» вместо «просрочено» для уже наступившего срока,
+  пока gate удерживается. Это transient UI state, без HTTP и записи нового snapshot.
 - Согласие на анонимную статистику и явное участие в публичном рейтинге — разные
   решения пользователя. Отложенный `speed_test` допустим; отложенная публикация
   или команда участия — нет. Legacy JSON/schema 4 и path-aware schema 5 проверяются общими синтетическими fixtures.

@@ -56,6 +56,8 @@ internal sealed class AgentNetworkOperations(
         bool allowAutomaticAuthorization,
         CancellationToken cancellationToken = default)
     {
+        app.Logger.Write(DiagnosticLevel.Info,
+            $"agent.ipc refresh requested allow-automatic={allowAutomaticAuthorization.ToString().ToLowerInvariant()}");
         using var crossProcessGate = await AgentNetworkOperationGate
             .AcquireAsync(cancellationToken)
             .ConfigureAwait(false);

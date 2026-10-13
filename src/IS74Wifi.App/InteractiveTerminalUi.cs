@@ -1859,7 +1859,7 @@ internal sealed partial class InteractiveTerminalUi
         var now = nowUtc ?? DateTimeOffset.UtcNow;
         var timerText = FormatNextPathCheck(path, now);
         var timerOverdue = string.Equals(timerText, "просрочено", StringComparison.Ordinal);
-        var timerColor = timerOverdue
+        var timerColor = timerOverdue || timerText == "проверка..."
             ? Palette.Highlight
             : timerText == "—" || path.CheckOnConnectivityEvent ||
               path.Status != PathAuthorizationStatus.Internet
@@ -1887,6 +1887,12 @@ internal sealed partial class InteractiveTerminalUi
         }
 
         var remaining = nextCheck - nowUtc;
+        if (path.NetworkOperationRunning && remaining <= TimeSpan.Zero)
+        {
+            // NextCheck is the operation's start deadline. The persisted snapshot
+            // is replaced on completion; an active owner is not a missed wake.
+            return "проверка...";
+        }
         if (remaining < TimeSpan.FromSeconds(-5))
         {
             return "просрочено";

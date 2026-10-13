@@ -3270,7 +3270,7 @@ internal static class Program
         using var stopEvent = AgentProcessControl.CreateWorkerStopEvent();
         using var networkWake = AgentProcessControl.CreateWorkerNetworkWakeEvent();
         var initialNcsiInternetAccess = ReadNcsiInternetAccess(app.Logger);
-        var ncsiInternetAccess = new NcsiInternetAccessTracker(initialNcsiInternetAccess);
+        var ncsiInternetAccess = new NcsiInternetAccessTracker(initialNcsiInternetAccess, ReadNcsiProfileState(app.Logger));
         if (initialNcsiInternetAccess is { } initialInternetAccess)
         {
             app.Logger.Write(DiagnosticLevel.Info,
@@ -3292,22 +3292,30 @@ internal static class Program
             // A callback already queued by Windows may race with shutdown.
             try { networkWake.Set(); } catch (ObjectDisposedException) { }
         }
-        void OnNetworkAddressChanged(object? _, EventArgs __) => WakeForNetworkChange();
-        void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs __) => WakeForNetworkChange();
+        void SynchronizeForNetworkChange()
+        {
+            app.Agent.NotifyNetworkConnectivityChanged();
+            WakeForNetworkChange();
+        }
+        void OnNetworkAddressChanged(object? _, EventArgs __) => SynchronizeForNetworkChange();
+        void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs __) => SynchronizeForNetworkChange();
         void OnNetworkStatusChanged(object? _)
         {
             // NetworkStatusChanged is noisy on some Windows systems. Treat the
             // callback only as a request to re-read NCSI and wake untimed paths
-            // when InternetAccess actually changed. Repeated Internet->Internet
-            // callbacks must not become an accidental SUSU polling loop.
+            // when global access or an adapter profile actually changed. Repeated
+            // unchanged callbacks must not become an accidental SUSU polling loop.
             var currentInternetAccess = ReadNcsiInternetAccess(app.Logger);
-            if (currentInternetAccess is null || !ncsiInternetAccess.Observe(currentInternetAccess.Value))
+            var currentProfiles = ReadNcsiProfileState(app.Logger);
+            var internetChanged = currentInternetAccess is { } access && ncsiInternetAccess.Observe(access);
+            var profilesChanged = currentProfiles is not null && ncsiInternetAccess.ObserveProfiles(currentProfiles);
+            if (!internetChanged && !profilesChanged)
             {
                 return;
             }
 
             app.Logger.Write(DiagnosticLevel.Info,
-                $"agent.ncsi internet-access-changed value={currentInternetAccess.Value.ToString().ToLowerInvariant()}");
+                $"agent.ncsi connectivity-changed internet-access={currentInternetAccess} profiles-changed={profilesChanged}");
             app.Agent.NotifyNetworkConnectivityChanged();
             WakeForNetworkChange();
         }
@@ -3315,7 +3323,7 @@ internal static class Program
         NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
         Windows.Networking.Connectivity.NetworkInformation.NetworkStatusChanged += OnNetworkStatusChanged;
         using var resumeMonitor = AgentPowerResumeMonitor.TryRegister(
-            WakeForNetworkChange,
+            SynchronizeForNetworkChange,
             error => app.Logger.Write(DiagnosticLevel.Warn, $"agent.resume-monitor unavailable error={error}"));
         using var stopCts = new CancellationTokenSource();
         var stopRegistration = ThreadPool.RegisterWaitForSingleObject(
@@ -3484,6 +3492,24 @@ internal static class Program
         {
             logger.Write(DiagnosticLevel.Warn,
                 $"agent.ncsi status-read failed error={ex.GetType().Name}");
+            return null;
+        }
+    }
+
+    private static string? ReadNcsiProfileState(DiagnosticLogger logger)
+    {
+        try
+        {
+            // A VPN may keep global InternetAccess=true while the physical profile
+            // loses access. Compare local profile levels; never log their identities.
+            return string.Join("|", Windows.Networking.Connectivity.NetworkInformation.GetConnectionProfiles()
+                .Where(profile => profile.NetworkAdapter is not null)
+                .Select(profile => $"{profile.NetworkAdapter!.NetworkAdapterId:D}:{(int)profile.GetNetworkConnectivityLevel()}")
+                .OrderBy(value => value, StringComparer.Ordinal));
+        }
+        catch (Exception ex)
+        {
+            logger.Write(DiagnosticLevel.Warn, $"agent.ncsi profiles-read failed error={ex.GetType().Name}");
             return null;
         }
     }

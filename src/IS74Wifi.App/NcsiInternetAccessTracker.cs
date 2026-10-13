@@ -2,11 +2,12 @@ namespace IS74Wifi.App;
 
 /// <summary>
 /// Filters noisy Windows NCSI callbacks down to real changes in the only state
-/// the untimed authorization path cares about: whether Windows currently
-/// reports InternetAccess. Repeated callbacks with the same state are ignored.
+/// event-driven authorization paths care about: global InternetAccess and
+/// per-adapter profile levels. Repeated callbacks with the same state are ignored.
 /// </summary>
-internal sealed class NcsiInternetAccessTracker(bool? initialInternetAccess = null)
+internal sealed class NcsiInternetAccessTracker(bool? initialInternetAccess = null, string? initialProfileState = null)
 {
+    private string? lastProfileState = initialProfileState;
     private const int Unknown = -1;
     private int lastInternetAccess = initialInternetAccess is null
         ? Unknown
@@ -21,5 +22,11 @@ internal sealed class NcsiInternetAccessTracker(bool? initialInternetAccess = nu
         // is still worth one synchronization probe. Afterwards only an actual
         // InternetAccess <-> non-InternetAccess transition is significant.
         return previous == Unknown || previous != next;
+    }
+
+    public bool ObserveProfiles(string profileState)
+    {
+        var previous = Interlocked.Exchange(ref lastProfileState, profileState);
+        return previous is null || !string.Equals(previous, profileState, StringComparison.Ordinal);
     }
 }

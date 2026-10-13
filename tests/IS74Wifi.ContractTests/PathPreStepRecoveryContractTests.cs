@@ -9,11 +9,13 @@ internal static class PathPreStepRecoveryContractTests
         await ThirtyMinutesOfFailuresKeepRetryAndObservationsAsync();
         await OverdueRetryDoesNotWaitForProbeCadenceAsync();
         await DnsRollbackAndPreExpiryFailureAsync();
+        await ConfirmedInternetStopsTimerRecoveryAsync();
     }
 
     private static async Task ThirtyMinutesOfFailuresKeepRetryAndObservationsAsync()
     {
         using var fixture = new Fixture();
+        fixture.ThrowDirectUnavailable = true;
         await fixture.Agent.TickAsync();
         Assert(fixture.Runner.ProbesBeforeFirstCall == 0 && fixture.Probes == 1,
             "the first timer shot must run before its post-failure observation");
@@ -36,7 +38,6 @@ internal static class PathPreStepRecoveryContractTests
             Assert(fixture.Runner.Calls == calls && fixture.Probes == calls,
                 "an early scheduler/IPC wake introduced another request during retry backoff");
             fixture.Clock.Advance(expected);
-            fixture.ThrowDirectUnavailable = fixture.Clock.GetUtcNow() >= fixture.Expiry.AddMinutes(5);
             await fixture.Agent.TickAsync();
             var after = fixture.State.Find(fixture.Path.Identity)!;
             Assert(fixture.Probes == fixture.Runner.Calls && after.LastProbeUtc == fixture.Clock.GetUtcNow(),
@@ -80,6 +81,7 @@ internal static class PathPreStepRecoveryContractTests
         using var fixture = new Fixture();
         fixture.Clock.Advance(TimeSpan.FromMinutes(10));
         fixture.ProbeDuration = TimeSpan.FromSeconds(2);
+        fixture.ThrowDirectUnavailable = true;
         await fixture.Agent.TickAsync();
         var state = fixture.State.Find(fixture.Path.Identity)!;
         Assert(state.NextAutomaticRetryUtc < fixture.Clock.GetUtcNow(),
@@ -99,6 +101,7 @@ internal static class PathPreStepRecoveryContractTests
     {
         using var fixture = new Fixture();
         fixture.Runner.RollbackReservation = true;
+        fixture.ThrowDirectUnavailable = true;
         await fixture.Agent.TickAsync();
         Assert(fixture.State.Find(fixture.Path.Identity) is { AutomaticStepOneAttempts: 0, PreStepFailureCount: 1 },
             "DNS rollback spent the send budget or lost the recovery retry");
@@ -115,6 +118,30 @@ internal static class PathPreStepRecoveryContractTests
         await preExpiry.Agent.TickAsync();
         Assert(preExpiry.Runner.ProbesBeforeFirstCall == 0 && preExpiry.Runner.Calls == 1,
             "a pre-expiry failure inserted a probe before the first boundary shot");
+    }
+
+    private static async Task ConfirmedInternetStopsTimerRecoveryAsync()
+    {
+        using var fixture = new Fixture();
+        await fixture.Agent.TickAsync();
+        var state = fixture.State.Find(fixture.Path.Identity)!;
+        Assert(state.Status == PathAuthorizationStatus.Internet && state.NextAutomaticRetryUtc is null &&
+               !state.EdgeWatchActive && state.PreStepFailureCount == 0 &&
+               fixture.Agent.GetSleepDelay() == PathAuthorizationSchedule.MaximumWait &&
+               PathAuthorizationSchedule.GetNextCheckUtc(state, fixture.Path, fixture.Settings, fixture.Clock.GetUtcNow()) is null,
+            "Internet after a failed timer shot retained a periodic authorization retry");
+        for (var minute = 0; minute < 30; minute++)
+        {
+            fixture.Clock.Advance(TimeSpan.FromMinutes(1));
+            if (minute == 10) fixture.Agent = fixture.CreateAgent();
+            await fixture.Agent.TickAsync();
+        }
+        Assert(fixture.Runner.Calls == 1 && fixture.Probes == 1 && fixture.Agent.CanUploadTelemetry(),
+            "an authorized path woke for more portal attempts/probes or blocked telemetry");
+        fixture.Agent.NotifyNetworkConnectivityChanged();
+        await fixture.Agent.TickAsync();
+        Assert(fixture.Probes == 2 && fixture.Runner.Calls == 1,
+            "connectivity event did not synchronize the path without a speculative authorization");
     }
 
     private sealed class Fixture : IDisposable

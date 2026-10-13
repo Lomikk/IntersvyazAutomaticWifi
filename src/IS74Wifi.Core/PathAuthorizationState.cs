@@ -92,11 +92,18 @@ public sealed class PathAuthorizationStateStore(
         ArgumentNullException.ThrowIfNull(path);
         EnsurePhysical(path);
         var now = (observedAtUtc ?? clock.GetUtcNow()).ToUniversalTime();
-        return Mutate(path.Identity, state => SnapshotState(path, state, now) with
+        return Mutate(path.Identity, state =>
         {
-            Status = state?.Status == PathAuthorizationStatus.Disconnected
-                ? PathAuthorizationStatus.Unknown
-                : state?.Status ?? PathAuthorizationStatus.Unknown
+            var bindingChanged = state is not null && PathAuthorizationSchedule.SnapshotChanged(state, path);
+            var observed = SnapshotState(path, state, now) with
+            {
+                LastProbeUtc = bindingChanged ? null : state?.LastProbeUtc,
+                Status = bindingChanged || state?.Status == PathAuthorizationStatus.Disconnected
+                    ? PathAuthorizationStatus.Unknown
+                    : state?.Status ?? PathAuthorizationStatus.Unknown
+            };
+            return state is not null && !PathAuthorizationSchedule.SnapshotChanged(state, path)
+                ? ClearObservedInternetRetry(observed) : observed;
         });
     }
 
@@ -114,11 +121,11 @@ public sealed class PathAuthorizationStateStore(
         }
 
         var now = (probedAtUtc ?? clock.GetUtcNow()).ToUniversalTime();
-        return Mutate(path.Identity, state => SnapshotState(path, state, now) with
+        return Mutate(path.Identity, state => ClearObservedInternetRetry(SnapshotState(path, state, now) with
         {
             LastProbeUtc = now,
             Status = MapProbeStatus(probe.Status)
-        });
+        }));
     }
 
     public PathAuthorizationState RecordConfirmedAuthorization(
@@ -331,6 +338,11 @@ public sealed class PathAuthorizationStateStore(
         NetworkPathProbeStatus.Ambiguous => PathAuthorizationStatus.Ambiguous,
         _ => PathAuthorizationStatus.Unknown
     };
+
+    private static PathAuthorizationState ClearObservedInternetRetry(PathAuthorizationState state) =>
+        PathAuthorizationSchedule.HasObservedInternetPastExpiry(state)
+            ? state with { NextAutomaticRetryUtc = null, EdgeWatchActive = false, PreStepFailureCount = 0 }
+            : state;
 
     private static void EnsurePhysical(NetworkPathSnapshot path)
     {

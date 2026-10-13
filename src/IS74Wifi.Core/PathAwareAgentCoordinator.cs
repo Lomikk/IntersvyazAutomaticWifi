@@ -63,6 +63,7 @@ public sealed class PathAwareAgentCoordinator(
             {
                 continue;
             }
+            if (PathAuthorizationSchedule.HasObservedInternetPastExpiry(pathState)) continue;
             if (pathState.Status == PathAuthorizationStatus.Captive)
             {
                 return false;
@@ -295,7 +296,8 @@ public sealed class PathAwareAgentCoordinator(
     {
         if (pathState is null || pathState.UserActionRequired ||
             pathState.ExpectedExpiryUtc is not { } expiry || now < expiry ||
-            pathState.EdgeWatchActive || PathAuthorizationSchedule.SnapshotChanged(pathState, current))
+            pathState.EdgeWatchActive || PathAuthorizationSchedule.HasObservedInternetPastExpiry(pathState) ||
+            PathAuthorizationSchedule.SnapshotChanged(pathState, current))
         {
             return false;
         }
@@ -397,7 +399,8 @@ public sealed class PathAwareAgentCoordinator(
             !cancellationToken.IsCancellationRequested)
         {
             // The critical transaction has already ended. Observe once per failed
-            // retry, not at fast edge cadence, without replacing its retry deadline.
+            // retry, not at fast edge cadence. Internet ends speculative recovery;
+            // other outcomes preserve the retry deadline.
             var current = CurrentPaths().FirstOrDefault(item => SameIdentity(item.Identity, path.Identity));
             if (current is null || !path.HasSameTransportBinding(current)) return;
             var retryAt = state.Find(path.Identity)?.NextAutomaticRetryUtc;
