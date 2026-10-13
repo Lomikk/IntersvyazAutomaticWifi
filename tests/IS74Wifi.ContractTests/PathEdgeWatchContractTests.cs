@@ -105,6 +105,8 @@ internal static class PathEdgeWatchContractTests
         Assert(conflicting.EdgeWatchActive && conflicting.AutomaticStepOneAttempts == 2 &&
                conflicting.NextAutomaticRetryUtc == clock.GetUtcNow().AddSeconds(15),
             "contradictory captive/AlreadyAuthorized must retain the retry backoff");
+        Assert(PathAuthorizationSchedule.GetDelay(conflicting, settings, clock.GetUtcNow()) == TimeSpan.FromSeconds(15),
+            "a late captive retry must retain its backoff after the 3-minute observation window");
         var callsBeforeBackoff = probeCalls;
         await coordinator.TickAsync();
         Assert(probeCalls == callsBeforeBackoff && runner.Reasons.Count == 2,

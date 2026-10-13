@@ -52,11 +52,20 @@ public static class PathAuthorizationSchedule
         if (state.NextAutomaticRetryUtc is { } retry && retry > now)
         {
             var untilRetry = Clamp(retry - now);
-            return state.ExpectedExpiryUtc is { } retryExpiry && now >= retryExpiry
-                ? now >= retryExpiry + ObservationAfterExpiry
-                    ? MinimumDelay
-                    : Min(untilRetry, Clamp(retryExpiry + ObservationAfterExpiry - now))
-                : untilRetry;
+            if (state.ExpectedExpiryUtc is not { } retryExpiry || now < retryExpiry)
+            {
+                return untilRetry;
+            }
+
+            var watchEnd = retryExpiry + ObservationAfterExpiry;
+            if (now >= watchEnd)
+            {
+                // A confirmed captive path waiting for the next permitted /stepOne
+                // must respect its backoff, not probe every 100 ms past the edge.
+                // Other states still need a final bound probe to close the watch.
+                return state.Status == PathAuthorizationStatus.Captive ? untilRetry : MinimumDelay;
+            }
+            return Min(untilRetry, Clamp(watchEnd - now));
         }
         if (IsPreStepRetryPending(state))
         {
