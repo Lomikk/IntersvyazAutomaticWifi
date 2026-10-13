@@ -2,7 +2,7 @@
   "schema": 1,
   "stable": null,
   "prerelease": {
-    "version": "v0.1.0-alpha.41",
-    "sha256": "5f3a04fb0d79124292608bf9819d8fcbc22beb45365ef0e9a5f831504ada2782"
+    "version": "v0.1.0-alpha.42",
+    "sha256": "8499c95a460b0970c096a36cc178db4371a0ec823ea0e0e68b02bac3ecca5c33"
   }
 }
