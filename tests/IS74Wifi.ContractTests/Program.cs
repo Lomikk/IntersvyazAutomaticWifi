@@ -30,6 +30,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("network-path-foundation", NetworkPathContractTests.RunAsync),
     ("path-authorization-state", PathAuthorizationStateContractTests.RunAsync),
     ("path-aware-agent", PathAwareAgentContractTests.RunAsync),
+    ("path-edge-watch", PathEdgeWatchContractTests.RunAsync),
     ("internet-probe", TestInternetProbeAsync),
     ("self-update", UpdateContractTests.RunAsync)
 };

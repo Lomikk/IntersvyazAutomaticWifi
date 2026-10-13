@@ -66,7 +66,8 @@ internal static class StatusServiceContractTests
                 agentSnapshot.Paths[0] with
                 {
                     LastResult = "already-authorized",
-                    EdgeWatchActive = true
+                    EdgeWatchActive = true,
+                    AuthorizationWindowApproximate = true
                 }
             ]
         };

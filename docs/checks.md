@@ -74,6 +74,9 @@ pwsh -NoProfile -File ./tests/check_runner_contract.ps1
 
 C# фильтр — подстрока имени группы; отсутствие совпадений возвращает ошибку.
 Список групп — в начале `tests/IS74Wifi.ContractTests/Program.cs`.
+Группа `path-edge-watch` моделирует 30 минут path-aware наблюдения виртуальными
+часами, включая AlreadyAuthorized, перезапуск coordinator и поздний captive/retry;
+HTTP подменён, два коротких confirmation delay остаются настоящими.
 В приватном репозитории существующий `./verify.ps1 -ClientRepository <checkout>`
 запускает те же два Node suite. Вторую копию тестов там не заводить.
 
