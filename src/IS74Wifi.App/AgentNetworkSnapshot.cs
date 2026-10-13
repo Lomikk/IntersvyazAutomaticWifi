@@ -27,7 +27,8 @@ internal sealed record AgentNetworkPathSnapshot(
     bool CheckOnConnectivityEvent,
     DateTimeOffset? LastSuccessfulAuthUtc,
     bool UserActionRequired,
-    bool AuthorizationWindowApproximate);
+    bool AuthorizationWindowApproximate,
+    bool EdgeWatchActive = false);
 
 internal sealed record AgentNetworkSnapshot(
     DateTimeOffset CapturedAtUtc,

@@ -182,7 +182,8 @@ internal sealed class AgentNetworkOperations(
                         PathAuthorizationSchedule.IsConnectivityEventDriven(pathState, path),
                     LastSuccessfulAuthUtc: pathState?.LastSuccessfulAuthUtc,
                     UserActionRequired: pathState?.UserActionRequired == true,
-                    AuthorizationWindowApproximate: IsAuthorizationWindowApproximate(path));
+                    AuthorizationWindowApproximate: IsAuthorizationWindowApproximate(path),
+                    EdgeWatchActive: pathState?.EdgeWatchActive == true);
             })
             .ToArray();
 

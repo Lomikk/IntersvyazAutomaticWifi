@@ -154,7 +154,10 @@ internal sealed class StatusService
                 lines.Add($"{path.Name}: {FormatPathStatus(path.Status)}");
                 lines.Add($"  IPv4: {path.SourceIPv4 ?? "—"}; gateway: {path.GatewayIPv4 ?? "—"}; ifIndex: {path.InterfaceIndex}");
                 if (path.ExpectedExpiryUtc is { } pathExpiry)
-                    lines.Add($"  Ожидаемая граница: {pathExpiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+                    lines.Add($"  Ожидаемая граница: {pathExpiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}" +
+                              (path.AuthorizationWindowApproximate ? " (приблизительно)" : string.Empty));
+                if (path.EdgeWatchActive)
+                    lines.Add("  Режим: наблюдение фактической границы (сервер всё ещё считает путь авторизованным)");
                 if (path.NextCheckUtc is { } scheduledCheck)
                     lines.Add($"  Следующая проверка: {scheduledCheck.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
                 else if (path.CheckOnConnectivityEvent)
@@ -229,7 +232,8 @@ internal sealed class StatusService
                 path.LastResult,
                 path.AuthorizationWindowApproximate,
                 path.NextCheckUtc,
-                path.CheckOnConnectivityEvent))
+                path.CheckOnConnectivityEvent,
+                path.EdgeWatchActive))
             .ToArray();
 
         return new InteractiveStatusSnapshot(

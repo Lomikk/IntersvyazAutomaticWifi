@@ -258,26 +258,34 @@ internal static class TerminalUiContractTests
             ExpectedExpiryUtc = now.AddSeconds(-1),
             NextCheckUtc = now.AddMinutes(1)
         };
+        var edgeWatch = expired with
+        {
+            LastResult = "already-authorized",
+            NextCheckUtc = now.AddSeconds(34),
+            EdgeWatchActive = true
+        };
+        var overdue = edgeWatch with { NextCheckUtc = now.AddSeconds(-6) };
+        var dueNow = edgeWatch with { NextCheckUtc = now.AddSeconds(-1) };
         var noScheduledCheck = untimed with { CheckOnConnectivityEvent = false };
 
         var timedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(timed, now);
-        Assert(timedPresentation.StateText == "онлайн" && timedPresentation.TimerText == "~23:36",
-            "all remembered authorization windows are predictions, including direct-looking Wi-Fi");
+        Assert(timedPresentation.StateText == "онлайн" && timedPresentation.TimerText == "23:36",
+            "next-check column must show the exact scheduled wake, not an approximate authorization marker");
         var opaquePresentation = InteractiveTerminalUi.FormatPathPaneStatus(opaqueTimed, now);
-        Assert(opaquePresentation.StateText == "онлайн" && opaquePresentation.TimerText == "~18:12",
-            "opaque NAT path must mark the remembered authorization window as approximate");
+        Assert(opaquePresentation.StateText == "онлайн" && opaquePresentation.TimerText == "18:12",
+            "approximate authorization windows must not make the exact scheduled wake look approximate");
         var untimedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(untimed, now);
         Assert(untimedPresentation.StateText == "онлайн" && untimedPresentation.TimerText == "по сети",
             "path without a known authorization window must show event-driven connectivity waiting");
         var unreachablePresentation = InteractiveTerminalUi.FormatPathPaneStatus(unreachable, now);
-        Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "~23:36",
-            "temporary transport failure must not erase a still-valid remembered authorization window");
+        Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "23:36",
+            "temporary transport failure must not erase the scheduled wake");
         var ambiguousPresentation = InteractiveTerminalUi.FormatPathPaneStatus(ambiguous, now);
-        Assert(ambiguousPresentation.StateText == "неясно" && ambiguousPresentation.TimerText == "~23:36",
-            "ambiguous live state must preserve the remembered authorization window");
+        Assert(ambiguousPresentation.StateText == "неясно" && ambiguousPresentation.TimerText == "23:36",
+            "ambiguous live state must preserve the scheduled wake");
         var unknownPresentation = InteractiveTerminalUi.FormatPathPaneStatus(unknown, now);
-        Assert(unknownPresentation.StateText == "проверка..." && unknownPresentation.TimerText == "~23:36",
-            "pending probe must preserve the remembered authorization window");
+        Assert(unknownPresentation.StateText == "проверка..." && unknownPresentation.TimerText == "23:36",
+            "pending probe must preserve the scheduled wake");
         var captivePresentation = InteractiveTerminalUi.FormatPathPaneStatus(captive, now);
         Assert(captivePresentation.StateText == "нужна авторизация" && captivePresentation.TimerText == "—",
             "live captive observation must invalidate the displayed predicted window");
@@ -285,8 +293,17 @@ internal static class TerminalUiContractTests
         Assert(authorizingPresentation.StateText == "авторизация..." && authorizingPresentation.TimerText == "—",
             "active authorization must not show a stale window");
         var expiredPresentation = InteractiveTerminalUi.FormatPathPaneStatus(expired, now);
-        Assert(expiredPresentation.StateText == "онлайн" && expiredPresentation.TimerText == "~00:01",
+        Assert(expiredPresentation.StateText == "онлайн" && expiredPresentation.TimerText == "00:01",
             "expired prediction must show the next scheduled edge probe instead of an unknown dash");
+        var edgeWatchPresentation = InteractiveTerminalUi.FormatPathPaneStatus(edgeWatch, now);
+        Assert(edgeWatchPresentation.StateText == "наблюдение" && edgeWatchPresentation.TimerText == "34с",
+            "edge-watch must be explicit and sub-minute scheduler wakes must remain visibly live");
+        var dueNowPresentation = InteractiveTerminalUi.FormatPathPaneStatus(dueNow, now);
+        Assert(dueNowPresentation.TimerText == "сейчас",
+            "a scheduler wake in progress must not collapse to 00:00");
+        var overduePresentation = InteractiveTerminalUi.FormatPathPaneStatus(overdue, now);
+        Assert(overduePresentation.TimerText == "просрочено" && overduePresentation.TimerColor == Palette.Highlight,
+            "an overdue scheduler snapshot must be visible instead of sticking at 00:00");
         var stoppedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(noScheduledCheck, now);
         Assert(stoppedPresentation.StateText == "онлайн" && stoppedPresentation.TimerText == "—",
             "path without a running/scheduled background check must keep the explicit dash");

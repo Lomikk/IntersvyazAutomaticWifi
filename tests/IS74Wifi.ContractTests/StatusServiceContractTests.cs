@@ -59,6 +59,22 @@ internal static class StatusServiceContractTests
         Assert(agentOwned.WifiSsid == "Campus Wi-Fi test" && agentOwned.NetworkPaths?.Single().Status == PathAuthorizationStatus.Internet,
             "agent-owned SSID/path status must flow into the UI snapshot");
 
+        var edgeWatchSnapshot = agentSnapshot with
+        {
+            Paths =
+            [
+                agentSnapshot.Paths[0] with
+                {
+                    LastResult = "already-authorized",
+                    EdgeWatchActive = true
+                }
+            ]
+        };
+        new AgentNetworkSnapshotStore(paths, json).Save(edgeWatchSnapshot);
+        var edgeWatchOwned = service.ReadLocalSnapshot();
+        Assert(edgeWatchOwned.NetworkPaths?.Single().EdgeWatchActive == true,
+            "agent edge-watch state must flow into the UI snapshot");
+
         var settingsStore = new SettingsStore(paths, json);
         settingsStore.Save(settingsStore.Load() with
         {
@@ -121,7 +137,7 @@ internal static class StatusServiceContractTests
         var report = await service.BuildDetailedReportAsync(_ =>
         {
             reportRefreshCalls++;
-            return Task.FromResult(agentSnapshot);
+            return Task.FromResult(edgeWatchSnapshot);
         });
         Assert(reportRefreshCalls == 1, "detailed report must use only the supplied agent network refresh");
         Assert(report.Any(line => line == $"Данные приложения: {paths.Root}"),
@@ -132,6 +148,11 @@ internal static class StatusServiceContractTests
             "detailed report must read registration from the supplied AppPaths");
         Assert(report.Any(line => line == "Значок в трее: скрывать"),
             "detailed report must expose tray visibility");
+        Assert(report.Any(line => line.Contains("Режим: наблюдение фактической границы", StringComparison.Ordinal)),
+            "detailed report must explain agent edge-watch instead of leaving an expired boundary unexplained");
+        Assert(report.Any(line => line.Contains("Ожидаемая граница:", StringComparison.Ordinal) &&
+                                  line.Contains("(приблизительно)", StringComparison.Ordinal)),
+            "detailed report must label approximate authorization boundaries");
     }
 
     private static void Assert(bool condition, string message)

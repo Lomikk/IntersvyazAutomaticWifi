@@ -1858,14 +1858,18 @@ internal sealed partial class InteractiveTerminalUi
 
         var now = nowUtc ?? DateTimeOffset.UtcNow;
         var timerText = FormatNextPathCheck(path, now);
-        var timerColor = timerText == "—" || path.CheckOnConnectivityEvent ||
-                         path.Status != PathAuthorizationStatus.Internet
-            ? Palette.Dim
-            : Palette.Good;
+        var timerOverdue = string.Equals(timerText, "просрочено", StringComparison.Ordinal);
+        var timerColor = timerOverdue
+            ? Palette.Highlight
+            : timerText == "—" || path.CheckOnConnectivityEvent ||
+              path.Status != PathAuthorizationStatus.Internet
+                ? Palette.Dim
+                : Palette.Good;
 
         return path.Status switch
         {
-            PathAuthorizationStatus.Internet => ("онлайн", timerText, Palette.Good, timerColor),
+            PathAuthorizationStatus.Internet =>
+                (path.EdgeWatchActive ? "наблюдение" : "онлайн", timerText, Palette.Good, timerColor),
             // A live captive observation disproves the old predicted window.
             PathAuthorizationStatus.Captive => ("нужна авторизация", "—", Palette.Highlight, Palette.Dim),
             PathAuthorizationStatus.Unreachable => ("недоступен", timerText, Palette.Dim, Palette.Dim),
@@ -1883,15 +1887,27 @@ internal sealed partial class InteractiveTerminalUi
         }
 
         var remaining = nextCheck - nowUtc;
-        if (remaining < TimeSpan.Zero)
+        if (remaining < TimeSpan.FromSeconds(-5))
         {
-            remaining = TimeSpan.Zero;
+            return "просрочено";
         }
-        var totalMinutes = Math.Max(0, (int)Math.Floor(remaining.TotalMinutes));
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "сейчас";
+        }
+        if (remaining < TimeSpan.FromMinutes(1))
+        {
+            var seconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
+            return $"{seconds}с";
+        }
+
+        // This column is the exact scheduler wake-up, not the approximate
+        // authorization boundary. Round upward so a positive sub-minute tail
+        // never collapses to a misleading 00:00.
+        var totalMinutes = Math.Max(1, (int)Math.Ceiling(remaining.TotalMinutes));
         var hours = totalMinutes / 60;
         var minutes = totalMinutes % 60;
-        var prefix = path.AuthorizationWindowApproximate ? "~" : string.Empty;
-        return $"{prefix}{hours:00}:{minutes:00}";
+        return $"{hours:00}:{minutes:00}";
     }
 
     private static (string Text, Palette Color) FormatNetworkStatus(InteractiveStatusSnapshot s)

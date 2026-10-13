@@ -28,6 +28,8 @@ internal static class AgentNetworkIpcContractTests
                 "refresh IPC snapshot payload changed");
             Assert(status.Paths[0].SourceIPv4 == "10.0.0.2" && status.Paths[1].Status == PathAuthorizationStatus.Captive,
                 "refresh IPC must return agent-owned path details");
+            Assert(status.Paths[0].EdgeWatchActive,
+                "refresh IPC must preserve the agent-owned edge-watch state");
         }, () => schedulerWakes++);
         Assert(schedulerWakes == 1,
             "completed agent IPC command must wake the main scheduler to recompute deadlines");
@@ -189,7 +191,7 @@ internal static class AgentNetworkIpcContractTests
                     new AgentNetworkPathSnapshot(
                         "Wi-Fi · Campus Wi-Fi test", "Campus Wi-Fi test", 7, "10.0.0.2", "10.0.0.1",
                         PathAuthorizationStatus.Internet, true, null, "success", DateTimeOffset.UtcNow,
-                        DateTimeOffset.UtcNow.AddMinutes(1), false, DateTimeOffset.UtcNow, false, false),
+                        DateTimeOffset.UtcNow.AddMinutes(1), false, DateTimeOffset.UtcNow, false, false, true),
                     new AgentNetworkPathSnapshot(
                         "Ethernet", null, 9, "10.1.0.2", "10.1.0.1",
                         PathAuthorizationStatus.Captive, false, null, null, null,
