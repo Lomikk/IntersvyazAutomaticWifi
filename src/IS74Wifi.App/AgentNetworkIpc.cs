@@ -59,19 +59,17 @@ internal sealed class AgentNetworkOperations(
         using var crossProcessGate = await AgentNetworkOperationGate
             .AcquireAsync(cancellationToken)
             .ConfigureAwait(false);
-        var diagnostics = await app.NetworkPathDiagnostics
-            .InspectAsync(DiagnosticProbeTimeout, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (allowAutomaticAuthorization &&
-            automaticAuthorizationEnabled() &&
-            diagnostics.Any(item => item.Status == NetworkPathProbeStatus.Captive))
+        return await RunAndCaptureAsync(async () =>
         {
-            app.Agent.NotifyNetworkConnectivityChanged();
-            await app.Agent.TickAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        return CaptureAndPersistSnapshot();
+            var diagnostics = await app.NetworkPathDiagnostics
+                .InspectAsync(DiagnosticProbeTimeout, cancellationToken).ConfigureAwait(false);
+            if (allowAutomaticAuthorization && automaticAuthorizationEnabled() &&
+                diagnostics.Any(item => item.Status == NetworkPathProbeStatus.Captive))
+            {
+                app.Agent.NotifyNetworkConnectivityChanged();
+                await app.Agent.TickAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }, CaptureAndPersistSnapshot, app.Logger).ConfigureAwait(false);
     }
 
     public Task<AgentNetworkAdapterOption[]> GetAdapterOptionsAsync(
@@ -118,9 +116,10 @@ internal sealed class AgentNetworkOperations(
         var stateBefore = app.PathState.Find(selection.Path.Identity) ?? app.PathState.Observe(selection.Path);
         app.Logger.Write(DiagnosticLevel.Info,
             $"manual.path-selected adapter={Safe(selection.Path.Name)} preferred={selection.Preferred} probeGate=none");
-        try
+        AuthorizationOutcome? outcome = null;
+        await RunAndCaptureAsync(async () =>
         {
-            return await app.PathAuthorization.RunAsync(
+            outcome = await app.PathAuthorization.RunAsync(
                 selection.Path,
                 new AuthorizationRequest(
                     secrets.Token,
@@ -134,11 +133,8 @@ internal sealed class AgentNetworkOperations(
                     NetworkVpnDetector.IsActive(),
                     stateBefore),
                 cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            CaptureAndPersistSnapshot();
-        }
+        }, CaptureAndPersistSnapshot, app.Logger).ConfigureAwait(false);
+        return outcome!;
     }
 
     internal AgentNetworkSnapshot CaptureAndPersistSnapshot()
@@ -205,6 +201,27 @@ internal sealed class AgentNetworkOperations(
             Paths: pathSnapshots);
         snapshotStore.Save(snapshot);
         return snapshot;
+    }
+
+    // Callers keep both operation gates until publication finishes. A secondary
+    // capture failure must never replace the error from a partially completed tick.
+    internal static async Task<T> RunAndCaptureAsync<T>(
+        Func<Task> operation, Func<T> capture, DiagnosticLogger logger)
+    {
+        try
+        {
+            await operation().ConfigureAwait(false);
+        }
+        catch
+        {
+            try { capture(); }
+            catch (Exception ex)
+            {
+                logger.Write(DiagnosticLevel.Warn, $"agent.snapshot error={ex.GetType().Name}:{ex.Message}");
+            }
+            throw;
+        }
+        return capture();
     }
 
     internal static bool IsAuthorizationWindowApproximate(NetworkPathSnapshot path) =>
@@ -482,7 +499,10 @@ internal static class AgentNetworkCommandServer
             operationGate.Release();
             try
             {
-                commandCompleted?.Invoke();
+                if (command is AgentNetworkProtocol.Refresh or AgentNetworkProtocol.ProbeOnly or AgentNetworkProtocol.Authorize)
+                {
+                    commandCompleted?.Invoke();
+                }
             }
             catch
             {

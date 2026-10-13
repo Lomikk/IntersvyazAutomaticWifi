@@ -8,6 +8,7 @@ public static class AgentProcessControl
     public const string StopEventName = @"Local\IS74Wifi.CSharp.AgentStop";
     public const string AgentWorkerGateName = @"Local\IS74Wifi.CSharp.AgentWorker";
     public const string WorkerStopEventName = @"Local\IS74Wifi.CSharp.AgentWorkerStop";
+    public const string WorkerNetworkWakeEventName = @"Local\IS74Wifi.CSharp.AgentWorkerNetworkWake";
     public const string NetworkCommandPipeName = "IS74Wifi.CSharp.AgentNetwork.v1";
     public const string NetworkOperationGateName = @"Local\IS74Wifi.CSharp.AgentNetworkOperation";
 
@@ -16,6 +17,14 @@ public static class AgentProcessControl
     public static EventWaitHandle CreateStopEvent() => CreateResetEvent(StopEventName);
 
     public static EventWaitHandle CreateWorkerStopEvent() => CreateResetEvent(WorkerStopEventName);
+
+    // This wakes an existing worker thread, never the suspended computer. Opening
+    // the event must not reset a signal delivered before the worker enters WaitAny.
+    public static EventWaitHandle CreateWorkerNetworkWakeEvent(string? eventName = null) =>
+        new(false, EventResetMode.AutoReset, eventName ?? WorkerNetworkWakeEventName);
+
+    public static void SignalWorkerNetworkWake(string? eventName = null) =>
+        SignalEvent(eventName ?? WorkerNetworkWakeEventName);
 
     public static void SignalStop()
     {

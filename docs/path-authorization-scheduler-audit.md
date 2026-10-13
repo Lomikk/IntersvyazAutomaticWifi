@@ -3,8 +3,61 @@
 Дата: 2026-10-13. Проверенная база: `4414334` (`main` на момент аудита).
 Сравнение с `v0.1.0-alpha.41`: рассматриваемые Core state machine и worker loop
 совпадают; новое отображение дополнительно передаёт `EdgeWatchActive` в snapshot.
-Runtime в рамках аудита **не изменён**. Ниже только синтетические сценарии;
+На первом этапе аудита runtime не изменялся. В продолжении реализовано исправление,
+описанное ниже; первоначальный guard-кандидат не использован. Ниже только синтетические сценарии;
 живые журналы, адреса и пользовательское состояние в репозиторий не включены.
+
+## Реализованное исправление
+
+По запросу владельца внесён вариант, сохраняющий pre-step recovery:
+
+- Первый предпочтительный timer shot по-прежнему начинается без предварительной
+  Internet probe. После `RetryableBeforeStepOne` этого shot выполняется ровно одна
+  bound-probe, если транспортная привязка пути сохранилась. Она обновляет
+  `LastProbeUtc`/status, включая Unreachable при отказе прямого маршрута.
+- Probe идёт после завершения критической операции, внутри оставшегося backoff.
+  Её HTTP timeout ограничен меньшим из 2 секунд и остатка до retry (минимум 100 ms).
+  Если операция всё же пересекла retry deadline, следующий tick получает 100 ms,
+  а не новый минутный интервал от только что выполненной probe.
+- Существующие задержки 1/2/5/15/30/60 секунд и send budget сохранены. Pending
+  pre-step retry после известной границы обслуживается независимо от результата
+  этой probe и текущего предпочтения Windows. Это продолжение уже начатой попытки,
+  а не новая отправка только по признаку Unreachable. Snapshot и worker используют
+  один `PathAuthorizationSchedule.IsPreStepRetryPending`.
+- `AlreadyAuthorized`/Success завершают retry существующими мутациями manager;
+  нормальный edge-watch сохраняет tapered cadence и captive confirmation.
+  Состояние не переводится в бессрочное ожидание captive после pre-step failure.
+- Worker tick, IPC refresh и manual runner используют
+  `AgentNetworkOperations.RunAndCaptureAsync`: после частичной ошибки snapshot
+  публикуется под operation gates. Вторичная ошибка capture логируется отдельно,
+  исходная ошибка сохраняется. Повторная запись при ошибке выполняется один раз.
+- Long-lived worker ждёт именованный AutoReset event. Short-lived fallback
+  сигналит его после refresh/probe-only/authorize, включая ошибки после частичных
+  изменений; сигнал посылается после освобождения operation gate. Повторы
+  объединяются, открытие handle не сбрасывает сигнал. Read-only adapters не будит
+  scheduler. System wake timers и periodic polling не добавлены.
+- Локальный preflight log содержит вид отказа `dns/tcp/timeout/direct-route`, тип
+  исключения, Winsock error и длительность; данные не требуют повторного DNS/TCP
+  запроса и не добавлены в backend telemetry.
+
+Новая группа `path-pre-step-recovery` проверяет 30 минут failures, одну probe на
+попытку, прежний backoff, отсутствие requests при ранних wakes, новый LastProbeUtc,
+рестарт/смену preferred, восстановление портала при Unreachable, DNS rollback,
+первый shot после pre-expiry failure и overdue retry после долгой probe. Существующий
+`path-edge-watch` проверяет продолжение нормального AlreadyAuthorized/captive flow.
+IPC contracts проверяют wake ожидания старого deadline, видимость обновлённого
+deadline, coalescing, отсутствие wake для adapters и публикацию snapshot при ошибке
+с сохранением исходного исключения. Direct-network contracts различают DNS/TCP
+отказы и проверяют отсутствие дополнительных dial в диагностике.
+
+Ограничение: одна дополнительная HTTP probe выполняется на неудачный timer retry;
+это небольшой дополнительный сетевой расход. HTTP timeout ограничивает запрос,
+но не даёт жёсткой гарантии wall-clock latency при задержках ОС/синхронного DNS/диска.
+Причина недоступности реального портала не исправляется scheduler-патчем: новый
+лог нужен для её определения. Live authorization и установка на ПК не выполнялись.
+
+Остальные разделы сохраняют исходный диагноз и отвергнутый кандидат как историю
+аудита; они не описывают текущее исправленное поведение.
 
 ## Вывод
 

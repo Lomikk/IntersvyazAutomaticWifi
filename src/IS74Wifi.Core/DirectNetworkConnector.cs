@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Diagnostics;
 
 namespace IS74Wifi.Core;
 
@@ -93,8 +94,10 @@ public sealed class DirectNetworkConnector(
     }
 
     /// <summary>Side-effect-free TCP handshake used before reserving a stepOne attempt.</summary>
-    public async Task<bool> CanReachPortalAsync(TimeSpan timeout, CancellationToken token)
+    public async Task<bool> CanReachPortalAsync(TimeSpan timeout, CancellationToken token,
+        DiagnosticLogger? logger = null)
     {
+        var elapsed = Stopwatch.StartNew();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
         cts.CancelAfter(timeout);
         try
@@ -109,6 +112,12 @@ public sealed class DirectNetworkConnector(
         }
         catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException)
         {
+            var kind = ex is CachedDnsUnavailableException ? "dns" :
+                ex is OperationCanceledException ? "timeout" :
+                ex is SocketException || ex.InnerException is SocketException ? "tcp" : "direct-route";
+            var socketError = (ex as SocketException ?? ex.InnerException as SocketException)?.SocketErrorCode;
+            logger?.Write(DiagnosticLevel.Warn,
+                $"authorization.portal-preflight failure={kind} error={ex.GetType().Name} socket-error={socketError} elapsed-ms={elapsed.ElapsedMilliseconds}");
             return false;
         }
     }

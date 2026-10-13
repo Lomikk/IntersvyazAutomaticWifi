@@ -186,6 +186,25 @@ internal static class DirectNetworkContractTests
         catch (CachedDnsUnavailableException) { }
         Assert(forbiddenDials == 0, "DNS failures must not trigger system-route TCP fallback");
 
+        using var preflightLogs = TempDirectory.Create();
+        var preflightPaths = new AppPaths(preflightLogs.Path);
+        var preflightLogger = new DiagnosticLogger(preflightPaths);
+        Assert(!await failingConnector.CanReachPortalAsync(TimeSpan.FromSeconds(1), CancellationToken.None, preflightLogger),
+            "DNS failure must remain a side-effect-free preflight rejection");
+        Assert(File.ReadAllText(preflightPaths.DiagnosticLogFile).Contains("failure=dns") && forbiddenDials == 0,
+            "preflight diagnostics lost DNS failure kind or introduced another network dial");
+        var refusedDials = 0;
+        var refusedConnector = new DirectNetworkConnector(() => adapters, wifi.Id, goodDns,
+            (_, _, _, _) =>
+            {
+                refusedDials++;
+                throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused);
+            });
+        Assert(!await refusedConnector.CanReachPortalAsync(TimeSpan.FromSeconds(1), CancellationToken.None, preflightLogger),
+            "TCP rejection must remain a failed preflight");
+        Assert(refusedDials == 1 && File.ReadAllText(preflightPaths.DiagnosticLogFile).Contains("failure=tcp"),
+            "preflight logging lost TCP failure kind or retried the failed connection");
+
         var missingAdapterDnsCalls = 0;
         var noAdapterConnector = new DirectNetworkConnector(() => adapters, "missing-manual-id",
             new InterfaceDnsResolver((_, _, _) =>

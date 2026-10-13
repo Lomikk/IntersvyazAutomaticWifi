@@ -161,7 +161,8 @@ for forbidden in ('NetworkPathEnumerator', 'WindowsWifiService', 'NetworkVpnDete
     assert forbidden not in status_service_owner, f'UI status must consume agent snapshot instead of inspecting authorization network: {forbidden}'
 assert 'AgentNetworkSnapshotStore' in status_service_owner, 'UI status must consume the persisted agent-owned network snapshot'
 assert 'AgentNetworkSnapshotStore' in csharp_agent_network_ipc and 'CaptureAndPersistSnapshot' in csharp_agent_network_ipc, 'agent must own and persist the canonical network/auth snapshot'
-assert 'await app.Agent.TickAsync(stopCts.Token)' in csharp_diagnostic_program and 'networkOperations.CaptureAndPersistSnapshot();' in csharp_diagnostic_program, 'long-lived agent must refresh the canonical network snapshot after ordinary scheduler ticks'
+worker_block = csharp_diagnostic_program.split('private static async Task<int> RunAgentWorkerCoreAsync()', 1)[1]
+assert 'await AgentNetworkOperations.RunAndCaptureAsync(' in worker_block and '() => app.Agent.TickAsync(stopCts.Token)' in worker_block and 'networkOperations.CaptureAndPersistSnapshot,' in worker_block, 'long-lived agent must publish the canonical snapshot after successful or partially failed ticks'
 assert 'JsonSerializer.SerializeToUtf8Bytes(snapshot, AppJsonContext.Default.AgentNetworkSnapshot)' in csharp_agent_network_ipc, 'agent IPC must return the full network/auth snapshot rather than an independent summary'
 manual_start = csharp_diagnostic_program.index('private static async Task<AuthorizationOutcome> RunManualAuthorizationAsync')
 manual_end = csharp_diagnostic_program.index('private static int PrintAuthorizationOutcome', manual_start)

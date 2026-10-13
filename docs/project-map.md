@@ -18,7 +18,7 @@
 | Экран скорости/рейтинга | `App/InteractiveTerminalUi.SpeedTools.cs` (partial того же UI; пока содержит и действия, и состояние) | App; бизнес-правила/запросы — Full + Backend |
 | Прогресс ручной авторизации | `App/ManualAuthorizationRunner.cs` отображает progress; сама операция идёт через `AgentNetworkClient` → agent-owned `AgentNetworkOperations` | App: `manual-authorization-progress` + `agent-network-ipc` |
 | Авторизация и polling | `Core/AuthorizationFlow.cs`, `PushPollingEngine.cs`, `AuthorizationStateManager.cs`; инварианты — `ProtocolContract.cs` | Core |
-| Когда просыпается и повторяет попытку агент | `Core/AgentService.cs`, `AgentPowerResumeMonitor.cs`; интерактивные refresh/manual-auth команды приходят в worker через named-pipe host `App/AgentNetworkIpc.cs` | Full |
+| Когда просыпается и повторяет попытку агент | `Core/AgentService.cs`, `PathAwareAgentCoordinator.cs`, `PathAuthorizationSchedule.cs`, `AgentPowerResumeMonitor.cs`; IPC — `App/AgentNetworkIpc.cs`; fallback будит существующий worker через именованный event в `AgentProcessControl.cs` | Full |
 | HTTP, ошибки API, captive portal, probe | `Core/HttpTransport.cs`, `HttpClientProfiles.cs`, `Is74ApiClient.cs`, `CaptivePortalClient.cs`, `InternetConnectivityProbe.cs` | Core; подключение профилей — Full |
 | Выбор адаптера, DNS, прямой маршрут | `Core/PhysicalAdapterSelection.cs`, `DirectNetworkConnector.cs`, `InterfaceDnsResolver.cs`; wiring — `App/ApplicationRuntime.cs` | Full; полевая проверка отдельно |
 | Настройки, секреты, локальное состояние | `Core/AppPaths.cs`, `SettingsStore.cs`, `DpapiSecretStore.cs`, `DeviceIdentityStore.cs`, `RuntimeStateStore.cs`, `SessionMetadata.cs` | Core |
@@ -45,6 +45,10 @@
 - Авторизационная сеть имеет одного владельца: interactive/CLI код не перечисляет адаптеры/SSID/VPN, не читает `PathAuthorizationState` и не вызывает `NetworkPathDiagnostics`, `Internet.ProbeAsync`, `ManualAuthorizationPathSelector` или `PathAuthorization.RunAsync` напрямую. Он использует `AgentNetworkClient`; agent возвращает полный network/auth snapshot и сохраняет его для локального первого кадра UI. Long-lived worker обслуживает named pipe, а при выключенном/недоступном фоне запускается короткоживущий `agent-network-worker` той же версии. `probe-only` сохраняет диагностический контракт без stepOne/stepTwo.
 - Авторизация не должна зависеть от скорости отрисовки: callback кладёт прогресс
   в очередь, App читает её отдельно. Не добавлять Console/HTTP/disk I/O в callback.
+- После pre-step отказа timer shot coordinator сохраняет прежний retry/backoff и
+  выполняет одну probe для свежего статуса; это не включение частого edge polling.
+  Agent-owned snapshot публикуется также после частичной ошибки операции, под
+  теми же gates; ошибка публикации не маскирует исходную ошибку.
 - Согласие на анонимную статистику и явное участие в публичном рейтинге — разные
   решения пользователя. Отложенный `speed_test` допустим; отложенная публикация
   или команда участия — нет. Legacy JSON/schema 4 и path-aware schema 5 проверяются общими синтетическими fixtures.

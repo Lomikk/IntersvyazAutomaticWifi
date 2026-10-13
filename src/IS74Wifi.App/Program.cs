@@ -3203,7 +3203,8 @@ internal static class Program
                 args[0],
                 operations,
                 operationGate,
-                timeout.Token).ConfigureAwait(false);
+                timeout.Token,
+                () => AgentProcessControl.SignalWorkerNetworkWake()).ConfigureAwait(false);
             return 0;
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
@@ -3267,7 +3268,7 @@ internal static class Program
             new SettingsStore(app.Paths, app.Json),
             app.Logger);
         using var stopEvent = AgentProcessControl.CreateWorkerStopEvent();
-        using var networkWake = new AutoResetEvent(false);
+        using var networkWake = AgentProcessControl.CreateWorkerNetworkWakeEvent();
         var initialNcsiInternetAccess = ReadNcsiInternetAccess(app.Logger);
         var ncsiInternetAccess = new NcsiInternetAccessTracker(initialNcsiInternetAccess);
         if (initialNcsiInternetAccess is { } initialInternetAccess)
@@ -3348,8 +3349,10 @@ internal static class Program
                         using var crossProcessGate = await AgentNetworkOperationGate
                             .AcquireAsync(stopCts.Token)
                             .ConfigureAwait(false);
-                        await app.Agent.TickAsync(stopCts.Token).ConfigureAwait(false);
-                        networkOperations.CaptureAndPersistSnapshot();
+                        await AgentNetworkOperations.RunAndCaptureAsync(
+                            () => app.Agent.TickAsync(stopCts.Token),
+                            networkOperations.CaptureAndPersistSnapshot,
+                            app.Logger).ConfigureAwait(false);
                     }
                     finally
                     {

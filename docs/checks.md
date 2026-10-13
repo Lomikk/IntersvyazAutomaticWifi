@@ -77,6 +77,10 @@ C# фильтр — подстрока имени группы; отсутств
 Группа `path-edge-watch` моделирует 30 минут path-aware наблюдения виртуальными
 часами, включая AlreadyAuthorized, перезапуск coordinator и поздний captive/retry;
 HTTP подменён, два коротких confirmation delay остаются настоящими.
+Группа `path-pre-step-recovery` проверяет 30 минут отказов до stepOne, сохранение
+backoff/budget, свежие probes и восстановление после рестарта/Unreachable.
+`agent-network-ipc` включает публикацию snapshot после ошибки и ожидание
+именованного wake event; тест использует уникальное имя и не будит рабочий агент.
 В приватном репозитории существующий `./verify.ps1 -ClientRepository <checkout>`
 запускает те же два Node suite. Вторую копию тестов там не заводить.
 

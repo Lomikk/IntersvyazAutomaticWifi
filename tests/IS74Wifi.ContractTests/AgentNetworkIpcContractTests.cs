@@ -11,6 +11,8 @@ internal static class AgentNetworkIpcContractTests
         await AdapterEnumerationStaysAgentOwnedAsync();
         await AuthorizationProgressAndResultRoundTripAsync();
         await AgentErrorsRoundTripAsync();
+        await FallbackCompletionWakesWaitingSchedulerAsync();
+        await PartialOperationStillPublishesSnapshotAsync();
     }
 
     private static async Task RefreshCommandsStayAgentOwnedAsync()
@@ -50,6 +52,7 @@ internal static class AgentNetworkIpcContractTests
     private static async Task AdapterEnumerationStaysAgentOwnedAsync()
     {
         var operations = new FakeOperations();
+        var wakes = 0;
         await WithServerAsync(operations, async (pipe, reader, writer) =>
         {
             await writer.WriteLineAsync(AgentNetworkProtocol.Adapters);
@@ -59,9 +62,10 @@ internal static class AgentNetworkIpcContractTests
             var adapters = AgentNetworkProtocol.ParseAdapters(line!);
             Assert(adapters.Length == 2 && adapters[0].Id == "wifi-1" && adapters[1].LooksVirtual,
                 "adapter options did not round-trip through agent IPC");
-        });
+        }, () => wakes++);
         Assert(operations.AdapterCalls == 1,
             "interactive adapter selection must enumerate interfaces only inside the agent owner");
+        Assert(wakes == 0, "read-only adapter enumeration introduced an unnecessary scheduler wake");
     }
 
     private static async Task AuthorizationProgressAndResultRoundTripAsync()
@@ -117,6 +121,97 @@ internal static class AgentNetworkIpcContractTests
         });
     }
 
+    private static async Task FallbackCompletionWakesWaitingSchedulerAsync()
+    {
+        // Use a unique event: contracts must never signal the owner's real worker.
+        var eventName = $@"Local\IS74Wifi.Contract.NetworkWake.{Guid.NewGuid():N}";
+        using var wake = AgentProcessControl.CreateWorkerNetworkWakeEvent(eventName);
+        using var stop = new ManualResetEvent(false);
+        var oldDeadline = DateTimeOffset.UtcNow.AddDays(1);
+        var persistedDeadline = oldDeadline;
+        var waiting = Task.Run(() =>
+        {
+            var reason = WaitHandle.WaitAny([stop, wake], TimeSpan.FromSeconds(5));
+            return (reason, deadline: persistedDeadline);
+        });
+        await WithServerAsync(new FakeOperations { OnRefresh = () => persistedDeadline = DateTimeOffset.UtcNow.AddSeconds(1) }, async (_, reader, writer) =>
+        {
+            await writer.WriteLineAsync(AgentNetworkProtocol.Refresh);
+            Assert((await reader.ReadLineAsync())?.StartsWith(AgentNetworkProtocol.StatusPrefix) == true,
+                "fallback-style command did not finish its state refresh");
+        }, () => AgentProcessControl.SignalWorkerNetworkWake(eventName));
+        var awakened = await waiting;
+        Assert(awakened.reason == 1 && awakened.deadline < oldDeadline,
+            "IPC completion left the scheduler waiting on its old deadline or exposed stale state");
+
+        AgentProcessControl.SignalWorkerNetworkWake(eventName);
+        AgentProcessControl.SignalWorkerNetworkWake(eventName);
+        using var reopened = AgentProcessControl.CreateWorkerNetworkWakeEvent(eventName);
+        Assert(reopened.WaitOne(0) && !wake.WaitOne(0),
+            "opening the event lost a pending wake or repeated signals failed to coalesce");
+
+        await WithServerAsync(new FakeOperations { RefreshError = new IOException("partial refresh") },
+            async (_, reader, writer) =>
+            {
+                await writer.WriteLineAsync(AgentNetworkProtocol.Refresh);
+                Assert((await reader.ReadLineAsync())?.StartsWith(AgentNetworkProtocol.ErrorPrefix) == true,
+                    "partial refresh failure was not delivered to the client");
+            }, () => AgentProcessControl.SignalWorkerNetworkWake(eventName));
+        Assert(wake.WaitOne(0), "failed IPC completion did not wake the scheduler after partial changes");
+        AgentProcessControl.SignalWorkerNetworkWake(eventName + ".missing");
+    }
+
+    private static async Task PartialOperationStillPublishesSnapshotAsync()
+    {
+        using var temp = TempDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var json = new JsonFileStore();
+        var store = new AgentNetworkSnapshotStore(paths, json);
+        var logger = new DiagnosticLogger(paths);
+        var original = AgentNetworkSnapshot.Empty;
+        store.Save(original);
+        var refreshed = original with { CapturedAtUtc = DateTimeOffset.UtcNow, InternetAvailable = false };
+        var captureCalls = 0;
+        AgentNetworkSnapshot Capture()
+        {
+            captureCalls++;
+            store.Save(refreshed);
+            return refreshed;
+        }
+        var primaryFailure = new IOException("failure after partial state mutation");
+        try
+        {
+            await AgentNetworkOperations.RunAndCaptureAsync(
+                () => Task.FromException(primaryFailure), Capture, logger);
+            throw new InvalidOperationException("operation failure was swallowed");
+        }
+        catch (IOException ex)
+        {
+            Assert(ReferenceEquals(ex, primaryFailure), "capture replaced the primary operation failure");
+        }
+        var persisted = store.Load();
+        Assert(captureCalls == 1 && persisted?.CapturedAtUtc == refreshed.CapturedAtUtc &&
+               persisted.InternetAvailable == false,
+            "partial operation retained the obsolete persisted snapshot");
+
+        try
+        {
+            await AgentNetworkOperations.RunAndCaptureAsync<AgentNetworkSnapshot>(
+                () => Task.FromException(primaryFailure), () => throw new UnauthorizedAccessException("snapshot unavailable"), logger);
+            throw new InvalidOperationException("double failure was swallowed");
+        }
+        catch (IOException ex)
+        {
+            Assert(ReferenceEquals(ex, primaryFailure), "snapshot failure masked the operation failure");
+        }
+        Assert(File.ReadAllText(paths.DiagnosticLogFile).Contains("agent.snapshot error=UnauthorizedAccessException"),
+            "secondary snapshot failure was not recorded");
+
+        var result = await AgentNetworkOperations.RunAndCaptureAsync(() => Task.CompletedTask, Capture, logger);
+        Assert(result == refreshed && captureCalls == 2,
+            "successful operation did not publish exactly once");
+    }
+
     private static async Task WithServerAsync(
         FakeOperations operations,
         Func<NamedPipeClientStream, StreamReader, StreamWriter, Task> clientAction,
@@ -164,6 +259,7 @@ internal static class AgentNetworkIpcContractTests
         public int AdapterCalls { get; private set; }
         public bool? LastAllowAutomaticAuthorization { get; private set; }
         public Exception? RefreshError { get; init; }
+        public Action? OnRefresh { get; init; }
         public AuthorizationOutcome AuthorizationResult { get; init; } = new(
             AuthorizationOutcomeKind.AlreadyOnline,
             InternetConfirmed: true,
@@ -177,6 +273,7 @@ internal static class AgentNetworkIpcContractTests
         {
             RefreshCalls++;
             LastAllowAutomaticAuthorization = allowAutomaticAuthorization;
+            OnRefresh?.Invoke();
             if (RefreshError is not null)
             {
                 throw RefreshError;

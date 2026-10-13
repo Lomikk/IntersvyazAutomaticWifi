@@ -73,7 +73,7 @@ public sealed class PathAuthorizationRunner(
             telemetryPathContext: telemetryPathContext,
             options: new AuthorizationFlowOptions { BaselineTimeout = TimeSpan.FromSeconds(5) },
             ignoreNetworkCheck: true,
-            preStepNetworkCheck: token => connector.CanReachPortalAsync(TimeSpan.FromSeconds(4), token));
+            preStepNetworkCheck: token => connector.CanReachPortalAsync(TimeSpan.FromSeconds(4), token, logger));
 
         return await flow.RunAsync(request, cancellationToken).ConfigureAwait(false);
     }

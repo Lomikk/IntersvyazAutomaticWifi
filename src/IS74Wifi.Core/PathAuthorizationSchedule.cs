@@ -47,6 +47,12 @@ public static class PathAuthorizationSchedule
         {
             return Clamp(retry - now);
         }
+        if (IsPreStepRetryPending(state))
+        {
+            // A fresh post-failure probe must not move an overdue explicit retry
+            // to the next edge-watch interval. The coordinator consumes this retry.
+            return MinimumDelay;
+        }
         if (state.Status is PathAuthorizationStatus.Unknown or PathAuthorizationStatus.Disconnected)
         {
             return MinimumDelay;
@@ -123,6 +129,11 @@ public static class PathAuthorizationSchedule
         !string.Equals(previous.SourceIPv4, current.SourceIPv4?.ToString(), StringComparison.OrdinalIgnoreCase) ||
         !string.Equals(previous.GatewayIPv4, current.GatewayIPv4?.ToString(), StringComparison.OrdinalIgnoreCase) ||
         !string.Equals(previous.Ssid, current.Ssid, StringComparison.Ordinal);
+
+    public static bool IsPreStepRetryPending(PathAuthorizationState state) =>
+        !state.UserActionRequired && !state.EdgeWatchActive &&
+        state.PreStepFailureCount > 0 && state.NextAutomaticRetryUtc is not null &&
+        state.ExpectedExpiryUtc is { } expiry && state.LastAttemptUtc >= expiry;
 
     private static TimeSpan DueFromLastProbe(DateTimeOffset? lastProbe, TimeSpan interval, DateTimeOffset now)
     {

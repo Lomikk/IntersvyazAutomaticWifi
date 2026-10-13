@@ -34,6 +34,14 @@ captive, transport/DNS failure не считается доказательст�
 
 ## Диагностика и ограничения
 
+После отказа TCP preflight локальный `diagnostic.log` записывает
+`authorization.portal-preflight failure=dns/tcp/timeout/direct-route`, тип ошибки,
+Winsock error (если есть) и длительность. Это использует уже полученный отказ,
+без повторного соединения; сведения не отправляются в backend telemetry.
+После неудачного timer shot agent выполняет одну bound-probe в пределах оставшегося
+retry backoff, чтобы UI не сохранял старый Internet status. Повторная попытка
+сохраняет свой deadline и не зависит от успешного captive-подтверждения этой probe.
+
 `IS74Wifi.exe network-diagnose` либо `Настройки → Сеть и диагностика` просит сетевой
 agent выполнить live bound-probe **каждого** активного physical path и показывает:
 
