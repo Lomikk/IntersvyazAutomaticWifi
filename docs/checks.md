@@ -107,3 +107,14 @@ Full не выполняет NativeAOT publish и полевые проверк�
 `.github/workflows/dotnet.yml` и preflight alpha-кандидата используют Full с явным
 пропуском приватного backend; CLI/clean-state smoke запускаются отдельно только
 в чистом CI-окружении. Совместимость PowerShell также проверяется в `ps51.yml`.
+
+## Долгие виртуальные испытания расписания
+
+Отдельный проект `tests/IS74Wifi.SimulationTests` моделирует месяцы и годы
+без работы с реальной сетью; [параметры и ограничения](virtual-simulation.md).
+`dotnet run --project tests/IS74Wifi.SimulationTests -c Release -- --self-test`
+проверяет повторяемость результата. `Client checks` и Release workflow
+запускают виртуальный месяц с `--strict`; для длинных серий предусмотрен
+ручной GitHub Actions workflow `Virtual years simulation`.
+На Linux локально полноценный Windows CI/DPAPI suite не запускается;
+проверяйте в GitHub Actions.

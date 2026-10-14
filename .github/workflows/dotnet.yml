@@ -54,6 +54,14 @@ jobs:
         shell: pwsh
         run: ./scripts/check.ps1 -Mode Full -SkipBackend -Configuration Release
 
+      - name: Deterministic virtual scheduler simulation
+        shell: pwsh
+        run: |
+          dotnet run --project ./tests/IS74Wifi.SimulationTests/IS74Wifi.SimulationTests.csproj --configuration Release -- --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Simulation repeatability failed." }
+          dotnet run --project ./tests/IS74Wifi.SimulationTests/IS74Wifi.SimulationTests.csproj --configuration Release -- --days 30 --runs 1 --seed 74 --paths 2 --strict --json ./artifacts/simulation/smoke.json
+          if ($LASTEXITCODE -ne 0) { throw "Virtual month simulation failed." }
+
       - name: Smoke test CLI
         shell: pwsh
         run: |

@@ -18,6 +18,7 @@
 | Экран скорости/рейтинга | `App/InteractiveTerminalUi.SpeedTools.cs` (partial того же UI; пока содержит и действия, и состояние) | App; бизнес-правила/запросы — Full + Backend |
 | Прогресс ручной авторизации | `App/ManualAuthorizationRunner.cs` отображает progress; сама операция идёт через `AgentNetworkClient` → agent-owned `AgentNetworkOperations` | App: `manual-authorization-progress` + `agent-network-ipc` |
 | Авторизация и polling | `Core/AuthorizationFlow.cs`, `PushPollingEngine.cs`, `AuthorizationStateManager.cs`; инварианты — `ProtocolContract.cs` | Core |
+| Виртуальные месяцы/годы планировщика | `tests/IS74Wifi.SimulationTests/` — настоящие `PathAwareAgentCoordinator`/`PathAuthorizationSchedule` с виртуальными часами и подменёнными внешними зависимостями; [руководство](virtual-simulation.md) | `--self-test`, месяц `--strict`, длинный ручной CI |
 | Когда просыпается и повторяет попытку агент | `Core/AgentService.cs`, `PathAwareAgentCoordinator.cs`, `PathAuthorizationSchedule.cs`, `AgentPowerResumeMonitor.cs`; IPC — `App/AgentNetworkIpc.cs`; fallback будит существующий worker через именованный event в `AgentProcessControl.cs` | Full |
 | HTTP, ошибки API, captive portal, probe | `Core/HttpTransport.cs`, `HttpClientProfiles.cs`, `Is74ApiClient.cs`, `CaptivePortalClient.cs`, `InternetConnectivityProbe.cs` | Core; подключение профилей — Full |
 | Выбор адаптера, DNS, прямой маршрут | `Core/PhysicalAdapterSelection.cs`, `DirectNetworkConnector.cs`, `InterfaceDnsResolver.cs`; wiring — `App/ApplicationRuntime.cs` | Full; полевая проверка отдельно |
