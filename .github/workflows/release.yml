@@ -69,6 +69,14 @@ jobs:
       - name: C# contract tests
         run: dotnet run --project ./tests/IS74Wifi.ContractTests/IS74Wifi.ContractTests.csproj --configuration Release --no-build
 
+      - name: Deterministic virtual scheduler simulation
+        shell: pwsh
+        run: |
+          dotnet run --project ./tests/IS74Wifi.SimulationTests/IS74Wifi.SimulationTests.csproj --configuration Release -- --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Simulation repeatability failed." }
+          dotnet run --project ./tests/IS74Wifi.SimulationTests/IS74Wifi.SimulationTests.csproj --configuration Release -- --days 30 --runs 1 --seed 74 --paths 2 --strict
+          if ($LASTEXITCODE -ne 0) { throw "Virtual month simulation failed." }
+
       - name: PowerShell reference regression checks
         shell: powershell
         run: |

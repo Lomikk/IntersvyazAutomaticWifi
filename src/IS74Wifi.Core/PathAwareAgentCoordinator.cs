@@ -18,12 +18,16 @@ public sealed class PathAwareAgentCoordinator(
     IAgentNotificationSink? notifications = null,
     PreferredNetworkPathResolver? preferredPathResolver = null,
     NetworkPathTelemetryRecorder? telemetry = null,
-    Func<bool>? isVpnActive = null)
+    Func<bool>? isVpnActive = null,
+    Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
 {
     private static readonly TimeSpan NoPathRecheck = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan InitialProbeTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan PathSettlingRetryDelay = TimeSpan.FromSeconds(1);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
+    // Test-only virtual delays; production retains Task.Delay without new timers.
+    private readonly Func<TimeSpan, CancellationToken, Task> waitAsync =
+        delayAsync ?? ((duration, token) => Task.Delay(duration, token));
     private NetworkPathIdentity? lastPreferredPath;
     private int connectivityChangePending;
 
@@ -252,7 +256,7 @@ public sealed class PathAwareAgentCoordinator(
             $"agent.path-probe settling adapter={Safe(path.Name)} first={first.Status}");
         try
         {
-            await Task.Delay(PathSettlingRetryDelay, cancellationToken).ConfigureAwait(false);
+            await waitAsync(PathSettlingRetryDelay, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -329,7 +333,7 @@ public sealed class PathAwareAgentCoordinator(
         var delay = TimeSpan.FromMilliseconds(Math.Max(100, settings.GuardProbeIntervalMilliseconds));
         try
         {
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            await waitAsync(delay, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

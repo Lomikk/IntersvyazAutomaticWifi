@@ -1,0 +1,51 @@
+name: Virtual years simulation
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Virtual days per seed'
+        required: true
+        default: '365'
+        type: string
+      runs:
+        description: 'Independent deterministic seeds'
+        required: true
+        default: '10'
+        type: string
+      seed:
+        description: 'Starting random seed'
+        required: true
+        default: '74'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  virtual-years:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Run isolated virtual years
+        shell: pwsh
+        env:
+          SIM_DAYS: ${{ inputs.days }}
+          SIM_RUNS: ${{ inputs.runs }}
+          SIM_SEED: ${{ inputs.seed }}
+        run: |
+          dotnet run --project ./tests/IS74Wifi.SimulationTests/IS74Wifi.SimulationTests.csproj `
+            --configuration Release -- --days $env:SIM_DAYS --runs $env:SIM_RUNS --seed $env:SIM_SEED --paths 2 `
+            --strict --json ./artifacts/simulation/years.json
+          if ($LASTEXITCODE -ne 0) { throw "Virtual years simulation failed." }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: virtual-years-report
+          path: artifacts/simulation/years.json
+          if-no-files-found: warn
+          retention-days: 30
