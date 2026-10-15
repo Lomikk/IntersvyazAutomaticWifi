@@ -27,13 +27,15 @@ const spreadsheet = {
     return {
       getLastRow: () => table.rows.length + 1,
       getRange(start, column, count, width) {
-        assert.equal(column, 1);
-        assert.equal(width, table.headers.length);
+        assert.ok(column >= 1 && column + width - 1 <= table.headers.length);
         return {
-          getDisplayValues: () => [table.headers],
-          getValues: () => table.rows.slice(start - 2, start - 2 + count),
+          getDisplayValues: () => [table.headers.slice(column - 1, column - 1 + width)],
+          getValues: () => table.rows.slice(start - 2, start - 2 + count)
+            .map(row => row.slice(column - 1, column - 1 + width)),
           setValues(rows) {
             assert.equal(locked, true, 'write outside script lock');
+            assert.equal(column, 1, 'storage writes must start at first column');
+            assert.equal(width, table.headers.length);
             assert.equal(rows.length, count);
             pending.push(() => table.rows.splice(start - 2, count, ...rows.map(row => [...row])));
           }
@@ -127,6 +129,44 @@ assert.equal(flushes, 1); checks++;
 // A lost response and identical retry must not duplicate either part of the batch.
 result = post('telemetry', fixture);
 assert.equal(result.duplicate_batch, true);
+assert.equal(tables.get('Attempts').rows.length, 1);
+assert.equal(tables.get('SpeedTests').rows.length, 1); checks++;
+
+// Durable dedupe must survive CacheService expiry and complete eviction.
+reset();
+result = post('telemetry', fixture);
+assert.equal(result.accepted, 2);
+clock += 7 * 3600 * 1000; // Beyond the six-hour cache TTL.
+result = post('telemetry', fixture);
+assert.equal(result.ok, true);
+assert.equal(result.accepted, 0);
+assert.equal(result.duplicate_events, 2);
+assert.equal(tables.get('Attempts').rows.length, 1);
+assert.equal(tables.get('SpeedTests').rows.length, 1);
+cache.clear();
+result = post('telemetry', { batch_id: 'batch-repacked-other', events: fixture.events });
+assert.equal(result.accepted, 0, 'repacked same event IDs were written again');
+assert.equal(result.duplicate_events, 2);
+assert.equal(tables.get('Attempts').rows.length, 1);
+assert.equal(tables.get('SpeedTests').rows.length, 1); checks++;
+
+// Partial multi-sheet commit: a prior attempt wrote Attempts but not SpeedTests.
+// Replay must commit only the missing event without duplicating the first.
+reset();
+const attempt = fixture.events[0];
+const attemptDef = vm.runInContext("getStorageDefinition_('attempt')", sandbox);
+const prior = attemptDef.headers.map(key => key === 'event_id' ? attempt.event_id : '');
+tables.get('Attempts').rows.push(prior);
+result = post('telemetry', fixture);
+assert.equal(result.ok, true);
+assert.equal(result.accepted, 1);
+assert.equal(result.duplicate_events, 1);
+assert.equal(tables.get('Attempts').rows.length, 1);
+assert.equal(tables.get('SpeedTests').rows.length, 1);
+cache.clear();
+clock += 7 * 3600 * 1000;
+result = post('telemetry', fixture);
+assert.equal(result.accepted, 0);
 assert.equal(tables.get('Attempts').rows.length, 1);
 assert.equal(tables.get('SpeedTests').rows.length, 1); checks++;
 
