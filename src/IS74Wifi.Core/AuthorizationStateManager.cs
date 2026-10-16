@@ -181,24 +181,18 @@ public sealed class AuthorizationStateManager(
 
         if (reason != AuthorizationAttemptReason.Manual)
         {
-            // Normally we make one timer-driven shot and then watch SUSU until
-            // it actually becomes captive. If SUSU said "captive" but a retry
-            // still received AlreadyAuthorized, the signals contradict. Throttle
-            // subsequent confirmed-captive sends instead of burning all four
-            // portal attempts against a broken/incorrect probe endpoint.
-            DateTimeOffset? retryAt = null;
-            if (reason == AuthorizationAttemptReason.Retry)
-            {
-                var delays = settings.AutomaticRetryDelaysSeconds;
-                var seconds = delays.Length == 0
-                    ? 60
-                    : delays[Math.Clamp(state.AutomaticStepOneAttempts - 2, 0, delays.Length - 1)];
-                retryAt = now.AddSeconds(Math.Max(1, seconds));
-            }
+            // In the captive-confirmed policy, even the first automatic send
+            // follows two captive observations. AlreadyAuthorized contradicts
+            // those observations, so *every* automatic send needs backoff: an
+            // immediate re-send could otherwise burn all four attempts.
+            var delays = settings.AutomaticRetryDelaysSeconds;
+            var seconds = delays.Length == 0
+                ? 60
+                : delays[Math.Clamp(state.AutomaticStepOneAttempts - 1, 0, delays.Length - 1)];
             state = state with
             {
                 EdgeWatchActive = true,
-                NextAutomaticRetryUtc = retryAt
+                NextAutomaticRetryUtc = now.AddSeconds(Math.Max(1, seconds))
             };
         }
         store.Save(state);

@@ -112,26 +112,10 @@ public sealed class PathAwareAgentCoordinator(
             lastPreferredPath = null;
         }
 
-        var preferredSnapshot = lastPreferredPath is null
-            ? null
-            : current.FirstOrDefault(path => SameIdentity(path.Identity, lastPreferredPath));
-        if (preferredSnapshot is not null)
-        {
-            var preferredState = state.Find(preferredSnapshot.Identity);
-            if (ShouldFirePreferredTimerImmediately(preferredState, preferredSnapshot, now))
-            {
-                // Preserve the latency-first edge path: do not add VPN/interface
-                // diagnostics before the immediate timer-triggered stepOne.
-                await RunAuthorizationAsync(
-                    preferredSnapshot,
-                    secrets,
-                    preferred: true,
-                    vpnActive: null,
-                    cancellationToken,
-                    refreshAfterPreStepFailure: true).ConfigureAwait(false);
-                return;
-            }
-        }
+        // Experimental captive-confirmed policy: the predicted 24-hour boundary
+        // only schedules bound connectivity probes, never a speculative /stepOne.
+        // The preferred path still goes first, but must pass the same two captive
+        // observations as every other physical path.
 
         var vpnActiveNow = telemetry is null ? false : SafeVpnActive();
         NetworkPathSnapshot? authorizationCandidate = null;
@@ -144,17 +128,8 @@ public sealed class PathAwareAgentCoordinator(
             var observationReason = ObservationReason(before, path);
             var changed = observationReason != "scheduled_recheck";
             var observed = state.Observe(path, now);
-            if (!changed && PathAuthorizationSchedule.IsPreStepRetryPending(observed) &&
-                observed.ExpectedExpiryUtc is { } retryExpiry &&
-                now < retryExpiry + PathAuthorizationSchedule.ObservationAfterExpiry &&
-                observed.NextAutomaticRetryUtc <= now)
-            {
-                // Continue a previously started timer recovery even if its last
-                // observation was Unreachable or Windows changed path preference.
-                await RunAuthorizationAsync(path, secrets, IsPreferred(path), vpnActiveNow,
-                    cancellationToken, refreshAfterPreStepFailure: true).ConfigureAwait(false);
-                return;
-            }
+            // A due retry (including a pre-step transport failure) is not proof
+            // of captive. Reprobe and reconfirm before spending another attempt.
             var connectivityTriggeredProbe = connectivityChanged &&
                                              PathAuthorizationSchedule.IsConnectivityEventDriven(observed, path);
             if (!changed && !connectivityTriggeredProbe &&
@@ -296,39 +271,6 @@ public sealed class PathAwareAgentCoordinator(
         }
     }
 
-    private bool ShouldFirePreferredTimerImmediately(
-        PathAuthorizationState? pathState,
-        NetworkPathSnapshot current,
-        DateTimeOffset now)
-    {
-        if (pathState is null || pathState.UserActionRequired ||
-            pathState.ExpectedExpiryUtc is not { } expiry || now < expiry ||
-            pathState.EdgeWatchActive || PathAuthorizationSchedule.HasObservedInternetPastExpiry(pathState) ||
-            PathAuthorizationSchedule.SnapshotChanged(pathState, current))
-        {
-            return false;
-        }
-
-        if (pathState.NextAutomaticRetryUtc is { } retry && retry > now)
-        {
-            return false;
-        }
-
-        if (PathAuthorizationSchedule.IsPreStepRetryPending(pathState))
-        {
-            return now < expiry + PathAuthorizationSchedule.ObservationAfterExpiry;
-        }
-        if (pathState.Status != PathAuthorizationStatus.Internet)
-        {
-            return false;
-        }
-
-        var lastAutomaticSendWasBeforeExpiry = pathState.AutomaticStepOneAttempts > 0 &&
-                                                pathState.LastAttemptUtc is { } lastAttempt &&
-                                                lastAttempt < expiry;
-        return pathState.AutomaticStepOneAttempts == 0 || lastAutomaticSendWasBeforeExpiry;
-    }
-
     private async Task<bool> ConfirmCaptiveAsync(
         NetworkPathSnapshot path,
         CancellationToken cancellationToken)
@@ -367,8 +309,7 @@ public sealed class PathAwareAgentCoordinator(
         StoredSecrets secrets,
         bool preferred,
         bool? vpnActive,
-        CancellationToken cancellationToken,
-        bool refreshAfterPreStepFailure = false)
+        CancellationToken cancellationToken)
     {
         var candidateState = state.Find(path.Identity) ?? state.Observe(path);
         var reason = candidateState.AutomaticStepOneAttempts == 0
@@ -402,29 +343,6 @@ public sealed class PathAwareAgentCoordinator(
         logger.Write(DiagnosticLevel.Info,
             $"agent.path-auth adapter={Safe(path.Name)} result={outcome.Kind} confirmed={outcome.InternetConfirmed}");
         NotifyOutcome(path, outcome);
-        if (refreshAfterPreStepFailure && outcome.Kind == AuthorizationOutcomeKind.RetryableBeforeStepOne &&
-            !cancellationToken.IsCancellationRequested)
-        {
-            // The critical transaction has already ended. Observe once per failed
-            // retry, not at fast edge cadence. Internet ends speculative recovery;
-            // other outcomes preserve the retry deadline.
-            var current = CurrentPaths().FirstOrDefault(item => SameIdentity(item.Identity, path.Identity));
-            if (current is null || !path.HasSameTransportBinding(current)) return;
-            var retryAt = state.Find(path.Identity)?.NextAutomaticRetryUtc;
-            var remaining = retryAt - clock.GetUtcNow();
-            var probeBudget = remaining is { } left && left > PathAuthorizationSchedule.MinimumDelay
-                ? Min(InitialProbeTimeout, left) : PathAuthorizationSchedule.MinimumDelay;
-            var observation = await ProbePathAsync(path, settlingAllowed: false, cancellationToken,
-                probeBudget).ConfigureAwait(false);
-            var result = observation?.Result ?? new NetworkPathProbeResult(path.Identity,
-                NetworkPathProbeStatus.Unreachable,
-                new InternetProbeResult(false, false, null, null,
-                    TransportFailureKind.DirectRouteUnavailable, TimeSpan.Zero));
-            var updated = state.RecordProbe(path, result, clock.GetUtcNow());
-            logger.Write(DiagnosticLevel.Info,
-                $"agent.path-probe adapter={Safe(path.Name)} status={result.Status} expiry={updated.ExpectedExpiryUtc:O} reason=pre-step-failure");
-            NotifyCompletedUncertainWatch(path, updated);
-        }
     }
 
     private bool SafeVpnActive()
