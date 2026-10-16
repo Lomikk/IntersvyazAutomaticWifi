@@ -6,131 +6,153 @@ internal static class PathPreStepRecoveryContractTests
 {
     public static async Task RunAsync()
     {
-        await FiniteFailuresStopAndNotifyAsync();
-        await LateFirstShotDoesNotRetryPastWindowAsync();
-        await DnsRollbackAndPreExpiryFailureAsync();
-        await ConfirmedInternetStopsTimerRecoveryAsync();
+        await UnreachableNeverAuthorizesAndNotifiesOnceAsync();
+        await LateResumeProbesInsteadOfSendingAsync();
+        await CaptivePreStepFailureNeedsFreshCaptiveRetryAsync();
+        await InternetAtExpiryKeepsWatchingAsync();
     }
 
-    private static async Task FiniteFailuresStopAndNotifyAsync()
+    private static async Task UnreachableNeverAuthorizesAndNotifiesOnceAsync()
     {
         using var fixture = new Fixture();
         fixture.ThrowDirectUnavailable = true;
         await fixture.Agent.TickAsync();
-        Assert(fixture.Runner.ProbesBeforeFirstCall == 0 && fixture.Probes == 1,
-            "the preferred timer shot must run before its post-failure observation");
-        Assert(fixture.LastProbeTimeout == TimeSpan.FromSeconds(1),
-            "post-failure probe exceeded the first retry's backoff window");
+        Assert(fixture.Runner.Calls == 0 && fixture.Probes == 1,
+            "unreachable Internet probe sent an unconfirmed /stepOne at T");
+        Assert(fixture.LastProbeTimeout == TimeSpan.FromSeconds(2),
+            "unreachable probe changed the established 2-second timeout");
 
         var ticks = 0;
         while (fixture.Clock.GetUtcNow() < fixture.Expiry + PathAuthorizationSchedule.ObservationAfterExpiry)
         {
-            Assert(ticks++ < 100, "pre-step retry failed to reach the observation deadline");
+            Assert(ticks++ < 150, "unreachable edge watch never reached its deadline");
             fixture.Clock.Advance(fixture.Agent.GetSleepDelay());
             await fixture.Agent.TickAsync();
+            Assert(fixture.Runner.Calls == 0,
+                "unreachable or ambiguous probing authorized without captive confirmation");
         }
         var stopped = fixture.State.Find(fixture.Path.Identity)!;
         Assert(stopped.Status == PathAuthorizationStatus.Unreachable &&
-               stopped.NextAutomaticRetryUtc is null && !stopped.EdgeWatchActive &&
+               stopped.NextAutomaticRetryUtc is null &&
                PathAuthorizationSchedule.IsConnectivityEventDriven(stopped, fixture.Path) &&
                stopped.ConnectivityErrorNotifiedExpiryUtc == fixture.Expiry &&
-               fixture.Runner.Calls > 1 && fixture.Runner.Calls < 20 &&
                fixture.Notifications.Items.Count(item => item.Title == "Не удалось проверить Wi-Fi" &&
                    item.Importance == AgentNotificationImportance.Important) == 1,
-            "unreachable direct route must stop retries and send one terminal notice at +3 minutes");
-        var callsAtStop = fixture.Runner.Calls;
+            "unreachable path must stop at T+3min with one user notification");
         var probesAtStop = fixture.Probes;
         fixture.Clock.Advance(TimeSpan.FromMinutes(30));
         fixture.Agent = fixture.CreateAgent(preferred: false);
         await fixture.Agent.TickAsync();
-        Assert(fixture.Runner.Calls == callsAtStop && fixture.Probes == probesAtStop &&
-               fixture.Notifications.Items.Count(item => item.Title == "Не удалось проверить Wi-Fi") == 1,
-            "restart after failed observation resumed probes or repeated the notification");
+        Assert(fixture.Runner.Calls == 0 && fixture.Probes == probesAtStop,
+            "restart unexpectedly sent stepOne or probed without a Windows event");
 
-        // The same expired window must never spam additional notifications,
-        // even when Windows delivers repeated genuine connectivity events.
         fixture.Agent.NotifyNetworkConnectivityChanged();
         await fixture.Agent.TickAsync();
-        Assert(fixture.Notifications.Items.Count(item => item.Title == "Не удалось проверить Wi-Fi") == 1 &&
-               fixture.Runner.Calls == callsAtStop,
-            "failed bound probe after an event repeated the exhausted-window notification");
+        Assert(fixture.Runner.Calls == 0 &&
+               fixture.Notifications.Items.Count(item => item.Title == "Не удалось проверить Wi-Fi") == 1,
+            "unreachable Windows event spammed authorization or duplicate notifications");
 
-        // An explicit network event may recover even after the watch has closed.
+        // Once the captive portal actually appears, the same expired path can
+        // authorize on the next network event, after two positive observations.
         fixture.ThrowDirectUnavailable = false;
         fixture.CaptiveProbe = true;
         fixture.Runner.Recovered = true;
+        var probesBefore = fixture.Probes;
         fixture.Agent.NotifyNetworkConnectivityChanged();
         await fixture.Agent.TickAsync();
-        Assert(fixture.Runner.Calls == callsAtStop + 1 &&
-               fixture.State.Find(fixture.Path.Identity)!.LastResult == "already-authorized",
-            "a confirmed late captive event must still use the common authorization flow");
+        Assert(fixture.Runner.Calls == 1 &&
+               fixture.Probes == probesBefore + 2 &&
+               fixture.Runner.ProbesBeforeFirstCall == fixture.Probes,
+            "late genuine captive did not go through two probes before stepOne");
     }
 
-    private static async Task LateFirstShotDoesNotRetryPastWindowAsync()
+    private static async Task LateResumeProbesInsteadOfSendingAsync()
     {
         using var fixture = new Fixture();
         fixture.Clock.Advance(TimeSpan.FromMinutes(10));
         fixture.ProbeDuration = TimeSpan.FromSeconds(2);
         await fixture.Agent.TickAsync();
         var state = fixture.State.Find(fixture.Path.Identity)!;
-        Assert(fixture.Runner.Calls == 1 && state.NextAutomaticRetryUtc is null &&
+        Assert(fixture.Runner.Calls == 0 && fixture.Probes == 1 &&
+               state.NextAutomaticRetryUtc is null &&
                PathAuthorizationSchedule.HasCompletedObservationWindow(state) &&
                PathAuthorizationSchedule.GetNextCheckUtc(state, fixture.Path, fixture.Settings, fixture.Clock.GetUtcNow()) is null,
-            "a late first timer shot with live Internet must not enter speculative retries");
+            "late resume while online must probe once, never fire a speculative stepOne");
     }
 
-    private static async Task DnsRollbackAndPreExpiryFailureAsync()
+    private static async Task CaptivePreStepFailureNeedsFreshCaptiveRetryAsync()
     {
         using var fixture = new Fixture();
+        fixture.CaptiveProbe = true;
         fixture.Runner.RollbackReservation = true;
-        fixture.ThrowDirectUnavailable = true;
         await fixture.Agent.TickAsync();
-        Assert(fixture.State.Find(fixture.Path.Identity) is { AutomaticStepOneAttempts: 0, PreStepFailureCount: 1 },
-            "DNS rollback spent the send budget or lost the recovery retry");
+        Assert(fixture.Runner.Calls == 1 && fixture.Runner.ProbesBeforeFirstCall == 2 &&
+               fixture.Probes == 2 &&
+               fixture.State.Find(fixture.Path.Identity) is { AutomaticStepOneAttempts: 0, PreStepFailureCount: 1 },
+            "pre-step rollback must be preceded by two captive probes and preserve attempt budget");
+
         fixture.Clock.Advance(fixture.Agent.GetSleepDelay());
         await fixture.Agent.TickAsync();
-        Assert(fixture.Runner.Calls == 2 && fixture.Probes == 2 &&
+        Assert(fixture.Runner.Calls == 2 && fixture.Probes == 4 &&
                fixture.State.Find(fixture.Path.Identity)!.AutomaticStepOneAttempts == 0,
-            "DNS rollback reintroduced starvation on the next timer retry");
+            "retry after pre-step rollback bypassed captive reprobe or lost budget");
 
-        using var preExpiry = new Fixture();
-        preExpiry.Clock.Advance(TimeSpan.FromSeconds(-1));
-        preExpiry.Manager.MarkPreStepFailure(AuthorizationAttemptReason.Automatic);
-        preExpiry.Clock.Advance(TimeSpan.FromSeconds(1));
-        await preExpiry.Agent.TickAsync();
-        Assert(preExpiry.Runner.ProbesBeforeFirstCall == 0 && preExpiry.Runner.Calls == 1,
-            "a pre-expiry failure inserted a probe before the first boundary shot");
+        // When Internet returns during backoff, the retry must stop without
+        // attempting /stepOne based only on a stale captive state.
+        fixture.CaptiveProbe = false;
+        fixture.Clock.Advance(fixture.Agent.GetSleepDelay());
+        await fixture.Agent.TickAsync();
+        Assert(fixture.Runner.Calls == 2 && fixture.Probes == 5 &&
+               fixture.State.Find(fixture.Path.Identity)!.Status == PathAuthorizationStatus.Internet,
+            "Internet recovery must cancel stale pre-step retry before any send");
+
+        // Persisted pre-step failures created by an older build must not allow
+        // the old timer-only shortcut after upgrade.
+        using var migrated = new Fixture();
+        migrated.Clock.Advance(TimeSpan.FromSeconds(-1));
+        migrated.Manager.MarkPreStepFailure(AuthorizationAttemptReason.Automatic);
+        migrated.Clock.Advance(TimeSpan.FromSeconds(1));
+        await migrated.Agent.TickAsync();
+        Assert(migrated.Runner.Calls == 0,
+            "legacy persisted pre-step failure triggered a speculative boundary attempt");
+        migrated.Clock.Advance(migrated.Agent.GetSleepDelay());
+        await migrated.Agent.TickAsync();
+        Assert(migrated.Runner.Calls == 0,
+            "legacy failure retry ignored a healthy Internet probe");
     }
 
-    private static async Task ConfirmedInternetStopsTimerRecoveryAsync()
+    private static async Task InternetAtExpiryKeepsWatchingAsync()
     {
         using var fixture = new Fixture();
         await fixture.Agent.TickAsync();
         var first = fixture.State.Find(fixture.Path.Identity)!;
-        Assert(first.Status == PathAuthorizationStatus.Internet && first.NextAutomaticRetryUtc is null &&
-               first.PreStepFailureCount == 0 && !PathAuthorizationSchedule.IsConnectivityEventDriven(first, fixture.Path),
-            "live Internet must stop speculative stepOne retries, not the finite probes");
+        Assert(first.Status == PathAuthorizationStatus.Internet &&
+               first.NextAutomaticRetryUtc is null &&
+               first.AutomaticStepOneAttempts == 0 &&
+               !PathAuthorizationSchedule.IsConnectivityEventDriven(first, fixture.Path),
+            "live Internet at T must retain the finite window and preserve attempt budget");
         var probesBeforeWatch = fixture.Probes;
         var ticks = 0;
         while (fixture.Clock.GetUtcNow() < fixture.Expiry + PathAuthorizationSchedule.ObservationAfterExpiry)
         {
-            Assert(ticks++ < 150, "the healthy recovery watch did not complete");
+            Assert(ticks++ < 150, "the healthy edge watch did not complete");
             fixture.Clock.Advance(fixture.Agent.GetSleepDelay());
             await fixture.Agent.TickAsync();
+            Assert(fixture.Runner.Calls == 0, "healthy Internet during edge watch sent /stepOne");
         }
         var completed = fixture.State.Find(fixture.Path.Identity)!;
-        Assert(fixture.Runner.Calls == 1 && fixture.Probes > probesBeforeWatch &&
+        Assert(fixture.Probes > probesBeforeWatch && fixture.Runner.Calls == 0 &&
                PathAuthorizationSchedule.IsConnectivityEventDriven(completed, fixture.Path) &&
                fixture.Agent.CanUploadTelemetry(),
-            "the completed observation did not stop probes or free background maintenance");
+            "completed Internet observation must stop probes and permit telemetry");
         var probesAtEnd = fixture.Probes;
         fixture.Clock.Advance(TimeSpan.FromMinutes(30));
         await fixture.Agent.TickAsync();
-        Assert(fixture.Probes == probesAtEnd, "ordinary wake started probes after the window");
+        Assert(fixture.Probes == probesAtEnd, "ordinary wake restarted probes after the window");
         fixture.Agent.NotifyNetworkConnectivityChanged();
         await fixture.Agent.TickAsync();
-        Assert(fixture.Probes == probesAtEnd + 1 && fixture.Runner.Calls == 1,
-            "connectivity event did not synchronize the path without speculative authorization");
+        Assert(fixture.Probes == probesAtEnd + 1 && fixture.Runner.Calls == 0,
+            "Windows event must probe once without a speculative /stepOne");
     }
 
     private sealed class Fixture : IDisposable

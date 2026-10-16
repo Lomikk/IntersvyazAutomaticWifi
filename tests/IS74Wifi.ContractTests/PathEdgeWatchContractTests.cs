@@ -58,15 +58,15 @@ internal static class PathEdgeWatchContractTests
         }
 
         await coordinator.TickAsync();
-        Assert(runner.Reasons.SequenceEqual([AuthorizationAttemptReason.Automatic]) && probeCalls == 0,
-            "the first timer shot must precede any probe and receive AlreadyAuthorized");
-        Assert(state.Find(path.Identity) is { EdgeWatchActive: true, AutomaticStepOneAttempts: 1 } &&
+        Assert(runner.Reasons.Count == 0 && probeCalls == 1,
+            "the boundary must probe Internet without sending speculative stepOne");
+        Assert(state.Find(path.Identity) is { EdgeWatchActive: false, AutomaticStepOneAttempts: 0 } &&
                state.Find(path.Identity)!.ExpectedExpiryUtc == expiry,
-            "AlreadyAuthorized must keep the old expiry and persist edge-watch");
+            "Internet at T must preserve the old expiry without spending attempts");
 
         clock.Advance(coordinator.GetSleepDelay());
         await coordinator.TickAsync();
-        Assert(probeCalls == 1 && state.Find(path.Identity)!.EdgeWatchActive &&
+        Assert(probeCalls == 2 && !state.Find(path.Identity)!.EdgeWatchActive &&
                !PathAuthorizationSchedule.IsConnectivityEventDriven(state.Find(path.Identity)!, path) &&
                PathAuthorizationSchedule.GetNextCheckUtc(state.Find(path.Identity), path, settings, clock.GetUtcNow()) is not null,
             "one post-expiry Internet response must NOT end the 3-minute observation window");
@@ -76,7 +76,7 @@ internal static class PathEdgeWatchContractTests
             Assert(ticks++ < 150, "observation failed to taper or reach its finite deadline");
             clock.Advance(coordinator.GetSleepDelay());
             await coordinator.TickAsync();
-            Assert(runner.Reasons.Count == 1, "healthy Internet caused an unnecessary second stepOne");
+            Assert(runner.Reasons.Count == 0, "healthy Internet caused a speculative stepOne");
         }
         Assert(probeCalls > 25 && !state.Find(path.Identity)!.EdgeWatchActive &&
                PathAuthorizationSchedule.IsConnectivityEventDriven(state.Find(path.Identity)!, path) &&
@@ -88,7 +88,7 @@ internal static class PathEdgeWatchContractTests
             clock.Advance(TimeSpan.FromMinutes(1));
             if (minute == 10) coordinator = CreateCoordinator();
             await coordinator.TickAsync();
-            Assert(probeCalls == probesAtWindowEnd && runner.Reasons.Count == 1 &&
+            Assert(probeCalls == probesAtWindowEnd && runner.Reasons.Count == 0 &&
                    coordinator.GetSleepDelay() == PathAuthorizationSchedule.MaximumWait,
                 "ordinary wake/restart introduced a probe after the finite window");
             Assert(state.Find(path.Identity)!.ExpectedExpiryUtc == expiry,
@@ -99,24 +99,25 @@ internal static class PathEdgeWatchContractTests
         coordinator.NotifyNetworkConnectivityChanged();
         var probesBeforeCaptive = probeCalls;
         await coordinator.TickAsync();
-        Assert(probeCalls == probesBeforeCaptive + 2 && runner.Reasons[^1] == AuthorizationAttemptReason.Retry,
-            "late captive must be confirmed twice before the retry");
+        Assert(probeCalls == probesBeforeCaptive + 2 &&
+               runner.Reasons.SequenceEqual([AuthorizationAttemptReason.Automatic]),
+            "late captive must be confirmed twice before the first stepOne");
         var conflicting = state.Find(path.Identity)!;
-        Assert(conflicting.EdgeWatchActive && conflicting.AutomaticStepOneAttempts == 2 &&
+        Assert(conflicting.EdgeWatchActive && conflicting.AutomaticStepOneAttempts == 1 &&
                conflicting.NextAutomaticRetryUtc == clock.GetUtcNow().AddSeconds(15),
-            "contradictory captive/AlreadyAuthorized must retain the retry backoff");
+            "late captive/AlreadyAuthorized must retain the retry backoff");
         Assert(PathAuthorizationSchedule.GetDelay(conflicting, settings, clock.GetUtcNow()) == TimeSpan.FromSeconds(15),
             "a late captive retry must retain its backoff after the 3-minute observation window");
         var callsBeforeBackoff = probeCalls;
         await coordinator.TickAsync();
-        Assert(probeCalls == callsBeforeBackoff && runner.Reasons.Count == 2,
+        Assert(probeCalls == callsBeforeBackoff && runner.Reasons.Count == 1,
             "an early wake must not consume a probe or another send during retry backoff");
 
         clock.Advance(coordinator.GetSleepDelay());
         await coordinator.TickAsync();
         var recovered = state.Find(path.Identity)!;
         Assert(runner.Reasons.SequenceEqual([
-                AuthorizationAttemptReason.Automatic, AuthorizationAttemptReason.Retry, AuthorizationAttemptReason.Retry]),
+                AuthorizationAttemptReason.Automatic, AuthorizationAttemptReason.Retry]),
             "authorization attempts changed across timer, watch and retry");
         Assert(!recovered.EdgeWatchActive && recovered.AutomaticStepOneAttempts == 0 &&
                recovered.NextAutomaticRetryUtc is null && recovered.LastResult == "success" &&
@@ -140,7 +141,7 @@ internal static class PathEdgeWatchContractTests
             var budget = manager.RegisterStepOneSend(request.Reason);
             Assert(budget.Allowed, "scripted send unexpectedly exhausted the real budget");
             manager.ClearPreStepFailure();
-            if (Reasons.Count <= 2)
+            if (Reasons.Count == 1)
             {
                 manager.MarkAlreadyAuthorized(request.Reason);
                 return Task.FromResult(new AuthorizationOutcome(AuthorizationOutcomeKind.AlreadyAuthorized,

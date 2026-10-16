@@ -96,21 +96,21 @@ internal static class AgentContractTests
             store.Save(new RuntimeState { AutomaticStepOneAttempts = 1 });
             manager.MarkAlreadyAuthorized(AuthorizationAttemptReason.Automatic);
             var first = manager.Load();
-            Assert(first.EdgeWatchActive && first.NextAutomaticRetryUtc is null,
-                "the initial AlreadyAuthorized response must start immediate edge-watch without a retry timer");
+            Assert(first.EdgeWatchActive && first.NextAutomaticRetryUtc == now.AddSeconds(15),
+                "captive-confirmed initial AlreadyAuthorized must defer repeats for 15 seconds");
 
             // If SUSU twice reported captive but the portal still reports
             // AlreadyAuthorized, throttle retries to protect the four-send budget.
             store.Save(first with { AutomaticStepOneAttempts = 2 });
             manager.MarkAlreadyAuthorized(AuthorizationAttemptReason.Retry);
             var conflicting = manager.Load();
-            Assert(conflicting.EdgeWatchActive && conflicting.NextAutomaticRetryUtc == now.AddSeconds(15),
-                "contradictory captive/AlreadyAuthorized signals must defer another portal send");
+            Assert(conflicting.EdgeWatchActive && conflicting.NextAutomaticRetryUtc == now.AddSeconds(30),
+                "second contradictory captive/AlreadyAuthorized must increase backoff");
 
             store.Save(conflicting with { AutomaticStepOneAttempts = 3 });
             manager.MarkAlreadyAuthorized(AuthorizationAttemptReason.Retry);
-            Assert(manager.Load().NextAutomaticRetryUtc == now.AddSeconds(30),
-                "a repeated contradictory portal response must extend backoff");
+            Assert(manager.Load().NextAutomaticRetryUtc == now.AddSeconds(60),
+                "third contradictory portal response must extend backoff");
         }
         finally
         {

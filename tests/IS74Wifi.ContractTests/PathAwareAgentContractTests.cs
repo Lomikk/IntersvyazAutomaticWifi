@@ -70,18 +70,28 @@ internal static class PathAwareAgentContractTests
                    now.AddHours(settings.AuthWindowHours).AddSeconds(-30),
             "two different physical paths must use the same symmetric pre-expiry schedule");
 
-        // Preserve the old latency-first edge behaviour for the path Windows says
-        // currently carries Internet: at the known expiry, the first automatic
-        // attempt starts immediately without inserting a preliminary probe.
+        // On the preferred path, reaching T no longer sends a speculative /stepOne:
+        // a live Internet response consumes no authorization budget.
+        state.RecordConfirmedAuthorization(wifi, now.AddHours(-24), now, now.AddHours(-24));
+        probes[wifi.AdapterId] = NetworkPathProbeStatus.Internet;
+        probeCalls.Clear();
+        var authBeforeEdge = auth.Paths.Count;
+        await coordinator.TickAsync();
+        Assert(auth.Paths.Count == authBeforeEdge && probeCalls.SequenceEqual([wifi.AdapterId]),
+            "preferred path sent speculative stepOne despite Internet at the known expiry");
+        Assert(state.Find(wifi.Identity)?.AutomaticStepOneAttempts == 0,
+            "Internet at the expiry unexpectedly consumed automatic stepOne budget");
+
+        // The same preferred path must recover immediately when captive is
+        // observed twice, including at the known expiry.
         state.RecordConfirmedAuthorization(wifi, now.AddHours(-24), now, now.AddHours(-24));
         probes[wifi.AdapterId] = NetworkPathProbeStatus.Captive;
         probeCalls.Clear();
-        var authBeforeFastEdge = auth.Paths.Count;
         await coordinator.TickAsync();
-        Assert(auth.Paths.Count == authBeforeFastEdge + 1 && auth.Paths[^1].AdapterId == wifi.AdapterId,
-            "preferred path did not receive the latency-first timer shot at its known expiry");
-        Assert(probeCalls.Count == 0,
-            "preferred timer shot inserted a probe into the old latency-critical expiry path");
+        Assert(auth.Paths.Count == authBeforeEdge + 1 && auth.Paths[^1].AdapterId == wifi.AdapterId,
+            "confirmed captive preferred path was not authorized");
+        Assert(probeCalls.SequenceEqual([wifi.AdapterId, wifi.AdapterId]),
+            "preferred path bypassed the two required captive probes");
 
         // A DHCP/ifIndex transport change on the same identity forces an immediate probe,
         // but preserves the authorization history until that probe supplies new truth.
