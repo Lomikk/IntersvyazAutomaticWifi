@@ -31,6 +31,14 @@ internal sealed partial class WindowsNotificationService(
             return;
         }
 
+        // Reuse the persistent tray icon whenever it is enabled. This avoids
+        // additional taskbar icons during overlapping start/success messages.
+        // With the tray disabled, preserve the legacy transient icon fallback.
+        if (WindowsTrayIconService.TryShowBalloon(notification))
+        {
+            return;
+        }
+
         _ = Task.Run(() =>
         {
             try
@@ -196,7 +204,7 @@ internal sealed partial class WindowsNotificationService(
         return NativeMethods.CallWindowProcW(registration.PreviousProcedure, window, message, wParam, lParam);
     }
 
-    private static void LaunchNotificationAction(AgentNotificationAction action)
+    internal static void LaunchNotificationAction(AgentNotificationAction action)
     {
         if (action != AgentNotificationAction.OpenUpdates)
         {
