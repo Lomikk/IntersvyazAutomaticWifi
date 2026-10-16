@@ -77,12 +77,12 @@ pwsh -NoProfile -File ./tests/check_runner_contract.ps1
 
 C# фильтр — подстрока имени группы; отсутствие совпадений возвращает ошибку.
 Список групп — в начале `tests/IS74Wifi.ContractTests/Program.cs`.
-Группа `path-edge-watch` моделирует AlreadyAuthorized → Internet → 30 минут ожидания
-сетевого события без HTTP, перезапуск coordinator и поздний captive/retry по событию;
+Группа `path-edge-watch` моделирует Internet в T без /stepOne → 30 минут ожидания
+сетевого события без HTTP, перезапуск coordinator и поздний captive/AlreadyAuthorized/retry по событию;
 HTTP подменён, два коротких confirmation delay остаются настоящими.
-Группа `path-pre-step-recovery` проверяет 30 минут отказов до stepOne, сохранение
-backoff/budget, свежие probes и восстановление после рестарта/Unreachable, а также
-прекращение retry после Internet и отсутствие запросов за 30 виртуальных минут.
+Группа `path-pre-step-recovery` проверяет отсутствие /stepOne при Unreachable,
+backoff/budget после подтверждённого captive, новые captive-пробы перед retry,
+восстановление после рестарта/Unreachable и прекращение retry после Internet.
 `agent-network-ipc` включает публикацию snapshot после ошибки и ожидание
 именованного wake event; тест использует уникальное имя и не будит рабочий агент.
 В приватном репозитории существующий `./verify.ps1 -ClientRepository <checkout>`
