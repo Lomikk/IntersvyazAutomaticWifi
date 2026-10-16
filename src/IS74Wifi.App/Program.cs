@@ -2028,6 +2028,24 @@ internal static class Program
                         OpenAvailableUpdateReleasePage();
                         break;
 
+                    case InteractiveMenuAction.SupportProject:
+                    {
+                        using var http = HttpClientProfiles.CreateTelemetryClient();
+                        var client = new SupportLinkClient(http, ApplicationRuntime.ResolveTelemetryEndpoint(new SettingsStore(
+                            new AppPaths(), new JsonFileStore()).Load()));
+                        var link = await client.GetUrlAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                        if (link is null)
+                        {
+                            await ui.ShowMessageAsync("ПОДДЕРЖАТЬ ПРОЕКТ",
+                                "Не удалось получить актуальную ссылку поддержки. Попробуйте позже.",
+                                GetInteractiveStatusSnapshot(), isError: true).ConfigureAwait(false);
+                            break;
+                        }
+                        _ = Process.Start(new ProcessStartInfo(link.AbsoluteUri) { UseShellExecute = true })
+                            ?? throw new InvalidOperationException("Не удалось открыть ссылку поддержки.");
+                        break;
+                    }
+
                     case InteractiveMenuAction.SpeedTools:
                     {
                         using var speedRuntime = ApplicationRuntime.Create(ProductVersion);

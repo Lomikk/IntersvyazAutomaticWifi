@@ -42,6 +42,8 @@ internal static class BackendWireContractTests
         Assert(!control.Success && control.Error == "rate_limited" && control.RetryAfterSeconds == 60,
             "control rate-limit envelope mismatch");
 
+        await CheckSupportLinkAsync();
+
         foreach (var (value, expected) in new (string Value, int? Expected)[]
         {
             ("null", null), ("-1", null), ("0", null), ("1.5", null),
@@ -55,6 +57,44 @@ internal static class BackendWireContractTests
         reply = "{\"ok\":false,\"error\":\"rate_limited\"}";
         Assert((await client.SendTelemetryBatchAsync(batch, timeout)).RetryAfterSeconds is null,
             "older receiver without retry delay is no longer supported");
+    }
+
+    private static async Task CheckSupportLinkAsync()
+    {
+        string response = "{\"ok\":true,\"support_url\":\"https://yoomoney.ru/fundraise/sample\"}";
+        var calls = 0;
+        using var http = new HttpClient(new DelegateHandler((request, _) =>
+        {
+            calls++;
+            Assert(request.Method == HttpMethod.Get &&
+                request.RequestUri?.Query == "?deployment=test&route=config", "support config request route mismatch");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(response)
+            });
+        }));
+        var linkClient = new SupportLinkClient(http, new Uri("https://backend.example.test/exec?deployment=test"));
+        var first = await linkClient.GetUrlAsync(TimeSpan.FromSeconds(2));
+        Assert(first?.AbsoluteUri == "https://yoomoney.ru/fundraise/sample", "support URL was not read");
+        response = "{\"ok\":true,\"support_url\":\"https://example.org/new-donation-page\"}";
+        var next = await linkClient.GetUrlAsync(TimeSpan.FromSeconds(2));
+        Assert(next?.AbsoluteUri == "https://example.org/new-donation-page" && calls == 2,
+            "support URL was cached instead of reloaded on click");
+
+        foreach (var rawUrl in new[] { "http://example.org", "https://localhost/pay",
+            "https://user:pass@example.org", "javascript:alert(1)", "file:///tmp/donate" })
+        {
+            response = "{\"ok\":true,\"support_url\": " + JsonSerializer.Serialize(rawUrl) + "}";
+            Assert(await linkClient.GetUrlAsync(TimeSpan.FromSeconds(2)) is null,
+                "untrusted support URL must be rejected: " + rawUrl);
+        }
+        foreach (var invalid in new[] { "{\"ok\":false,\"error\":\"support_url_unavailable\"}",
+            "{\"ok\":true}", "not-json", "{\"ok\":true,\"support_url\":123}" })
+        {
+            response = invalid;
+            Assert(await linkClient.GetUrlAsync(TimeSpan.FromSeconds(2)) is null,
+                "invalid support configuration was accepted");
+        }
     }
 
     private static Task<string> FixtureAsync(string name) =>

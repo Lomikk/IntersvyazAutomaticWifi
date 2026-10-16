@@ -78,5 +78,6 @@ internal enum InteractiveMenuAction
     Update,
     OpenUpdateReleasePage,
     SpeedTools,
+    SupportProject,
     Exit
 }

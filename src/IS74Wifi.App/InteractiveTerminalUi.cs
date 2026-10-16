@@ -1668,6 +1668,7 @@ internal sealed partial class InteractiveTerminalUi
         new MenuItem('3', "Состояние и подробный отчёт", InteractiveMenuAction.ShowDetailedStatus),
         new MenuItem('4', "Настройки", InteractiveMenuAction.OpenSettings),
         new MenuItem('5', "Обслуживание", InteractiveMenuAction.OpenMaintenance),
+        new MenuItem('6', "Поддержать проект", InteractiveMenuAction.SupportProject),
         new MenuItem('0', "Выход", InteractiveMenuAction.Exit)
     ];
 

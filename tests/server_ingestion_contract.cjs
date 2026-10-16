@@ -321,4 +321,29 @@ for (const name of ['Attempts', 'SpeedTests', 'Leaderboard', 'MailboxPolls',
 }
 checks++;
 
+// Public support config is read-only, uncached and exposes no other sheet values.
+reset();
+tables.set('Config', {
+  headers: ['key', 'value'],
+  rows: [['admin_secret', 'not-public'], ['support_url', 'https://yoomoney.ru/fundraise/first']]
+});
+function readSupport() {
+  sandbox.request = { parameter: { route: 'config' } };
+  return JSON.parse(vm.runInContext('doGet(request)', sandbox, { timeout: 2000 }).body);
+}
+assert.deepEqual(readSupport(), { ok: true, support_url: 'https://yoomoney.ru/fundraise/first' });
+assert.equal(JSON.stringify(readSupport()).includes('not-public'), false);
+assert.equal(pending.length, 0);
+tables.get('Config').rows[1][1] = 'https://example.org/new';
+assert.equal(readSupport().support_url, 'https://example.org/new', 'config was cached');
+tables.get('Config').rows[1][1] = 'http://example.org/pay';
+assert.equal(readSupport().error, 'invalid_support_url');
+tables.get('Config').rows[1][1] = '';
+assert.equal(readSupport().error, 'invalid_support_url');
+tables.get('Config').rows.push(['support_url', 'https://example.org/duplicate']);
+assert.equal(readSupport().error, 'support_url_unavailable');
+tables.delete('Config');
+assert.equal(readSupport().error, 'support_url_unavailable');
+checks++;
+
 console.log(`private ingestion contract: PASS (${checks} scenarios; in-memory only)`);

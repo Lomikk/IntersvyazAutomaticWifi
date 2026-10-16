@@ -187,6 +187,7 @@ assert 'Console.WindowWidth' in csharp_ui and 'UpdateLayout()' in csharp_ui and 
 assert 'Cell' in terminal_canvas and 'Palette' in terminal_canvas and 'WrapText' in terminal_canvas and 'DrawBox' in terminal_canvas, 'terminal canvas primitives must have one owner'
 assert 'ConsoleKey.UpArrow' in csharp_ui and 'ConsoleKey.DownArrow' in csharp_ui and 'ConsoleKey.Enter' in csharp_ui
 assert "new MenuItem('1', \"Авторизовать Wi-Fi сейчас\"" in csharp_ui, 'terminal UI numeric hotkeys missing'
+assert "new MenuItem('6', \"Поддержать проект\", InteractiveMenuAction.SupportProject)" in csharp_ui, 'support link must be in main menu'
 assert "new MenuItem('0', \"Выход\"" in csharp_ui, 'terminal UI exit hotkey missing'
 assert 'BannerMode.InitialSweep' in csharp_ui and 'BannerMode.AmbientSweep' in csharp_ui, 'brand sweep animations missing'
 assert 'glint' not in csharp_ui.lower(), 'per-letter glint animation must stay disabled'
