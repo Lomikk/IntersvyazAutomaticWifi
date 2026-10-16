@@ -93,10 +93,12 @@ internal sealed partial class WindowsTrayIconService : IDisposable
 {
     private const uint CallbackMessage = 0x8000 + 75; // WM_APP + 75
     private const uint RefreshMessage = 0x8000 + 76;  // WM_APP + 76
+    private const uint BalloonMessage = 0x8000 + 77;  // WM_APP + 77
     private const uint IconId = 74;
     private static readonly WindowProcedure WindowProcedureDelegate = TrayWndProc;
     private static readonly IntPtr WindowProcedurePointer = Marshal.GetFunctionPointerForDelegate(WindowProcedureDelegate);
     private static readonly ConcurrentDictionary<IntPtr, WindowsTrayIconService> Windows = new();
+    private static int nextBalloonId;
 
     private readonly AppPaths paths;
     private readonly DiagnosticLogger logger;
@@ -104,6 +106,8 @@ internal sealed partial class WindowsTrayIconService : IDisposable
     private readonly ManualResetEventSlim ready = new(false);
     private readonly object stateGate = new();
     private readonly Dictionary<TrayIconSemanticState, IntPtr> icons = [];
+    private readonly ConcurrentDictionary<uint, AgentNotification> pendingBalloons = new();
+    private AgentNotificationAction balloonAction = AgentNotificationAction.None;
     private TrayIconPresentation desired = TrayIconStateResolver.Working;
     private IntPtr window;
     private IntPtr previousProcedure;
@@ -142,6 +146,34 @@ internal sealed partial class WindowsTrayIconService : IDisposable
         }
 
         return service;
+    }
+
+    /// <summary>
+    /// Post notifications to the existing tray icon instead of registering a
+    /// second Shell_NotifyIcon entry for every overlapping notification.
+    /// Returns false when the persistent icon is disabled/unavailable.
+    /// </summary>
+    internal static bool TryShowBalloon(AgentNotification notification)
+    {
+        foreach (var service in Windows.Values)
+        {
+            var target = service.window;
+            if (target == IntPtr.Zero || service.disposed || !service.iconAdded)
+            {
+                continue;
+            }
+
+            var id = unchecked((uint)Interlocked.Increment(ref nextBalloonId));
+            service.pendingBalloons[id] = notification;
+            if (NativeMethods.PostMessageW(target, BalloonMessage, new UIntPtr(id), IntPtr.Zero))
+            {
+                return true;
+            }
+
+            service.pendingBalloons.TryRemove(id, out _);
+        }
+
+        return false;
     }
 
     internal void SetState(TrayIconPresentation presentation)
@@ -310,8 +342,49 @@ internal sealed partial class WindowsTrayIconService : IDisposable
         _ = NativeMethods.ShellNotifyIconW(NativeMethods.NimModify, ref data);
     }
 
+    // This method runs on the tray window's message-pump thread. Each notification
+    // modifies the already-registered icon; it never calls NIM_ADD.
+    private unsafe void ShowBalloon(AgentNotification notification)
+    {
+        if (!iconAdded || window == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var data = new NotifyIconData
+        {
+            cbSize = (uint)sizeof(NotifyIconData),
+            hWnd = window,
+            uID = IconId,
+            uFlags = NativeMethods.NifInfo,
+            dwInfoFlags = notification.Severity switch
+            {
+                AgentNotificationSeverity.Error => NativeMethods.NiifError,
+                AgentNotificationSeverity.Warning => NativeMethods.NiifWarning,
+                _ => NativeMethods.NiifInfo
+            }
+        };
+
+        if (notification.Importance == AgentNotificationImportance.Routine)
+        {
+            data.dwInfoFlags |= NativeMethods.NiifNoSound;
+        }
+
+        SetInfoTitle(ref data, notification.Title);
+        SetInfo(ref data, notification.Message);
+        if (NativeMethods.ShellNotifyIconW(NativeMethods.NimModify, ref data) == 0)
+        {
+            logger.Write(DiagnosticLevel.Warn, "tray.balloon unavailable reason=shell-modify");
+            return;
+        }
+
+        balloonAction = notification.Action;
+    }
+
     private void CleanupNativeResources()
     {
+        pendingBalloons.Clear();
+        balloonAction = AgentNotificationAction.None;
         var target = window;
         if (target != IntPtr.Zero)
         {
@@ -365,6 +438,15 @@ internal sealed partial class WindowsTrayIconService : IDisposable
                 return IntPtr.Zero;
             }
 
+            if (message == BalloonMessage)
+            {
+                if (service.pendingBalloons.TryRemove(unchecked((uint)wParam.ToUInt64()), out var notification))
+                {
+                    service.ShowBalloon(notification);
+                }
+                return IntPtr.Zero;
+            }
+
             if (message == service.taskbarCreatedMessage && message != 0)
             {
                 service.iconAdded = false;
@@ -372,10 +454,24 @@ internal sealed partial class WindowsTrayIconService : IDisposable
                 return IntPtr.Zero;
             }
 
-            if (message == CallbackMessage && (unchecked((uint)lParam.ToInt64()) & 0xFFFF) == NativeMethods.WmLButtonDblClk)
+            if (message == CallbackMessage)
             {
-                LaunchMenu();
-                return IntPtr.Zero;
+                var callback = unchecked((uint)lParam.ToInt64()) & 0xFFFF;
+                if (callback == NativeMethods.NinBalloonUserClick)
+                {
+                    var action = service.balloonAction;
+                    service.balloonAction = AgentNotificationAction.None;
+                    if (action != AgentNotificationAction.None)
+                    {
+                        WindowsNotificationService.LaunchNotificationAction(action);
+                    }
+                    return IntPtr.Zero;
+                }
+                if (callback == NativeMethods.WmLButtonDblClk)
+                {
+                    LaunchMenu();
+                    return IntPtr.Zero;
+                }
             }
 
             if (message == NativeMethods.WmClose)
@@ -418,6 +514,36 @@ internal sealed partial class WindowsTrayIconService : IDisposable
         };
         startInfo.ArgumentList.Add("menu");
         _ = Process.Start(startInfo);
+    }
+
+    private static unsafe void SetInfoTitle(ref NotifyIconData data, string value)
+    {
+        fixed (char* buffer = data.szInfoTitle)
+        {
+            SetFixedString(buffer, 64, value);
+        }
+    }
+
+    private static unsafe void SetInfo(ref NotifyIconData data, string value)
+    {
+        fixed (char* buffer = data.szInfo)
+        {
+            SetFixedString(buffer, 256, value);
+        }
+    }
+
+    private static unsafe void SetFixedString(char* buffer, int capacity, string value)
+    {
+        var length = Math.Min(value.Length, capacity - 1);
+        for (var i = 0; i < length; i++)
+        {
+            buffer[i] = value[i];
+        }
+        buffer[length] = '\0';
+        for (var i = length + 1; i < capacity; i++)
+        {
+            buffer[i] = '\0';
+        }
     }
 
     private static unsafe void SetTip(ref NotifyIconData data, string value)
@@ -488,6 +614,12 @@ internal sealed partial class WindowsTrayIconService : IDisposable
         internal const uint NifMessage = 0x00000001;
         internal const uint NifIcon = 0x00000002;
         internal const uint NifTip = 0x00000004;
+        internal const uint NifInfo = 0x00000010;
+        internal const uint NiifInfo = 0x00000001;
+        internal const uint NiifWarning = 0x00000002;
+        internal const uint NiifError = 0x00000003;
+        internal const uint NiifNoSound = 0x00000010;
+        internal const uint NinBalloonUserClick = 0x0400 + 5;
         internal const uint NotifyIconVersion4 = 4;
         internal const uint WmClose = 0x0010;
         internal const uint WmLButtonDblClk = 0x0203;
