@@ -9,9 +9,6 @@ on:
       - 'src/IS74Wifi.Core/**'
       - 'tests/**'
       - 'scripts/**'
-      - 'docs/**'
-      - 'AGENTS.md'
-      - 'README.md'
       - 'IS74Wifi.ps1'
       - 'agent.ps1'
       - 'src/IS74Wifi.psm1'
@@ -23,13 +20,18 @@ on:
       - 'src/IS74Wifi.Core/**'
       - 'tests/**'
       - 'scripts/**'
-      - 'docs/**'
-      - 'AGENTS.md'
-      - 'README.md'
       - 'IS74Wifi.ps1'
       - 'agent.ps1'
       - 'src/IS74Wifi.psm1'
       - '.github/workflows/dotnet.yml'
+
+# Documentation-only changes do not need an expensive Windows build.
+permissions:
+  contents: read
+
+concurrency:
+  group: client-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
