@@ -38,7 +38,10 @@ public sealed class InterfaceDnsResolver
     public async Task<DnsResolution> ResolveWithSourceAsync(string hostname, PhysicalAdapter adapter, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        var cacheKey = $"{adapter.Id}|{adapter.SourceIPv4}|{adapter.Ssid}|{string.Join(",", adapter.DnsServers.Select(ip => ip.ToString()))}|{hostname}";
+        // Bind cached addresses to the actual local path, not merely to an SSID.
+        // Renewed DHCP, a different gateway, or a reassigned interface index must
+        // re-resolve even if Windows reports the same adapter name/network.
+        var cacheKey = $"{adapter.Id}|{adapter.IPv4Index}|{adapter.SourceIPv4}|{adapter.GatewayIPv4}|{adapter.Ssid}|{string.Join(",", adapter.DnsServers.Select(ip => ip.ToString()))}|{hostname}";
         if (cache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTimeOffset.UtcNow)
         {
             return cached.Resolution with { FromCache = true };

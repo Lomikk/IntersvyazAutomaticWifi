@@ -25,9 +25,11 @@ internal static class PathAwareAgentContractTests
             [vpn.AdapterId] = NetworkPathProbeStatus.Captive
         };
         var probeCalls = new List<string>();
-        var probe = new NetworkPathProbe((path, _, _) =>
+        var probeTimeouts = new List<TimeSpan>();
+        var probe = new NetworkPathProbe((path, timeout, _) =>
         {
             probeCalls.Add(path.AdapterId);
+            probeTimeouts.Add(timeout);
             var status = probes[path.AdapterId];
             return Task.FromResult(ProbeResult(status));
         });
@@ -48,6 +50,10 @@ internal static class PathAwareAgentContractTests
         await coordinator.TickAsync();
         Assert(probeCalls.SequenceEqual([wifi.AdapterId, wifi.AdapterId]),
             "preferred captive path must be confirmed twice and authorized before probing backup paths");
+        Assert(probeTimeouts.Count == 2 &&
+               probeTimeouts[0] == TimeSpan.FromSeconds(2) &&
+               probeTimeouts[1] >= probeTimeouts[0],
+            "short persisted guard timeout starved the second VPN-affected captive probe");
         Assert(!probeCalls.Contains(vpn.AdapterId), "VPN path reached the automatic probe");
         Assert(auth.Paths.Count == 1, "more than one SMS authorization flow ran in one tick");
         var first = auth.Paths[0];
@@ -55,6 +61,35 @@ internal static class PathAwareAgentContractTests
             "the Windows-preferred Internet path must win simultaneous captive arbitration");
         Assert(state.Find(first.Identity)?.ExpectedExpiryUtc == now.AddHours(settings.AuthWindowHours),
             "successful path authorization did not create its own expiry");
+
+        // A failed second probe still blocks stepOne: increasing its budget must
+        // not weaken the two-independent-HTTP-responses safety gate.
+        var uncertainPath = Path("vpn-uncertain", NetworkInterfaceType.Wireless80211,
+            "192.168.137.230", "192.168.137.1", "VPN-affected-WiFi");
+        var uncertainProbeCalls = 0;
+        var uncertainProbe = new NetworkPathProbe((_, timeout, _) =>
+        {
+            uncertainProbeCalls++;
+            Assert(timeout >= TimeSpan.FromSeconds(2),
+                "VPN confirmation reverted to the insufficient old timeout");
+            return Task.FromResult(ProbeResult(uncertainProbeCalls == 1
+                ? NetworkPathProbeStatus.Captive : NetworkPathProbeStatus.Unreachable));
+        });
+        var noAuthBeforeConfirmation = auth.Paths.Count;
+        var uncertainCoordinator = new PathAwareAgentCoordinator(
+            () => new StoredSecrets("token", "9123456789"),
+            () => "device",
+            () => [uncertainPath],
+            state,
+            uncertainProbe,
+            auth,
+            settings,
+            logger,
+            clock,
+            delayAsync: (_, _) => Task.CompletedTask);
+        await uncertainCoordinator.TickAsync();
+        Assert(uncertainProbeCalls == 2 && auth.Paths.Count == noAuthBeforeConfirmation,
+            "failed secondary captive confirmation initiated an authorization");
 
         probeCalls.Clear();
         await coordinator.TickAsync();

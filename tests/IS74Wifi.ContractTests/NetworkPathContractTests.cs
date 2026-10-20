@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Text;
 using IS74Wifi.Core;
 
 internal static class NetworkPathContractTests
@@ -141,6 +142,59 @@ internal static class NetworkPathContractTests
         Assert((await probe.ProbeAsync(usbPath, TimeSpan.FromSeconds(1))).Status == NetworkPathProbeStatus.Internet,
             "validated 302 on the bound SUSU probe must classify as Internet");
 
+        // VPN can block interface UDP/53 while system DNS still returns an IP.
+        // The first captive HTTP probe has time for that fallback; a subsequent
+        // short confirmation must reuse the address instead of starting over.
+        var blockedDnsQueries = 0;
+        var slowDnsQueries = 0;
+        var probeDialedPaths = new List<NetworkPathSnapshot>();
+        var slowDns = new InterfaceDnsResolver(
+            (_, _, _) =>
+            {
+                blockedDnsQueries++;
+                throw new IOException("VPN blocked interface DNS");
+            },
+            async (_, token) =>
+            {
+                slowDnsQueries++;
+                await Task.Delay(450, token);
+                return [IPAddress.Parse("198.51.100.22")];
+            });
+        var sharedProbe = new NetworkPathProbe(
+            resolverOverride: slowDns,
+            connectorOverride: (path, resolver) => new DirectNetworkConnector(
+                path, resolver,
+                (selectedAdapter, address, port, _) =>
+                {
+                    probeDialedPaths.Add(NetworkPathSnapshot.FromAdapter(selectedAdapter));
+                    Assert(address.Equals(IPAddress.Parse("198.51.100.22")) && port == 80,
+                        "bound probe did not preserve the resolved IPv4 endpoint");
+                    return ValueTask.FromResult<Stream>(new StubHttpStream());
+                }));
+        var firstCaptive = await sharedProbe.ProbeAsync(campusPath, TimeSpan.FromSeconds(2));
+        var confirmedCaptive = await sharedProbe.ProbeAsync(campusPath, TimeSpan.FromMilliseconds(300));
+        Assert(firstCaptive.Status == NetworkPathProbeStatus.Captive &&
+               confirmedCaptive.Status == NetworkPathProbeStatus.Captive &&
+               slowDnsQueries == 1 && blockedDnsQueries == 1,
+            "successive VPN-affected captive probes discarded their shared DNS cache");
+        Assert(probeDialedPaths.Count == 2 && probeDialedPaths.All(path =>
+                   path.AdapterId == campusPath.AdapterId &&
+                   path.InterfaceIndex == campusPath.InterfaceIndex &&
+                   path.SourceIPv4?.Equals(campusPath.SourceIPv4) == true),
+            "shared DNS cache changed the physical socket binding");
+
+        var changedGateway = campusPath with { GatewayIPv4 = IPAddress.Parse("192.168.137.254") };
+        var changedNetwork = await sharedProbe.ProbeAsync(changedGateway, TimeSpan.FromSeconds(2));
+        Assert(changedNetwork.Status == NetworkPathProbeStatus.Captive &&
+               slowDnsQueries == 2 && blockedDnsQueries == 2 &&
+               probeDialedPaths[^1].GatewayIPv4?.Equals(changedGateway.GatewayIPv4) == true,
+            "gateway change reused DNS from the previous physical network");
+        var changedIfIndexProbe = await sharedProbe.ProbeAsync(
+            campusPath with { InterfaceIndex = 77 }, TimeSpan.FromSeconds(2));
+        Assert(changedIfIndexProbe.Status == NetworkPathProbeStatus.Captive &&
+               slowDnsQueries == 3 && blockedDnsQueries == 3,
+            "interface-index change reused DNS from the previous binding");
+
         var unreachable = NetworkPathProbe.Classify(new InternetProbeResult(
             false, false, null, null, TransportFailureKind.DirectRouteUnavailable, TimeSpan.Zero));
         Assert(unreachable == NetworkPathProbeStatus.Unreachable,
@@ -256,6 +310,40 @@ internal static class NetworkPathContractTests
             Assert(pathStore.Find(usbPath.Identity)?.Status == PathAuthorizationStatus.Internet &&
                    pathStore.Find(campusPath.Identity)?.Status == PathAuthorizationStatus.Captive,
                 "network diagnostics did not persist per-path observations");
+        }
+    }
+
+    // Separate read/write halves emulate one captive HTTP response for a
+    // SocketsHttpHandler ConnectCallback without opening a real socket.
+    private sealed class StubHttpStream : Stream
+    {
+        private readonly MemoryStream response = new(
+            Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+            writable: false);
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public override int Read(byte[] buffer, int offset, int count) => response.Read(buffer, offset, count);
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            response.ReadAsync(buffer, offset, count, cancellationToken);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            response.ReadAsync(buffer, cancellationToken);
+        public override void Write(byte[] buffer, int offset, int count) { }
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) response.Dispose();
+            base.Dispose(disposing);
         }
     }
 

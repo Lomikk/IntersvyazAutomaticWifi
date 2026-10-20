@@ -194,9 +194,17 @@ public sealed record NetworkPathProbeResult(
 /// stepTwo and never falls back to a VPN/system TCP route.
 /// </summary>
 public sealed class NetworkPathProbe(
-    Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>>? probeOverride = null)
+    Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>>? probeOverride = null,
+    InterfaceDnsResolver? resolverOverride = null,
+    Func<NetworkPathSnapshot, InterfaceDnsResolver, DirectNetworkConnector>? connectorOverride = null)
 {
     private readonly Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>>? probe = probeOverride;
+    // Keep address lookups across short consecutive probes of a physical path.
+    // A fresh connector/HttpClient is still used for each HTTP request, so no
+    // TCP session can leak across interface changes. DNS cache keys include the
+    // transport binding; in particular DHCP/route changes cannot reuse old IPs.
+    private readonly InterfaceDnsResolver dns = resolverOverride ?? new InterfaceDnsResolver();
+    private readonly Func<NetworkPathSnapshot, InterfaceDnsResolver, DirectNetworkConnector>? connectorFactory = connectorOverride;
 
     public async Task<NetworkPathProbeResult> ProbeAsync(
         NetworkPathSnapshot path,
@@ -247,12 +255,12 @@ public sealed class NetworkPathProbe(
         return NetworkPathProbeStatus.Ambiguous;
     }
 
-    private static async Task<InternetProbeResult> ProbeBoundAsync(
+    private async Task<InternetProbeResult> ProbeBoundAsync(
         NetworkPathSnapshot path,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        var connector = new DirectNetworkConnector(path);
+        var connector = connectorFactory?.Invoke(path, dns) ?? new DirectNetworkConnector(path, dns);
         using var http = HttpClientProfiles.CreateInternetProbeClient(connector);
         return await new InternetConnectivityProbe(new HttpTransport(http))
             .ProbeAsync(timeout, cancellationToken)
