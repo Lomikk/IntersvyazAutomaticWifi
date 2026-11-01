@@ -29,6 +29,16 @@ def ask(message):
     return answer
 
 
+def choose_adapter(wifi):
+    while True:
+        value = ask(f"Введи номер Wi-Fi-адаптера из списка (1–{len(wifi)}), НЕ телефон")
+        if value.isascii() and value.isdecimal() and len(value) <= len(str(len(wifi))):
+            choice = int(value)
+            if 1 <= choice <= len(wifi):
+                return wifi[choice - 1]["id"]
+        print("Нужен порядковый номер строки выше, например 1. Телефон для диагностики не требуется. Попробуй ещё раз.")
+
+
 def snapshot():
     # Use Windows PowerShell to avoid MSIX PowerShell module compatibility issues.
     code = r"""
@@ -302,10 +312,7 @@ def main():
         print("\nВыбери прямой Wi-Fi адаптер ноутбука:")
         for number, row in enumerate(wifi, 1):
             print(f"  {number}. {row['name']} ({row['status']})")
-        choice = int(ask("Введи номер"))
-        if not 1 <= choice <= len(wifi):
-            raise ValueError("Неверный номер")
-        adapter_id = wifi[choice - 1]["id"]
+        adapter_id = choose_adapter(wifi)
         report.save("session", python=sys.version, adapter_id=adapter_id, addresses=cache,
                     note="Python experiment, not C# runtime or packet capture. No operator identity inferred.")
         run_stage(report, adapter_id, cache, "1. БЕЗ АВТОРИЗАЦИИ / VPN OFF",

@@ -36,6 +36,11 @@ class FakeSocket:
 
 
 class Contracts(unittest.TestCase):
+    def test_adapter_selection_reprompts_without_logging_phone(self):
+        with patch("builtins.input", side_effect=["+70000000000", "", "2", "1"]), patch("builtins.print") as output:
+            self.assertEqual(diag.choose_adapter([{"id": "wifi"}]), "wifi")
+        self.assertNotIn("+70000000000", str(output.call_args_list))
+
     def test_ip_probe_preserves_host_without_dns_or_redirect(self):
         sock = FakeSocket(b"HTTP/1.1 302 Found\r\nLocation: https://online.susu.ru/\r\n\r\n")
         with patch.object(diag, "bound_socket", return_value=sock), patch.object(socket, "getaddrinfo", side_effect=AssertionError("DNS forbidden")), patch.object(diag, "direct_dns", side_effect=AssertionError("DNS forbidden")):
