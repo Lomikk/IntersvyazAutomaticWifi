@@ -42,7 +42,8 @@ internal sealed record InteractiveStatusSnapshot(
     int CaptivePathCount = 0,
     int ProblemPathCount = 0,
     IReadOnlyList<InteractiveNetworkPathStatus>? NetworkPaths = null,
-    bool VpnActive = false);
+    bool VpnActive = false,
+    NetworkMode NetworkMode = NetworkMode.Advanced);
 
 internal enum WifiNetworkState
 {
@@ -65,6 +66,8 @@ internal enum InteractiveMenuAction
     ToggleNetworkCheck,
     ChooseDirectNetworkAdapter,
     DiagnoseDirectNetwork,
+    ToggleNetworkMode,
+    RefreshCampusAddresses,
     ToggleAnonymousStatistics,
     ToggleAutomaticUpdates,
     TogglePrereleaseUpdates,

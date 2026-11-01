@@ -24,7 +24,8 @@ public sealed class PathAuthorizationRunner(
     AppSettings settings,
     DiagnosticLogger logger,
     AuthorizationTelemetryRecorder? telemetry = null,
-    TimeProvider? timeProvider = null) : IPathAuthorizationRunner
+    TimeProvider? timeProvider = null,
+    Func<NetworkPathSnapshot, DirectNetworkConnector>? connectorFactory = null) : IPathAuthorizationRunner
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
 
@@ -41,7 +42,7 @@ public sealed class PathAuthorizationRunner(
                 "Сетевой путь не подтвержден Windows как физический интерфейс для автоматической авторизации.");
         }
 
-        var connector = new DirectNetworkConnector(path);
+        var connector = connectorFactory?.Invoke(path) ?? new DirectNetworkConnector(path);
         using var apiHttp = HttpClientProfiles.CreateApiClient(connector);
         using var portalHttp = HttpClientProfiles.CreatePortalClient(connector);
         using var internetHttp = HttpClientProfiles.CreateInternetProbeClient(connector);

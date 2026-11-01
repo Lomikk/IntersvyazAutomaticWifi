@@ -27,6 +27,7 @@ internal static class AgentNetworkOperationGate
 
 internal interface IAgentNetworkOperations
 {
+    Task<AgentNetworkSnapshot> RefreshAddressesAsync(CancellationToken cancellationToken = default);
     Task<AgentNetworkSnapshot> RefreshAsync(
         bool allowAutomaticAuthorization,
         CancellationToken cancellationToken = default);
@@ -51,6 +52,21 @@ internal sealed class AgentNetworkOperations(
 {
     private static readonly TimeSpan DiagnosticProbeTimeout = TimeSpan.FromSeconds(3);
     private readonly AgentNetworkSnapshotStore snapshotStore = new(app.Paths, app.Json);
+
+    public async Task<AgentNetworkSnapshot> RefreshAddressesAsync(CancellationToken cancellationToken = default)
+    {
+        using var crossProcessGate = await AgentNetworkOperationGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
+        if (app.Settings.NetworkMode != NetworkMode.Simple)
+            throw new InvalidOperationException("Обновление сохранённых IP доступно в простом режиме.");
+        var paths = new NetworkPathEnumerator(mode: NetworkMode.Simple).EnumerateAutomaticCandidates()
+            .Where(path => path.CanProbe).ToArray();
+        if (paths.Length == 0) throw new InvalidOperationException("Подключитесь напрямую к Campus Wi-Fi для обновления адресов.");
+        return await RunAndCaptureAsync(async () =>
+        {
+            foreach (var path in paths)
+                await app.CampusAddresses.RefreshAsync(path, cancellationToken).ConfigureAwait(false);
+        }, CaptureAndPersistSnapshot, app.Logger).ConfigureAwait(false);
+    }
 
     public async Task<AgentNetworkSnapshot> RefreshAsync(
         bool allowAutomaticAuthorization,
@@ -101,7 +117,7 @@ internal sealed class AgentNetworkOperations(
             throw new InvalidOperationException("Устройство не зарегистрировано. Сначала выполните register.");
         var deviceId = app.DeviceIdentity.GetOrCreate();
 
-        var selection = app.ManualAuthorizationPathSelector.Select(app.Settings.DirectNetworkAdapterId);
+        var selection = app.ManualAuthorizationPathSelector.Select(app.Settings.NetworkMode == NetworkMode.Simple ? null : app.Settings.DirectNetworkAdapterId);
         if (selection is null)
         {
             app.Logger.Write(DiagnosticLevel.Warn,
@@ -145,7 +161,7 @@ internal sealed class AgentNetworkOperations(
         var adapters = PhysicalAdapterSelection.Enumerate();
         var paths = adapters
             .Select(NetworkPathSnapshot.FromAdapter)
-            .Where(path => path.IsAutomaticAuthorizationCandidate && path.CanAutomaticallyAuthorize)
+            .Where(path => path.IsAutomaticAuthorizationCandidate && path.CanAutomaticallyAuthorize && NetworkModePolicy.Allows(app.Settings.NetworkMode, path))
             .GroupBy(path => path.Identity)
             .Select(group => group.First())
             .ToArray();
@@ -247,6 +263,7 @@ internal static class AgentNetworkProtocol
 {
     internal const string Refresh = "refresh";
     internal const string ProbeOnly = "probe-only";
+    internal const string RefreshAddresses = "refresh-addresses";
     internal const string Authorize = "authorize";
     internal const string Adapters = "adapters";
     internal const string StatusPrefix = "status|";
@@ -471,6 +488,13 @@ internal static class AgentNetworkCommandServer
                     break;
                 }
 
+                case AgentNetworkProtocol.RefreshAddresses:
+                {
+                    var result = await operations.RefreshAddressesAsync(cancellationToken).ConfigureAwait(false);
+                    await writer.WriteLineAsync(AgentNetworkProtocol.FormatStatus(result)).ConfigureAwait(false);
+                    break;
+                }
+
                 case AgentNetworkProtocol.Authorize:
                     await RunAuthorizationAsync(operations, writer, cancellationToken).ConfigureAwait(false);
                     break;
@@ -578,6 +602,9 @@ internal static class AgentNetworkClient
     internal static Task<AgentNetworkSnapshot> ProbeOnlyAsync(CancellationToken cancellationToken = default) =>
         ExecuteRefreshAsync(AgentNetworkProtocol.ProbeOnly, cancellationToken);
 
+    internal static Task<AgentNetworkSnapshot> RefreshAddressesAsync(CancellationToken cancellationToken = default) =>
+        ExecuteRefreshAsync(AgentNetworkProtocol.RefreshAddresses, cancellationToken);
+
     internal static Task<AgentNetworkAdapterOption[]> GetAdapterOptionsAsync(
         CancellationToken cancellationToken = default) =>
         ExecuteAdaptersAsync(cancellationToken);
@@ -683,7 +710,10 @@ internal static class AgentNetworkClient
         Func<string, TimeSpan, Task<T>> execute,
         CancellationToken cancellationToken)
     {
-        if (AgentProcessControl.IsAgentRunning())
+        // A portable field-test build must execute its own transport and mode,
+        // rather than forwarding network operations to an older installed agent.
+        if (UseExistingAgent(Environment.GetEnvironmentVariable("IS74W_RUN_LOCAL"),
+                new ProgramInstallation().IsInstalledExecutable(Environment.ProcessPath)) && AgentProcessControl.IsAgentRunning())
         {
             try
             {
@@ -759,6 +789,9 @@ internal static class AgentNetworkClient
             throw;
         }
     }
+
+    internal static bool UseExistingAgent(string? localRun, bool installedExecutable) =>
+        localRun != "1" || installedExecutable;
 
     private static Process StartOneShotAgent(string pipeName)
     {

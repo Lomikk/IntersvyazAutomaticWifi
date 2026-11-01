@@ -16,13 +16,17 @@ public sealed class DirectNetworkConnector(
     Func<IReadOnlyList<PhysicalAdapter>> enumerate,
     string? preferredAdapterId,
     InterfaceDnsResolver? resolver = null,
-    Func<PhysicalAdapter, IPAddress, int, CancellationToken, ValueTask<Stream>>? testDialer = null)
+    Func<PhysicalAdapter, IPAddress, int, CancellationToken, ValueTask<Stream>>? testDialer = null,
+    Func<string, PhysicalAdapter, CancellationToken, Task<DnsResolution>>? addressLookup = null,
+    Action<string, PhysicalAdapter, IPAddress>? connected = null)
 {
     public DirectNetworkConnector(
         NetworkPathSnapshot path,
         InterfaceDnsResolver? resolver = null,
-        Func<PhysicalAdapter, IPAddress, int, CancellationToken, ValueTask<Stream>>? testDialer = null)
-        : this(() => [path.ToPhysicalAdapter()], path.AdapterId, resolver, testDialer)
+        Func<PhysicalAdapter, IPAddress, int, CancellationToken, ValueTask<Stream>>? testDialer = null,
+        Func<string, PhysicalAdapter, CancellationToken, Task<DnsResolution>>? addressLookup = null,
+        Action<string, PhysicalAdapter, IPAddress>? connected = null)
+        : this(() => [path.ToPhysicalAdapter()], path.AdapterId, resolver, testDialer, addressLookup, connected)
     {
     }
     // Winsock IP_UNICAST_IF takes an IPv4 interface index in network byte order.
@@ -38,8 +42,11 @@ public sealed class DirectNetworkConnector(
     public Task<DnsResolution> ResolveHostForDiagnosticsAsync(string host, CancellationToken token)
     {
         if (!AllowedHosts.Contains(host)) throw new DirectNetworkUnavailableException("Недопустимый сервер прямого маршрута.");
-        return dns.ResolveWithSourceAsync(host, GetAdapter(), token);
+        return ResolveAsync(host, GetAdapter(), token);
     }
+
+    private Task<DnsResolution> ResolveAsync(string host, PhysicalAdapter adapter, CancellationToken token) =>
+        addressLookup is null ? dns.ResolveWithSourceAsync(host, adapter, token) : addressLookup(host, adapter, token);
 
     private PhysicalAdapter GetAdapter() => SelectedAdapter ?? throw new DirectNetworkUnavailableException(
         string.IsNullOrWhiteSpace(preferredAdapterId)
@@ -56,7 +63,7 @@ public sealed class DirectNetworkConnector(
             throw new DirectNetworkUnavailableException("Прямой маршрут разрешён только для серверов авторизации и проверки Интернета.");
         }
         var adapter = GetAdapter();
-        var addresses = await dns.ResolveAsync(host, adapter, token).ConfigureAwait(false);
+        var addresses = (await ResolveAsync(host, adapter, token).ConfigureAwait(false)).Addresses;
         Exception? lastError = null;
         foreach (var address in addresses)
         {
@@ -67,11 +74,14 @@ public sealed class DirectNetworkConnector(
                 if (testDialer is not null)
                 {
                     // Test seam: production always uses the real bound Winsock socket below.
-                    return await testDialer(adapter, address, port, token).ConfigureAwait(false);
+                    var stream = await testDialer(adapter, address, port, token).ConfigureAwait(false);
+                    connected?.Invoke(host, adapter, address);
+                    return stream;
                 }
                 socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                 BindSocket(socket, adapter);
                 await socket.ConnectAsync(new IPEndPoint(address, port), token).ConfigureAwait(false);
+                connected?.Invoke(host, adapter, address);
                 return new NetworkStream(socket, ownsSocket: true);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)

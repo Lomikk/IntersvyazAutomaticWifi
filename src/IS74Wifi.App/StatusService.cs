@@ -106,6 +106,7 @@ internal sealed class StatusService
             $"Установленный EXE: {(machine.Installed ? machine.InstalledExecutablePath : "—")}",
             string.Empty,
             "=== Состояние ===",
+            $"Сетевой режим: {NetworkModePolicy.DisplayName(settings.NetworkMode)}",
             $"Интернет: {(network.InternetAvailable == true ? "доступен" : "не подтверждён")}",
             $"Физические пути: {network.Paths.Length}",
             $"Авторизация: {FormatPathAuthorizationSummary(network)}",
@@ -204,6 +205,12 @@ internal sealed class StatusService
         AgentNetworkSnapshot? networkOverride)
     {
         var network = networkOverride ?? local.Network;
+        if (local.Settings.NetworkMode == NetworkMode.Simple)
+            network = network with
+            {
+                Paths = network.Paths.Where(path => SsidPolicy.IsTarget(path.Ssid)).ToArray(),
+                InternetAvailable = network.Paths.Any(path => SsidPolicy.IsTarget(path.Ssid) && path.Status == PathAuthorizationStatus.Internet)
+            };
         var wifiNetwork = SsidPolicy.IsTarget(network.WifiSsid)
             ? WifiNetworkState.Campus
             : network.WifiSsid is not null
@@ -248,7 +255,7 @@ internal sealed class StatusService
             AuthorizationAlreadyActive: network.Paths.Any(path =>
                 string.Equals(path.LastResult, "already-authorized", StringComparison.Ordinal)),
             NetworkCheckIgnored: false,
-            DirectNetworkMode: local.Settings.DirectNetworkAdapterId switch
+            DirectNetworkMode: local.Settings.NetworkMode == NetworkMode.Simple ? "Campus · сохранённые IP" : local.Settings.DirectNetworkAdapterId switch
             {
                 null => "автоматически",
                 PhysicalAdapterSelection.SystemRoute => "системный",
@@ -272,7 +279,8 @@ internal sealed class StatusService
             CaptivePathCount: captivePathCount,
             ProblemPathCount: problemPathCount,
             NetworkPaths: networkPaths,
-            VpnActive: network.VpnActive);
+            VpnActive: network.VpnActive,
+            NetworkMode: local.Settings.NetworkMode);
     }
 
     private static StatusMachineState ReadDefaultMachineState()

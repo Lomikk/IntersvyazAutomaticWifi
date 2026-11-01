@@ -22,6 +22,7 @@ internal static class StatusServiceContractTests
             "missing Wi-Fi must remain unknown without inventing an SSID");
         Assert(fresh.AuthorizationExpectedExpiryUtc is null && !fresh.AuthorizationAlreadyActive,
             "fresh local status must not invent authorization state");
+        Assert(fresh.NetworkMode == NetworkMode.Simple, "fresh UI must expose Simple mode");
 
         new DpapiSecretStore(paths).Save(new StoredSecrets("test-token", "9991234567"));
         var registered = service.ReadLocalSnapshot();
@@ -58,6 +59,14 @@ internal static class StatusServiceContractTests
             "local UI status must be built from the last agent-owned network snapshot");
         Assert(agentOwned.WifiSsid == "Campus Wi-Fi test" && agentOwned.NetworkPaths?.Single().Status == PathAuthorizationStatus.Internet,
             "agent-owned SSID/path status must flow into the UI snapshot");
+        var usbSnapshot = agentSnapshot with
+        {
+            WifiSsid = null,
+            Paths = [agentSnapshot.Paths[0] with { Ssid = null, Name = "USB" }]
+        };
+        var ignoredUsb = service.ReadSnapshot(usbSnapshot);
+        Assert(ignoredUsb.ActivePhysicalPathCount == 0 && ignoredUsb.InternetAvailable == false && ignoredUsb.AuthorizationExpectedExpiryUtc is null,
+            "Simple local status must not reuse an old USB Internet/expiry snapshot");
         machine = machine with { NetworkOperationRunning = true };
         var running = service.ReadLocalSnapshot();
         Assert(running.NetworkPaths?.Single().NetworkOperationRunning == true,
@@ -86,6 +95,7 @@ internal static class StatusServiceContractTests
         var settingsStore = new SettingsStore(paths, json);
         settingsStore.Save(settingsStore.Load() with
         {
+            NetworkMode = NetworkMode.Advanced,
             IgnoreNetworkCheck = true,
             DirectNetworkAdapterId = PhysicalAdapterSelection.SystemRoute,
             AnonymousStatisticsConsent = AnonymousStatisticsConsent.Declined,

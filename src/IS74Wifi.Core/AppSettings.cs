@@ -1,5 +1,7 @@
 namespace IS74Wifi.Core;
 
+public enum NetworkMode { Advanced = 0, Simple = 1 }
+
 public enum AnonymousStatisticsConsent
 {
     Unknown = 0,
@@ -9,6 +11,9 @@ public enum AnonymousStatisticsConsent
 
 public sealed record AppSettings
 {
+    // Missing field in an existing settings file preserves the previous multi-path runtime.
+    // SettingsStore explicitly chooses Simple only when creating a new installation.
+    public NetworkMode NetworkMode { get; init; } = NetworkMode.Advanced;
     public NotificationMode NotificationMode { get; init; } = NotificationMode.Important;
     public bool ShowTrayIcon { get; init; } = true;
     // Explicit user override for environments where Windows network detection

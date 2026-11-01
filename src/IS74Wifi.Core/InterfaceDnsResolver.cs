@@ -6,7 +6,7 @@ using System.Text;
 
 namespace IS74Wifi.Core;
 
-public enum DnsAddressSource { AdapterDns, SystemFallback }
+public enum DnsAddressSource { AdapterDns, SystemFallback, PersistentCampus }
 
 /// <summary>Only the address lookup may fall back to the system resolver;
 /// authorization TCP sockets are still bound to the selected physical interface.</summary>

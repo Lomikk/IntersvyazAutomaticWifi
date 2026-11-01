@@ -21,7 +21,7 @@
 | Виртуальные месяцы/годы планировщика | `tests/IS74Wifi.SimulationTests/` — настоящие `PathAwareAgentCoordinator`/`PathAuthorizationSchedule` с виртуальными часами и подменёнными внешними зависимостями; [руководство](virtual-simulation.md) | `--self-test`, месяц `--strict`, длинный ручной CI |
 | Когда просыпается и повторяет попытку агент | `Core/AgentService.cs`, `PathAwareAgentCoordinator.cs`, `PathAuthorizationSchedule.cs`, `AgentPowerResumeMonitor.cs`; IPC — `App/AgentNetworkIpc.cs`; fallback будит существующий worker через именованный event в `AgentProcessControl.cs` | Full |
 | HTTP, ошибки API, captive portal, probe | `Core/HttpTransport.cs`, `HttpClientProfiles.cs`, `Is74ApiClient.cs`, `CaptivePortalClient.cs`, `InternetConnectivityProbe.cs` | Core; подключение профилей — Full |
-| Выбор адаптера, DNS, прямой маршрут | `Core/PhysicalAdapterSelection.cs`, `DirectNetworkConnector.cs`, `InterfaceDnsResolver.cs`; wiring — `App/ApplicationRuntime.cs` | Full; полевая проверка отдельно |
+| Выбор адаптера, режим сети, DNS, прямой маршрут | `Core/NetworkModePolicy.cs`, `NetworkPathEnumerator`, `PhysicalAdapterSelection.cs`, `DirectNetworkConnector.cs`, `InterfaceDnsResolver.cs`; простой Campus IP-first — `CampusAddressBook.cs`; wiring — `App/ApplicationRuntime.cs` | Full; полевая проверка отдельно |
 | Настройки, секреты, локальное состояние | `Core/AppPaths.cs`, `SettingsStore.cs`, `DpapiSecretStore.cs`, `DeviceIdentityStore.cs`, `RuntimeStateStore.cs`, `SessionMetadata.cs` | Core |
 | Добровольная поддержка, кнопка главного меню | `App/InteractiveTerminalUi.cs` (пункт меню), `App/Program.cs` (открытие браузера), `Core/SupportLinkClient.cs` (read-only GET `route=config`; без кэша); сервер `Code.gs` читает `Config` в Sheets | Full + Backend |
 | Измерение скорости, участие/ник | `Core/Is74SpeedTestProvider.cs`, `CampusSpeedToolsService.cs`, `Leaderboard*Preferences.cs`, `LeaderboardDisplayPolicy.cs` | Core; контракт backend — также Backend |
@@ -38,11 +38,19 @@
 ## Границы, которые легко перепутать
 
 - `ApplicationRuntime` сейчас подключает **DirectNetworkConnector** к API/portal/probe:
+  простой режим ограничивает agent/manual/probe/snapshot прямым физическим Campus;
+  `CampusAddressBook` сохраняет адреса отдельно от старого DNS-эксперимента. Новая
+  установка получает простой режим, файл настроек без `networkMode` — прежний
+  продвинутый. В простом режиме legacy adapter override не расширяет список путей.
+  В продвинутом остаётся прежняя логика:
   auto/manual физический адаптер, DNS выбранного интерфейса, системный DNS как
   fallback разрешения имени. TCP при этом не переключается скрыто на VPN.
   Явный режим «системный маршрут» отключает этот connector.
   **CachedDnsConnector + HostAddressCache** — другой, старый persisted cached-IP-first
   эксперимент: код и тесты остались, в runtime он не подключён.
+  `Настройки → Обновить адреса Campus` использует agent IPC-команду `refresh-addresses`:
+  свежий DNS и TCP/TLS-проверка без авторизации. Подробности — [direct-network.md](direct-network.md).
+  Portable запуск с `IS74W_RUN_LOCAL=1` использует worker своей сборки вместо установленного агента.
 - Локальный `StatusService.ReadLocalSnapshot()` не выполняет HTTP и не создаёт `ApplicationRuntime`, но сохраняет прежние локальные нормализации: `SettingsStore.Load()` может создать default `settings.json`, а `UpdateMaintenanceService.LoadState()` — очистить и сохранить устаревшее состояние доступного обновления. Сетевые побочные эффекты находятся только в явно переданных delegate для `RefreshNetworkSnapshotAsync`/подробного отчёта.
 - Авторизационная сеть имеет одного владельца: interactive/CLI код не перечисляет адаптеры/SSID/VPN, не читает `PathAuthorizationState` и не вызывает `NetworkPathDiagnostics`, `Internet.ProbeAsync`, `ManualAuthorizationPathSelector` или `PathAuthorization.RunAsync` напрямую. Он использует `AgentNetworkClient`; agent возвращает полный network/auth snapshot и сохраняет его для локального первого кадра UI. Long-lived worker обслуживает named pipe, а при выключенном/недоступном фоне запускается короткоживущий `agent-network-worker` той же версии. `probe-only` сохраняет диагностический контракт без stepOne/stepTwo.
 - Авторизация не должна зависеть от скорости отрисовки: callback кладёт прогресс

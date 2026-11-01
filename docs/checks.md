@@ -110,6 +110,13 @@ Full не выполняет NativeAOT publish и полевые проверк�
 
 ## Долгие виртуальные испытания расписания
 
+Группа `campus-network-mode` проверяет default/migration сетевого режима,
+исключение USB/других SSID/VPN из простого режима, persisted IP между запусками,
+свежую привязку после DHCP/ifIndex, отсутствие DNS после TCP failure, безопасный
+отказ и успешное явное обновление адресов. `agent-network-ipc` также проверяет
+maintenance-команду без авторизации и собственный worker portable-сборки.
+Сеть в этих сценариях подменена; они не заменяют полевой цикл на ноутбуке.
+
 Отдельный проект `tests/IS74Wifi.SimulationTests` моделирует месяцы и годы
 без работы с реальной сетью; [параметры и ограничения](virtual-simulation.md).
 `dotnet run --project tests/IS74Wifi.SimulationTests -c Release -- --self-test`

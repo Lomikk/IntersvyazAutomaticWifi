@@ -7,6 +7,10 @@ internal static class AgentNetworkIpcContractTests
 {
     public static async Task RunAsync()
     {
+        Assert(!AgentNetworkClient.UseExistingAgent("1", false) &&
+               AgentNetworkClient.UseExistingAgent("1", true) &&
+               AgentNetworkClient.UseExistingAgent(null, false),
+            "local portable build must use its own request worker without changing installed runtime behavior");
         await RefreshCommandsStayAgentOwnedAsync();
         await AdapterEnumerationStaysAgentOwnedAsync();
         await AuthorizationProgressAndResultRoundTripAsync();
@@ -48,6 +52,15 @@ internal static class AgentNetworkIpcContractTests
         });
         Assert(operations.RefreshCalls == 2 && operations.LastAllowAutomaticAuthorization == false,
             "diagnostic probe-only command must never authorize");
+        await WithServerAsync(operations, async (pipe, reader, writer) =>
+        {
+            await writer.WriteLineAsync(AgentNetworkProtocol.RefreshAddresses);
+            var line = await reader.ReadLineAsync();
+            Assert(line is not null && AgentNetworkProtocol.ParseStatus(line).Paths.Length == 0,
+                "explicit address maintenance IPC did not return its agent-owned snapshot");
+        });
+        Assert(operations.AddressRefreshCalls == 1 && operations.AuthorizationCalls == 0 && operations.RefreshCalls == 2,
+            "address maintenance must not call ordinary refresh or authorization");
     }
 
     private static async Task AdapterEnumerationStaysAgentOwnedAsync()
@@ -270,6 +283,9 @@ internal static class AgentNetworkIpcContractTests
 
     private sealed class FakeOperations : IAgentNetworkOperations
     {
+        public int AddressRefreshCalls { get; private set; }
+        public Task<AgentNetworkSnapshot> RefreshAddressesAsync(CancellationToken cancellationToken = default)
+        { AddressRefreshCalls++; return Task.FromResult(AgentNetworkSnapshot.Empty); }
         public int RefreshCalls { get; private set; }
         public int AuthorizationCalls { get; private set; }
         public int AdapterCalls { get; private set; }

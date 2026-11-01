@@ -114,7 +114,8 @@ public sealed record NetworkPathSnapshot(
     }
 }
 
-public sealed class NetworkPathEnumerator(Func<IReadOnlyList<PhysicalAdapter>>? enumerate = null)
+public sealed class NetworkPathEnumerator(Func<IReadOnlyList<PhysicalAdapter>>? enumerate = null,
+    NetworkMode mode = NetworkMode.Advanced)
 {
     private readonly Func<IReadOnlyList<PhysicalAdapter>> enumerateAdapters =
         enumerate ?? PhysicalAdapterSelection.Enumerate;
@@ -126,7 +127,7 @@ public sealed class NetworkPathEnumerator(Func<IReadOnlyList<PhysicalAdapter>>? 
         EnumerateAll().Where(path => path.IsPhysicalCandidate).ToArray();
 
     public IReadOnlyList<NetworkPathSnapshot> EnumerateAutomaticCandidates() =>
-        EnumerateAll().Where(path => path.IsAutomaticAuthorizationCandidate).ToArray();
+        EnumerateAll().Where(path => path.IsAutomaticAuthorizationCandidate && NetworkModePolicy.Allows(mode, path)).ToArray();
 }
 
 public sealed record SystemRouteSnapshot(
@@ -194,7 +195,8 @@ public sealed record NetworkPathProbeResult(
 /// stepTwo and never falls back to a VPN/system TCP route.
 /// </summary>
 public sealed class NetworkPathProbe(
-    Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>>? probeOverride = null)
+    Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>>? probeOverride = null,
+    Func<NetworkPathSnapshot, DirectNetworkConnector>? connectorFactory = null)
 {
     private readonly Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>>? probe = probeOverride;
 
@@ -247,12 +249,12 @@ public sealed class NetworkPathProbe(
         return NetworkPathProbeStatus.Ambiguous;
     }
 
-    private static async Task<InternetProbeResult> ProbeBoundAsync(
+    private async Task<InternetProbeResult> ProbeBoundAsync(
         NetworkPathSnapshot path,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        var connector = new DirectNetworkConnector(path);
+        var connector = connectorFactory?.Invoke(path) ?? new DirectNetworkConnector(path);
         using var http = HttpClientProfiles.CreateInternetProbeClient(connector);
         return await new InternetConnectivityProbe(new HttpTransport(http))
             .ProbeAsync(timeout, cancellationToken)

@@ -1884,7 +1884,7 @@ internal static class Program
                     case InteractiveMenuAction.DiagnoseDirectNetwork:
                     {
                         var history = new InteractiveActionHistory();
-                        history.Start("Проверяю все физические сетевые пути...");
+                        history.Start("Проверяю разрешённые сетевым режимом пути...");
                         ui.ShowActionProgress("СЕТЬ И ДИАГНОСТИКА", history, initialStatus);
                         try
                         {
@@ -1899,6 +1899,37 @@ internal static class Program
                         }
                         await ui.ShowActionHistoryAsync("СЕТЬ И ДИАГНОСТИКА", history,
                             GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                        break;
+                    }
+
+                    case InteractiveMenuAction.ToggleNetworkMode:
+                    {
+                        var mode = initialStatus.NetworkMode == NetworkMode.Simple ? NetworkMode.Advanced : NetworkMode.Simple;
+                        var description = mode == NetworkMode.Simple
+                            ? "Работать только с прямым Campus Wi-Fi по сохранённым IP? USB и Ethernet не участвуют в авторизации."
+                            : "Вернуть прежнюю работу со всеми физическими путями? Расширенная настройка USB/LTE будет добавлена позже.";
+                        if (await ui.ConfirmAsync("СЕТЕВОЙ РЕЖИМ", description, "Применить", initialStatus).ConfigureAwait(false))
+                            await RunMenuBatchActionAsync(ui, "СЕТЕВОЙ РЕЖИМ", initialStatus,
+                                "Сохраняю режим...", progress => SetNetworkMode(mode, progress),
+                                NetworkModePolicy.DisplayName(mode)).ConfigureAwait(false);
+                        break;
+                    }
+
+                    case InteractiveMenuAction.RefreshCampusAddresses:
+                    {
+                        if (!await ui.ConfirmAsync("АДРЕСА CAMPUS", "Получить свежие адреса через DNS и проверить их доступность? Неудачное обновление сохраняет предыдущие адреса. Авторизация не запускается.",
+                            "Обновить", initialStatus).ConfigureAwait(false)) break;
+                        var history = new InteractiveActionHistory();
+                        history.Start("Обновляю адреса серверов Campus...");
+                        ui.ShowActionProgress("АДРЕСА CAMPUS", history, initialStatus);
+                        try
+                        {
+                            await AgentNetworkClient.RefreshAddressesAsync().ConfigureAwait(false);
+                            history.FinishActiveAsInfo();
+                            history.AddSuccess("Адреса обновлены");
+                        }
+                        catch (Exception ex) { history.FailActive("Обновление не завершено"); history.AddError(ex.Message); }
+                        await ui.ShowActionHistoryAsync("АДРЕСА CAMPUS", history, GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                         break;
                     }
 
@@ -2898,6 +2929,23 @@ internal static class Program
             StartInstalledAgent(installation.ExecutablePath);
             ReportMenuBatchProgress(progress, "Фоновый режим запущен с новой настройкой");
         }
+    }
+
+    private static void SetNetworkMode(NetworkMode mode, Action<string>? progress = null)
+    {
+        var paths = new AppPaths();
+        var json = new JsonFileStore();
+        var store = new SettingsStore(paths, json);
+        var settings = store.Load();
+        var installation = new ProgramInstallation();
+        if (IsLocalRunRequested() && !installation.IsInstalledExecutable(Environment.ProcessPath) && AgentProcessControl.IsAgentRunning())
+            throw new InvalidOperationException("Перед изменением режима тестовой сборки отключите фоновый автовход установленной программы.");
+        var restart = AgentProcessControl.IsAgentRunning() && installation.IsInstalled;
+        if (restart) AgentProcessControl.StopAgentOrThrow();
+        store.Save(settings with { NetworkMode = mode });
+        new AgentNetworkSnapshotStore(paths, json).Save(AgentNetworkSnapshot.Empty);
+        ReportMenuBatchProgress(progress, "Сетевой режим сохранён");
+        if (restart) StartInstalledAgent(installation.ExecutablePath);
     }
 
     private static void SetIgnoreNetworkCheck(bool enabled, Action<string>? progress = null)

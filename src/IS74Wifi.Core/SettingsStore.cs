@@ -11,7 +11,7 @@ public sealed class SettingsStore(AppPaths paths, JsonFileStore json)
             return settings;
         }
 
-        settings = new AppSettings();
+        settings = new AppSettings { NetworkMode = NetworkMode.Simple };
         json.Write(paths.SettingsFile, settings, PersistenceJsonContext.Default.AppSettings);
         return settings;
     }

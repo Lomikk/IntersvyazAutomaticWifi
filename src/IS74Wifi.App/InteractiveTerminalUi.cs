@@ -1692,6 +1692,8 @@ internal sealed partial class InteractiveTerminalUi
                 InteractiveMenuAction.ToggleAnonymousStatistics),
             new MenuItem('5', "Обновления", InteractiveMenuAction.OpenUpdates),
             new MenuItem('6', "Сеть и диагностика", InteractiveMenuAction.DiagnoseDirectNetwork),
+            new MenuItem('7', $"Сетевой режим: {(snapshot?.NetworkMode == NetworkMode.Simple ? "простой" : "продвинутый")}", InteractiveMenuAction.ToggleNetworkMode),
+            new MenuItem('8', "Обновить адреса Campus", InteractiveMenuAction.RefreshCampusAddresses),
             new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
     }
@@ -1921,7 +1923,7 @@ internal sealed partial class InteractiveTerminalUi
     {
         if (s.ActivePhysicalPathCount == 0)
         {
-            return ("нет активных ○", Palette.Dim);
+            return (s.NetworkMode == NetworkMode.Simple ? "ожидание Campus ○" : "нет активных ○", Palette.Dim);
         }
         if (s.CaptivePathCount > 0)
         {
