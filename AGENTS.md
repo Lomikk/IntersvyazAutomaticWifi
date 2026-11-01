@@ -1,5 +1,9 @@
 # Repository workflow
 
+- Prefer the primary checkout and a feature branch for sequential work. Use extra
+  worktrees only for explicitly agreed parallel experiments. Before choosing a
+  starting base, fetch origin and verify whether it includes current origin/main;
+  report any deliberate divergence instead of assuming a local branch is current.
 - Start with `docs/project-map.md` for current owners and `docs/checks.md` for
   verification. `docs/maintainability-audit-and-plan.md` describes future stages,
   not the current file layout. Execute only the requested stage/fix.
