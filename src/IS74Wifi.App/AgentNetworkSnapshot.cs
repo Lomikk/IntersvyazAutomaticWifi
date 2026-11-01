@@ -8,7 +8,8 @@ internal sealed record AgentNetworkAdapterOption(
     string Name,
     string? Ssid,
     bool CanConnect,
-    bool LooksVirtual);
+    bool LooksVirtual,
+    bool IsWifi = false);
 
 internal sealed record AgentNetworkAdapterList(AgentNetworkAdapterOption[] Adapters);
 
@@ -28,7 +29,8 @@ internal sealed record AgentNetworkPathSnapshot(
     DateTimeOffset? LastSuccessfulAuthUtc,
     bool UserActionRequired,
     bool AuthorizationWindowApproximate,
-    bool EdgeWatchActive = false);
+    bool EdgeWatchActive = false,
+    string AdapterId = "");
 
 internal sealed record AgentNetworkSnapshot(
     DateTimeOffset CapturedAtUtc,

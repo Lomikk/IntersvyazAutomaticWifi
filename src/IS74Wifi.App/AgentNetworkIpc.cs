@@ -56,9 +56,9 @@ internal sealed class AgentNetworkOperations(
     public async Task<AgentNetworkSnapshot> RefreshAddressesAsync(CancellationToken cancellationToken = default)
     {
         using var crossProcessGate = await AgentNetworkOperationGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
-        var paths = new NetworkPathEnumerator(mode: app.Settings.NetworkMode).EnumerateAutomaticCandidates()
+        var paths = new NetworkPathEnumerator(selection: app.Settings.AuthorizationConnections).EnumerateAutomaticCandidates()
             .Where(path => path.CanProbe).ToArray();
-        if (paths.Length == 0) throw new InvalidOperationException("Нет активного физического подключения, разрешённого выбранным сетевым режимом.");
+        if (paths.Length == 0) throw new InvalidOperationException("Нет активного подключения из выбранного списка.");
         return await RunAndCaptureAsync(async () =>
         {
             var failedPaths = 0;
@@ -99,12 +99,14 @@ internal sealed class AgentNetworkOperations(
     {
         cancellationToken.ThrowIfCancellationRequested();
         var options = PhysicalAdapterSelection.Enumerate()
+            .Where(adapter => adapter.HardwareInterface == true && !adapter.LooksVirtual)
             .Select(adapter => new AgentNetworkAdapterOption(
                 adapter.Id,
                 adapter.Name,
                 adapter.Ssid,
                 adapter.CanConnect,
-                adapter.LooksVirtual))
+                adapter.LooksVirtual,
+                adapter.IsWifi))
             .ToArray();
         return Task.FromResult(options);
     }
@@ -121,7 +123,7 @@ internal sealed class AgentNetworkOperations(
             throw new InvalidOperationException("Устройство не зарегистрировано. Сначала выполните register.");
         var deviceId = app.DeviceIdentity.GetOrCreate();
 
-        var selection = app.ManualAuthorizationPathSelector.Select(app.Settings.NetworkMode == NetworkMode.Simple ? null : app.Settings.DirectNetworkAdapterId);
+        var selection = app.ManualAuthorizationPathSelector.Select(null);
         if (selection is null)
         {
             app.Logger.Write(DiagnosticLevel.Warn,
@@ -165,7 +167,7 @@ internal sealed class AgentNetworkOperations(
         var adapters = PhysicalAdapterSelection.Enumerate();
         var paths = adapters
             .Select(NetworkPathSnapshot.FromAdapter)
-            .Where(path => path.IsAutomaticAuthorizationCandidate && path.CanAutomaticallyAuthorize && NetworkModePolicy.Allows(app.Settings.NetworkMode, path))
+            .Where(path => path.IsAutomaticAuthorizationCandidate && path.CanAutomaticallyAuthorize && app.Settings.AuthorizationConnections!.Allows(path))
             .GroupBy(path => path.Identity)
             .Select(group => group.First())
             .ToArray();
@@ -201,7 +203,8 @@ internal sealed class AgentNetworkOperations(
                     LastSuccessfulAuthUtc: pathState?.LastSuccessfulAuthUtc,
                     UserActionRequired: pathState?.UserActionRequired == true,
                     AuthorizationWindowApproximate: IsAuthorizationWindowApproximate(path),
-                    EdgeWatchActive: pathState?.EdgeWatchActive == true);
+                    EdgeWatchActive: pathState?.EdgeWatchActive == true,
+                    AdapterId: path.AdapterId);
             })
             .ToArray();
 

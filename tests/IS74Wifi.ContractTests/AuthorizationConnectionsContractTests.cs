@@ -3,7 +3,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using IS74Wifi.Core;
 
-internal static class CampusNetworkModeContractTests
+internal static class AuthorizationConnectionsContractTests
 {
     public static async Task RunAsync()
     {
@@ -11,25 +11,52 @@ internal static class CampusNetworkModeContractTests
         var paths = new AppPaths(temp.Path);
         var json = new JsonFileStore();
         var settings = new SettingsStore(paths, json);
-        Assert(settings.Load().NetworkMode == NetworkMode.Simple, "new installation must use Simple");
+        Assert(settings.Load().AuthorizationConnections!.WifiSsids.SequenceEqual(["Campus Wi-Fi"]),
+            "new installation must select Campus only");
         File.WriteAllText(paths.SettingsFile, "{\"showTrayIcon\":false,\"directNetworkAdapterId\":\"usb\"}");
-        Assert(settings.Load().NetworkMode == NetworkMode.Advanced && settings.Load().DirectNetworkAdapterId == "usb" && !settings.Load().ShowTrayIcon,
-            "old settings silently changed existing user network behavior");
-        settings.Save(settings.Load() with { NetworkMode = NetworkMode.Simple });
-        Assert(settings.Load().NetworkMode == NetworkMode.Simple, "explicit mode must survive restart");
-
+        var migrated = settings.Load();
+        Assert(migrated.AuthorizationConnections!.Adapters.Single().Id == "usb" && !migrated.ShowTrayIcon &&
+            migrated.DirectNetworkAdapterId is null && migrated.NetworkMode is null,
+            "migration lost explicit adapter or unrelated settings");
+        Assert(!File.ReadAllText(paths.SettingsFile).Contains("networkMode", StringComparison.Ordinal), "legacy mode was persisted after migration");
+        File.WriteAllText(paths.SettingsFile, "{\"networkMode\":1,\"directNetworkAdapterId\":\"usb\"}");
+        Assert(settings.Load().AuthorizationConnections!.Adapters.Length == 0, "Simple migration added the ignored legacy adapter");
+        File.WriteAllText(paths.SettingsFile, "{\"networkMode\":0,\"directNetworkAdapterId\":\"system\"}");
+        Assert(settings.Load().AuthorizationConnections!.Adapters.Length == 0, "system route entered the physical allowlist");
+        var selected = new AuthorizationConnectionSelection
+        {
+            WifiSsids = ["Campus Wi-Fi", "Phone"], Adapters = [new("usb", "My phone")]
+        };
+        settings.Save(settings.Load() with { AuthorizationConnections = selected });
+        Assert(settings.Load().AuthorizationConnections!.WifiSsids.SequenceEqual(selected.WifiSsids) &&
+            settings.Load().AuthorizationConnections!.Adapters.Single().Name == "My phone", "selection did not survive restart");
+        settings.Save(settings.Load() with { AuthorizationConnections = new() { WifiSsids = [], Adapters = [] } });
+        Assert(settings.Load().AuthorizationConnections!.WifiSsids.Length == 0, "empty explicit selection reverted to default");
         var campus = new PhysicalAdapter("wifi", "Wi-Fi", NetworkInterfaceType.Wireless80211, true, 11,
             IPAddress.Parse("192.0.2.10"), [IPAddress.Parse("192.0.2.53")], true, "Campus Wi-Fi") { HardwareInterface = true };
         var usb = campus with { Id = "usb", Type = NetworkInterfaceType.Ethernet, Ssid = null };
-        var other = campus with { Id = "other", Ssid = "Other" };
+        var other = campus with { Id = "other", Ssid = "Phone" };
         var vpn = campus with { Id = "vpn", LooksVirtual = true, HardwareInterface = false };
-        var simple = new NetworkPathEnumerator(() => [campus, usb, other, vpn], NetworkMode.Simple);
-        Assert(simple.EnumerateAutomaticCandidates().Select(p => p.AdapterId).SequenceEqual([campus.Id]),
-            "Simple exposed USB, other SSID or VPN to authorization/probes");
-        Assert(new NetworkPathEnumerator(() => [usb, other], NetworkMode.Simple).EnumerateAutomaticCandidates().Count == 0,
-            "Simple must wait without alternative path when Campus is missing");
-        Assert(new NetworkPathEnumerator(() => [campus, usb, other], NetworkMode.Advanced).EnumerateAutomaticCandidates().Count == 3,
-            "Advanced must preserve previous physical candidates");
+        var defaultList = new NetworkPathEnumerator(() => [campus, usb, other, vpn]);
+        Assert(defaultList.EnumerateAutomaticCandidates().Select(p => p.AdapterId).SequenceEqual([campus.Id]),
+            "default selection exposed USB, other SSID or VPN to authorization/probes");
+        Assert(new NetworkPathEnumerator(() => [usb, other]).EnumerateAutomaticCandidates().Count == 0,
+            "Campus-only selection must wait when Campus is missing");
+        var allowed = new NetworkPathEnumerator(() => [campus, usb, other, vpn], selected);
+        Assert(allowed.EnumerateAutomaticCandidates().Select(p => p.AdapterId).SequenceEqual([campus.Id, usb.Id, other.Id]),
+            "explicit list did not include all selected physical paths or allowed a VPN");
+        var changed = usb with { Name = "Ethernet 13", IPv4Index = 99, SourceIPv4 = IPAddress.Parse("192.0.2.99") };
+        Assert(selected.Allows(NetworkPathSnapshot.FromAdapter(changed)), "profile/index/address change lost USB selection");
+        Assert(!selected.Allows(NetworkPathSnapshot.FromAdapter(changed with { Id = "replacement" })), "a new adapter instance inherited permission");
+        Assert(!selected.Allows(NetworkPathSnapshot.FromAdapter(other with { Ssid = "phone" })), "SSID matching must be case-sensitive");
+        Assert(!selected.Allows(NetworkPathSnapshot.FromAdapter(campus with { Id = "usb", Ssid = "Unselected" })),
+            "wired adapter ID must not authorize arbitrary Wi-Fi SSIDs");
+        Assert(new NetworkPathEnumerator(() => [campus, usb, other], new() { WifiSsids = [], Adapters = [] })
+            .EnumerateAutomaticCandidates().Count == 0, "empty list exposed a fallback path");
+        var normalized = new AuthorizationConnectionSelection { WifiSsids = ["Phone", "Phone", "", new string('я', 17)],
+            Adapters = [new("usb", "USB"), new("USB", "duplicate"), new("system", "system")] }.Normalize();
+        Assert(normalized.WifiSsids.SequenceEqual(["Phone"]) && normalized.Adapters.Length == 1,
+            "invalid/duplicate selections were not normalized");
 
         var calls = 0;
         var ip = IPAddress.Parse("198.51.100.10");

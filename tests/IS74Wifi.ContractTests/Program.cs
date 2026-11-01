@@ -27,7 +27,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("agent-policy", AgentContractTests.RunAsync),
     ("cached-dns", DnsContractTests.RunAsync),
     ("direct-network-adapter", DirectNetworkContractTests.RunAsync),
-    ("campus-network-mode", CampusNetworkModeContractTests.RunAsync),
+    ("authorization-connections", AuthorizationConnectionsContractTests.RunAsync),
     ("network-path-foundation", NetworkPathContractTests.RunAsync),
     ("path-authorization-state", PathAuthorizationStateContractTests.RunAsync),
     ("path-aware-agent", PathAwareAgentContractTests.RunAsync),
@@ -77,11 +77,11 @@ static Task TestStorageAsync()
 
     var settingsStore = new SettingsStore(paths, json);
     settingsStore.Save(settings with { AnonymousStatisticsConsent = AnonymousStatisticsConsent.Declined,
-        DirectNetworkAdapterId = "{cf1dd631-b056-43fd-9dd6-2ba9e86d7f04}",
+        AuthorizationConnections = new() { Adapters = [new("{cf1dd631-b056-43fd-9dd6-2ba9e86d7f04}", "USB")] },
         ShowTrayIcon = false });
     Assert(settingsStore.Load().AnonymousStatisticsConsent == AnonymousStatisticsConsent.Declined,
         "anonymous statistics consent did not persist");
-    Assert(settingsStore.Load().DirectNetworkAdapterId == "{cf1dd631-b056-43fd-9dd6-2ba9e86d7f04}",
+    Assert(settingsStore.Load().AuthorizationConnections!.Adapters.Single().Id == "{cf1dd631-b056-43fd-9dd6-2ba9e86d7f04}",
         "manual adapter identity did not persist across settings reload");
     Assert(!settingsStore.Load().ShowTrayIcon, "tray icon visibility did not persist");
 

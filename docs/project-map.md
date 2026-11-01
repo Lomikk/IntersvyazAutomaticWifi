@@ -13,7 +13,7 @@
 |---|---|---|
 | Запуск, CLI, меню, регистрация, вызов действий | `App/Program.cs`; создание/освобождение сервисов — `App/ApplicationRuntime.cs` | App; при изменении сценариев/сервисов Full |
 | Компоновка и сессия терминала | `App/InteractiveTerminalUi.cs`; примитивы кадра — `App/Ui/TerminalCanvas.cs`, геометрия — `App/Ui/TerminalLayout.cs`, framebuffer/diff/вывод — `App/Ui/TerminalOutput.cs`; общая геометрия больших списков — `App/Ui/ListWindow.cs`; история — `InteractiveActionHistory.cs` | App + ручная проверка затронутого экрана |
-| Выбор сетевого адаптера | `App/Ui/AdapterSelectionScreen.cs` — только пункты/selection/scroll/кадр; список адаптеров UI получает через `AgentNetworkClient` от agent-owned `PhysicalAdapterSelection.Enumerate`, а сохранение выбранной настройки остаётся в `Program.cs` | App + `agent-network-ipc` + ручная проверка экрана |
+| Выбор подключений для авторизации | `App/Ui/ConnectionSelectionScreen.cs` — только пункты/selection/scroll/кадр; список адаптеров UI получает через `AgentNetworkClient` от agent-owned `PhysicalAdapterSelection.Enumerate`, а сохранение выбранной настройки остаётся в `Program.cs` | App + `agent-network-ipc` + ручная проверка экрана |
 | Снимок состояния и подробный отчёт | `App/AgentNetworkSnapshot.cs` — agent-owned snapshot сетевых путей/SSID/VPN/authorization state, сохраняемый после agent tick/IPC операции; `StatusService.cs` только объединяет этот snapshot с локальными настройками/регистрацией для UI/отчёта; live refresh идёт через `AgentNetworkClient` | App (`status-service` + `agent-network-ipc` + Python live-status) |
 | Экран скорости/рейтинга | `App/InteractiveTerminalUi.SpeedTools.cs` (partial того же UI; пока содержит и действия, и состояние) | App; бизнес-правила/запросы — Full + Backend |
 | Прогресс ручной авторизации | `App/ManualAuthorizationRunner.cs` отображает progress; сама операция идёт через `AgentNetworkClient` → agent-owned `AgentNetworkOperations` | App: `manual-authorization-progress` + `agent-network-ipc` |
@@ -21,7 +21,7 @@
 | Виртуальные месяцы/годы планировщика | `tests/IS74Wifi.SimulationTests/` — настоящие `PathAwareAgentCoordinator`/`PathAuthorizationSchedule` с виртуальными часами и подменёнными внешними зависимостями; [руководство](virtual-simulation.md) | `--self-test`, месяц `--strict`, длинный ручной CI |
 | Когда просыпается и повторяет попытку агент | `Core/AgentService.cs`, `PathAwareAgentCoordinator.cs`, `PathAuthorizationSchedule.cs`, `AgentPowerResumeMonitor.cs`; IPC — `App/AgentNetworkIpc.cs`; fallback будит существующий worker через именованный event в `AgentProcessControl.cs` | Full |
 | HTTP, ошибки API, captive portal, probe | `Core/HttpTransport.cs`, `HttpClientProfiles.cs`, `Is74ApiClient.cs`, `CaptivePortalClient.cs`, `InternetConnectivityProbe.cs` | Core; подключение профилей — Full |
-| Выбор адаптера, режим сети, DNS, прямой маршрут | `Core/NetworkModePolicy.cs`, `NetworkPathEnumerator`, `PhysicalAdapterSelection.cs`, `DirectNetworkConnector.cs`, `InterfaceDnsResolver.cs`; общий IP-first — `PathAddressBook.cs`; wiring — `App/ApplicationRuntime.cs` | Full; полевая проверка отдельно |
+| Выбор подключений, DNS, прямой маршрут | `Core/AuthorizationConnectionSelection.cs`, `NetworkPathEnumerator`, `PhysicalAdapterSelection.cs`, `DirectNetworkConnector.cs`, `InterfaceDnsResolver.cs`; общий IP-first — `PathAddressBook.cs`; wiring — `App/ApplicationRuntime.cs` | Full; полевая проверка отдельно |
 | Настройки, секреты, локальное состояние | `Core/AppPaths.cs`, `SettingsStore.cs`, `DpapiSecretStore.cs`, `DeviceIdentityStore.cs`, `RuntimeStateStore.cs`, `SessionMetadata.cs` | Core |
 | Добровольная поддержка, кнопка главного меню | `App/InteractiveTerminalUi.cs` (пункт меню), `App/Program.cs` (открытие браузера), `Core/SupportLinkClient.cs` (read-only GET `route=config`; без кэша); сервер `Code.gs` читает `Config` в Sheets | Full + Backend |
 | Измерение скорости, участие/ник | `Core/Is74SpeedTestProvider.cs`, `CampusSpeedToolsService.cs`, `Leaderboard*Preferences.cs`, `LeaderboardDisplayPolicy.cs` | Core; контракт backend — также Backend |
@@ -31,21 +31,23 @@
 
 `Program.cs` пока большой: карта обозначает существующие обязанности, а не утверждает,
 что они уже разделены. Базовые `TerminalCanvas` / `TerminalLayout` / `TerminalOutput` выделены
-на U1; `AdapterSelectionScreen` и общий `ListWindow` выделены на U2. Последующие контроллеры из
+на U1; предшественник `ConnectionSelectionScreen` (выбор одного адаптера) и
+общий `ListWindow` выделены на U2. Последующие контроллеры из
 [плана](maintainability-audit-and-plan.md) ещё не выделены. Для небольшой задачи
 достаточно её строки в таблице, связанных тестов и соответствующего контракта ниже.
 
 ## Границы, которые легко перепутать
 
 - `ApplicationRuntime` сейчас подключает **DirectNetworkConnector** к API/portal/probe:
-  простой режим ограничивает agent/manual/probe/snapshot прямым физическим Campus;
-  `PathAddressBook` обслуживает оба режима и сохраняет адреса отдельно от старого DNS-эксперимента. Новая
-  установка получает простой режим, файл настроек без `networkMode` — прежний
-  продвинутый. В простом режиме legacy adapter override не расширяет список путей.
-  В продвинутом сохраняется прежний список физических путей. Оба режима используют
-  общий IP-first в `PathAuthorizationRunner` и `NetworkPathProbe`: DNS только при
+  agent/manual/probe/snapshot используют один пользовательский список подключений.
+  Новая установка выбирает только Campus Wi-Fi; дополнительные Wi-Fi выбираются по
+  точному SSID, USB/Ethernet — по adapter GUID. Сохранённые отключённые устройства
+  остаются в списке. Вариант «простой/продвинутый» заменён чекбоксами:
+  legacy Simple переносится в Campus-only, прежний явный adapter override —
+  в отдельный пункт (он разрешает только wired-путь). Автоматический поиск всех
+  физических путей и legacy system-route больше не расширяют выбор пользователя.
+  Общий IP-first в `PathAuthorizationRunner` и `NetworkPathProbe`: DNS только при
   отсутствии записи или явном обновлении. TCP не переключается скрыто на VPN.
-  Legacy «системный маршрут» вне path-aware flow остаётся явным opt-out.
   **CachedDnsConnector + HostAddressCache** — другой, старый persisted cached-IP-first
   эксперимент: код и тесты остались, в runtime он не подключён.
   `Настройки → Обновить адреса серверов` использует agent IPC-команду `refresh-addresses`:

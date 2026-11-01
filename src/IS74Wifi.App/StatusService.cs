@@ -91,6 +91,7 @@ internal sealed class StatusService
         var network = await refreshNetwork(cancellationToken).ConfigureAwait(false);
         var local = ReadLocalState();
         var settings = local.Settings;
+        network = SelectNetwork(network, settings.AuthorizationConnections!);
         var machine = local.Machine;
 
         var lines = new List<string>
@@ -106,7 +107,7 @@ internal sealed class StatusService
             $"Установленный EXE: {(machine.Installed ? machine.InstalledExecutablePath : "—")}",
             string.Empty,
             "=== Состояние ===",
-            $"Сетевой режим: {NetworkModePolicy.DisplayName(settings.NetworkMode)}",
+            $"Выбранные подключения: {settings.AuthorizationConnections!.Describe()}",
             $"Интернет: {(network.InternetAvailable == true ? "доступен" : "не подтверждён")}",
             $"Физические пути: {network.Paths.Length}",
             $"Авторизация: {FormatPathAuthorizationSummary(network)}",
@@ -205,12 +206,7 @@ internal sealed class StatusService
         AgentNetworkSnapshot? networkOverride)
     {
         var network = networkOverride ?? local.Network;
-        if (local.Settings.NetworkMode == NetworkMode.Simple)
-            network = network with
-            {
-                Paths = network.Paths.Where(path => SsidPolicy.IsTarget(path.Ssid)).ToArray(),
-                InternetAvailable = network.Paths.Any(path => SsidPolicy.IsTarget(path.Ssid) && path.Status == PathAuthorizationStatus.Internet)
-            };
+        network = SelectNetwork(network, local.Settings.AuthorizationConnections!);
         var wifiNetwork = SsidPolicy.IsTarget(network.WifiSsid)
             ? WifiNetworkState.Campus
             : network.WifiSsid is not null
@@ -255,12 +251,7 @@ internal sealed class StatusService
             AuthorizationAlreadyActive: network.Paths.Any(path =>
                 string.Equals(path.LastResult, "already-authorized", StringComparison.Ordinal)),
             NetworkCheckIgnored: false,
-            DirectNetworkMode: local.Settings.NetworkMode == NetworkMode.Simple ? "Campus · сохранённые IP" : local.Settings.DirectNetworkAdapterId switch
-            {
-                null => "автоматически",
-                PhysicalAdapterSelection.SystemRoute => "системный",
-                _ => "вручную"
-            },
+            DirectNetworkMode: "выбранные подключения · IP-first",
             AnonymousStatisticsConsent: local.Settings.AnonymousStatisticsConsent,
             AutomaticUpdates: local.Settings.AutomaticUpdates,
             IncludePrereleaseUpdates: local.IncludePrereleases,
@@ -280,7 +271,13 @@ internal sealed class StatusService
             ProblemPathCount: problemPathCount,
             NetworkPaths: networkPaths,
             VpnActive: network.VpnActive,
-            NetworkMode: local.Settings.NetworkMode);
+            AuthorizationConnectionsSummary: local.Settings.AuthorizationConnections!.Describe());
+    }
+
+    private static AgentNetworkSnapshot SelectNetwork(AgentNetworkSnapshot network, AuthorizationConnectionSelection selection)
+    {
+        var paths = network.Paths.Where(path => selection.Allows(path.Ssid is not null, path.Ssid, path.AdapterId)).ToArray();
+        return network with { Paths = paths, InternetAvailable = paths.Any(path => path.Status == PathAuthorizationStatus.Internet) };
     }
 
     private static StatusMachineState ReadDefaultMachineState()

@@ -14,10 +14,8 @@ internal static class TerminalUiContractTests
         LongTextWrapsInMemory();
         RepeatedFrameProducesNoCellWrites();
         ResizeAndInvalidationForceFullRender();
-        AdapterScreenHasAutomaticAndSystemWithoutAdapters();
-        AdapterScreenHandlesLongNamesAndResize();
-        AdapterScreenNavigatesLargeLists();
-        AdapterScreenFastKeysAndEscape();
+        ConnectionScreenEditsDraftAndRetainsMissingDevices();
+        ConnectionScreenNavigationResizeAndSsidInput();
         SharedListWindowKeepsLargeListsVisible();
         PathPaneFormatsIndependentCountdowns();
         TraySemanticStatesFollowPathHealth();
@@ -112,102 +110,64 @@ internal static class TerminalUiContractTests
     }
 
 
-    private static void AdapterScreenHasAutomaticAndSystemWithoutAdapters()
+    private static void ConnectionScreenEditsDraftAndRetainsMissingDevices()
     {
-        var screen = new AdapterSelectionScreen([], currentId: null);
-        Assert(screen.Items.Count == 2, "empty adapter list must still expose automatic and system choices");
-        Assert(screen.Items[0].Shortcut == "0" && screen.Items[0].Id is null,
-            "automatic adapter option changed");
-        Assert(screen.Items[1].Shortcut == "S" && screen.Items[1].Id == PhysicalAdapterSelection.SystemRoute,
-            "system-route adapter option changed");
-        Assert(screen.Items[0].IsCurrent, "automatic mode must be marked current when no adapter override is stored");
+        var current = new AuthorizationConnectionSelection { WifiSsids = ["Campus Wi-Fi", "Saved phone"],
+            Adapters = [new("missing", "My USB phone")] };
+        var screen = new ConnectionSelectionScreen(
+            [new("wifi", "Wi-Fi", "Connected phone", true, false, true),
+             new("usb", "Ethernet", null, true, false),
+             new("vpn", "Radmin VPN", null, true, true)], current);
+        Assert(screen.Items.Count == 5 && screen.Items.All(item => item.Adapter?.Id != "vpn"),
+            "list lost saved/current Wi-Fi, missing USB or exposed a virtual adapter");
+        Assert(screen.Selection.Adapters.Single().Id == "missing", "missing selected adapter disappeared");
+        _ = screen.HandleKey(Key(ConsoleKey.Spacebar), 19);
+        Assert(!screen.Selection.WifiSsids.Contains("Campus Wi-Fi") && current.WifiSsids.Contains("Campus Wi-Fi"),
+            "Space must edit only the draft, including Campus checkbox");
+        Assert(screen.HandleKey(Key(ConsoleKey.Escape), 19) == ConnectionSelectionOutcome.Cancelled,
+            "Esc must discard the draft");
+        Assert(screen.HandleKey(Key(ConsoleKey.Enter), 19) == ConnectionSelectionOutcome.Confirmed,
+            "Enter must confirm the complete list");
+        Assert(screen.AddWifi("Phone") && screen.AddWifi("Phone") && screen.Items.Count(item => item.Ssid == "Phone") == 1,
+            "adding the same SSID duplicated it");
+        Assert(!screen.AddWifi(new string('я', 17)) && !screen.AddWifi("a\nb"), "invalid SSID accepted");
     }
 
-    private static void AdapterScreenHandlesLongNamesAndResize()
+    private static void ConnectionScreenNavigationResizeAndSsidInput()
     {
-        var adapter = Adapter("wifi-long", new string('A', 120), "Campus Wi-Fi");
-        var screen = new AdapterSelectionScreen([adapter], adapter.Id);
-
-        var compact = TerminalLayout.Calculate(50, 30);
-        var compactFrame = screen.BuildFrame(compact);
-        Assert(compactFrame.GetLength(1) == compact.CanvasWidth, "adapter frame ignored compact width");
-        Assert(Flatten(compactFrame).Contains('…'), "long adapter name must be clipped in a narrow frame");
-        Assert(Flatten(compactFrame).Contains("текущий", StringComparison.Ordinal),
-            "current adapter marker must survive clipping in a compact frame");
-
-        var selectedBeforeResize = screen.SelectedIndex;
-        var wide = TerminalLayout.Calculate(120, 30);
-        var wideFrame = screen.BuildFrame(wide);
-        Assert(wideFrame.GetLength(1) == wide.CanvasWidth, "adapter frame ignored wide terminal width");
-        Assert(screen.SelectedIndex == selectedBeforeResize, "terminal resize must not change adapter selection");
-        Assert(Flatten(wideFrame).Contains("текущий", StringComparison.Ordinal),
-            "current adapter marker disappeared after resize");
-    }
-
-    private static void AdapterScreenNavigatesLargeLists()
-    {
-        var adapters = Enumerable.Range(1, 25)
-            .Select(index => Adapter($"wifi-{index}", $"Adapter {index}", index == 1 ? "Campus Wi-Fi" : null))
-            .ToArray();
-        var screen = new AdapterSelectionScreen(adapters, currentId: null);
-        var visibleRows = screen.GetVisibleRowCount(TerminalLayout.Calculate(80, 30));
-        Assert(visibleRows == 21, "adapter list page size changed");
-        Assert(screen.Items.Count == 27, "large adapter list lost automatic/system entries");
-
-        _ = screen.HandleKey(Key(ConsoleKey.End), visibleRows);
-        Assert(screen.SelectedIndex == 26, "End must select the last adapter option");
-        var endWindow = ListWindow.AroundSelection(screen.Items.Count, screen.SelectedIndex, visibleRows);
-        Assert(endWindow.Offset == 6 && endWindow.Count == 21, "selected adapter must stay in the visible list window");
-
-        _ = screen.HandleKey(Key(ConsoleKey.PageUp), visibleRows);
-        Assert(screen.SelectedIndex == 5, "PageUp must move by one visible page");
-        _ = screen.HandleKey(Key(ConsoleKey.PageDown), visibleRows);
-        Assert(screen.SelectedIndex == 26, "PageDown must move by one visible page");
-        _ = screen.HandleKey(Key(ConsoleKey.Home), visibleRows);
-        Assert(screen.SelectedIndex == 0, "Home must select the first option");
-        _ = screen.HandleKey(Key(ConsoleKey.UpArrow), visibleRows);
-        Assert(screen.SelectedIndex == 26, "Up on the first option must wrap to the end");
-        _ = screen.HandleKey(Key(ConsoleKey.DownArrow), visibleRows);
-        Assert(screen.SelectedIndex == 0, "Down on the last option must wrap to the start");
-    }
-
-    private static void AdapterScreenFastKeysAndEscape()
-    {
-        var adapters = new[]
+        var adapters = Enumerable.Range(1, 25).Select(i =>
+            new AgentNetworkAdapterOption($"usb-{i}", new string('A', 80) + i, null, true, false)).ToArray();
+        var screen = new ConnectionSelectionScreen(adapters, new());
+        var layout = TerminalLayout.Calculate(80, 30);
+        var rows = screen.GetVisibleRowCount(layout);
+        _ = screen.HandleKey(Key(ConsoleKey.End), rows);
+        Assert(screen.SelectedIndex == 25, "End did not reach the last item");
+        _ = screen.HandleKey(Key(ConsoleKey.PageUp), rows);
+        Assert(screen.SelectedIndex == 25 - rows, "page navigation did not use visible rows");
+        _ = screen.HandleKey(Key(ConsoleKey.Home), rows);
+        _ = screen.HandleKey(Key(ConsoleKey.UpArrow), rows);
+        Assert(screen.SelectedIndex == 25, "Up did not wrap");
+        _ = screen.HandleKey(Key(ConsoleKey.DownArrow), rows);
+        Assert(screen.SelectedIndex == 0, "Down did not wrap");
+        _ = screen.HandleKey(Key(ConsoleKey.A, 'a'), rows);
+        foreach (var ch in "Phone") _ = screen.HandleKey(Key(ConsoleKey.NoName, ch), rows);
+        Assert(screen.HandleKey(Key(ConsoleKey.Enter), rows) == ConnectionSelectionOutcome.Continue && !screen.AddingSsid &&
+            screen.Selection.WifiSsids.Contains("Phone"), "SSID editor Enter saved the screen or lost its input");
+        _ = screen.HandleKey(Key(ConsoleKey.A, 'a'), rows);
+        _ = screen.HandleKey(Key(ConsoleKey.Escape), rows);
+        Assert(!screen.AddingSsid, "Esc did not leave the SSID editor");
+        var index = screen.SelectedIndex;
+        foreach (var width in new[] { 50, 80, 120 })
         {
-            Adapter("wifi-1", "First", "Campus Wi-Fi"),
-            Adapter("wifi-2", "Second", null)
-        };
-        var visibleRows = 21;
-
-        var system = new AdapterSelectionScreen(adapters, adapters[1].Id)
-            .HandleKey(Key(ConsoleKey.S, 's'), visibleRows);
-        Assert(system.Outcome == AdapterSelectionOutcome.Confirmed &&
-               system.SelectedId == PhysicalAdapterSelection.SystemRoute,
-            "S fast key must confirm the system route");
-
-        var automatic = new AdapterSelectionScreen(adapters, adapters[1].Id)
-            .HandleKey(Key(ConsoleKey.D0, '0'), visibleRows);
-        Assert(automatic.Outcome == AdapterSelectionOutcome.Confirmed && automatic.SelectedId is null,
-            "0 fast key must confirm automatic adapter selection");
-
-        var first = new AdapterSelectionScreen(adapters, adapters[1].Id)
-            .HandleKey(Key(ConsoleKey.D1, '1'), visibleRows);
-        Assert(first.Outcome == AdapterSelectionOutcome.Confirmed && first.SelectedId == adapters[0].Id,
-            "numeric fast key must select the matching adapter");
-
-        var enterScreen = new AdapterSelectionScreen(adapters, currentId: null);
-        _ = enterScreen.HandleKey(Key(ConsoleKey.DownArrow), visibleRows);
-        _ = enterScreen.HandleKey(Key(ConsoleKey.DownArrow), visibleRows);
-        var enter = enterScreen.HandleKey(Key(ConsoleKey.Enter, '\r'), visibleRows);
-        Assert(enter.Outcome == AdapterSelectionOutcome.Confirmed && enter.SelectedId == adapters[0].Id,
-            "Enter must confirm the highlighted adapter");
-
-        var escapeScreen = new AdapterSelectionScreen(adapters, adapters[1].Id);
-        _ = escapeScreen.HandleKey(Key(ConsoleKey.Home), visibleRows);
-        var escape = escapeScreen.HandleKey(Key(ConsoleKey.Escape, '\u001b'), visibleRows);
-        Assert(escape.Outcome == AdapterSelectionOutcome.Cancelled && escape.SelectedId == adapters[1].Id,
-            "Esc must cancel without replacing the stored adapter selection");
+            var resized = TerminalLayout.Calculate(width, 30);
+            var frame = screen.BuildFrame(resized);
+            Assert(frame.GetLength(1) == resized.CanvasWidth && screen.SelectedIndex == index,
+                "resize changed draft selection or ignored terminal width");
+            Assert(Flatten(frame).Contains("[x]", StringComparison.Ordinal), "checkbox marker disappeared after resize");
+        }
+        _ = screen.HandleKey(Key(ConsoleKey.Home), rows);
+        _ = screen.HandleKey(Key(ConsoleKey.DownArrow), rows);
+        Assert(Flatten(screen.BuildFrame(TerminalLayout.Calculate(50, 30))).Contains('…'), "long labels did not clip");
     }
 
     private static void SharedListWindowKeepsLargeListsVisible()

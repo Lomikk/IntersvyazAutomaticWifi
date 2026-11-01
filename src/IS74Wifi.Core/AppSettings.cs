@@ -11,17 +11,18 @@ public enum AnonymousStatisticsConsent
 
 public sealed record AppSettings
 {
-    // Missing field in an existing settings file preserves the previous multi-path runtime.
-    // SettingsStore explicitly chooses Simple only when creating a new installation.
-    public NetworkMode NetworkMode { get; init; } = NetworkMode.Advanced;
+    public AuthorizationConnectionSelection? AuthorizationConnections { get; init; }
+    // Read only for migration from builds with simple/advanced modes.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public NetworkMode? NetworkMode { get; init; }
     public NotificationMode NotificationMode { get; init; } = NotificationMode.Important;
     public bool ShowTrayIcon { get; init; } = true;
     // Explicit user override for environments where Windows network detection
     // is not representative of the route used by captive-portal traffic
     // (USB tethering, VPN/proxy software, multiple adapters, etc.).
     public bool IgnoreNetworkCheck { get; init; }
-    // null = automatic physical adapter, "system" = explicitly opt out of direct routing,
-    // otherwise a persistent Windows network interface GUID. Never fall back to VPN silently.
+    // Legacy single-adapter selection; migrated to AuthorizationConnections.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? DirectNetworkAdapterId { get; init; }
     public AnonymousStatisticsConsent AnonymousStatisticsConsent { get; init; } = global::IS74Wifi.Core.AnonymousStatisticsConsent.Unknown;
     // Local-only leaderboard preferences. The public backend is authoritative; these

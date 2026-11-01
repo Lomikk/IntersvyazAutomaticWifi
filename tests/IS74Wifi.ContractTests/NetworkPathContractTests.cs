@@ -40,7 +40,8 @@ internal static class NetworkPathContractTests
             gateway: null,
             up: false);
 
-        var enumerator = new NetworkPathEnumerator(() => [vpn, stealthVpn, campus, usb, disconnected]);
+        var enumerator = new NetworkPathEnumerator(() => [vpn, stealthVpn, campus, usb, disconnected], new()
+        { Adapters = [new(usb.Id, usb.Name), new(disconnected.Id, disconnected.Name)] });
         var all = enumerator.EnumerateAll();
         var physical = enumerator.EnumeratePhysical();
         var automatic = enumerator.EnumerateAutomaticCandidates();

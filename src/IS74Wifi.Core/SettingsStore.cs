@@ -8,17 +8,22 @@ public sealed class SettingsStore(AppPaths paths, JsonFileStore json)
         var settings = json.Read(paths.SettingsFile, PersistenceJsonContext.Default.AppSettings);
         if (settings is not null)
         {
-            return settings;
+            if (settings.AuthorizationConnections is null || settings.NetworkMode is not null || settings.DirectNetworkAdapterId is not null)
+            {
+                settings = AuthorizationConnectionSelection.Migrate(settings);
+                Save(settings);
+            }
+            return settings with { AuthorizationConnections = settings.AuthorizationConnections!.Normalize() };
         }
 
-        settings = new AppSettings { NetworkMode = NetworkMode.Simple };
-        json.Write(paths.SettingsFile, settings, PersistenceJsonContext.Default.AppSettings);
+        settings = AuthorizationConnectionSelection.Migrate(new AppSettings());
+        Save(settings);
         return settings;
     }
 
     public void Save(AppSettings settings)
     {
         paths.EnsureDirectories();
-        json.Write(paths.SettingsFile, settings, PersistenceJsonContext.Default.AppSettings);
+        json.Write(paths.SettingsFile, AuthorizationConnectionSelection.Migrate(settings), PersistenceJsonContext.Default.AppSettings);
     }
 }

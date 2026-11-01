@@ -13,7 +13,7 @@ internal enum ConfirmationRequestFailureDisposition
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.2";
+    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.3";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
@@ -1868,28 +1868,23 @@ internal static class Program
                         break;
                     }
 
-                    case InteractiveMenuAction.ChooseDirectNetworkAdapter:
+                    case InteractiveMenuAction.ChooseAuthorizationConnections:
                     {
                         var adapters = await AgentNetworkClient.GetAdapterOptionsAsync().ConfigureAwait(false);
-                        var current = new SettingsStore(new AppPaths(), new JsonFileStore()).Load().DirectNetworkAdapterId;
-                        var adapterChoice = await ui.ChooseNetworkAdapterAsync(adapters, current).ConfigureAwait(false);
-                        if (adapterChoice.Confirmed)
-                        {
-                            await RunMenuBatchActionAsync(
-                                ui,
-                                "СЕТЕВОЙ АДАПТЕР",
-                                initialStatus,
-                                "Применяю сетевой маршрут...",
-                                progress => SetDirectNetworkAdapter(adapterChoice.SelectedId, progress),
-                                "Сетевой маршрут сохранён").ConfigureAwait(false);
-                        }
+                        var current = new SettingsStore(new AppPaths(), new JsonFileStore()).Load().AuthorizationConnections!;
+                        var choice = await ui.ChooseAuthorizationConnectionsAsync(adapters, current).ConfigureAwait(false);
+                        if (choice.Confirmed)
+                            await RunMenuBatchActionAsync(ui, "ПОДКЛЮЧЕНИЯ", initialStatus,
+                                "Сохраняю выбранные подключения...",
+                                progress => SetAuthorizationConnections(choice.Selection, progress),
+                                "Подключения сохранены").ConfigureAwait(false);
                         break;
                     }
 
                     case InteractiveMenuAction.DiagnoseDirectNetwork:
                     {
                         var history = new InteractiveActionHistory();
-                        history.Start("Проверяю разрешённые сетевым режимом пути...");
+                        history.Start("Проверяю выбранные подключения...");
                         ui.ShowActionProgress("СЕТЬ И ДИАГНОСТИКА", history, initialStatus);
                         try
                         {
@@ -1904,19 +1899,6 @@ internal static class Program
                         }
                         await ui.ShowActionHistoryAsync("СЕТЬ И ДИАГНОСТИКА", history,
                             GetInteractiveStatusSnapshot()).ConfigureAwait(false);
-                        break;
-                    }
-
-                    case InteractiveMenuAction.ToggleNetworkMode:
-                    {
-                        var mode = initialStatus.NetworkMode == NetworkMode.Simple ? NetworkMode.Advanced : NetworkMode.Simple;
-                        var description = mode == NetworkMode.Simple
-                            ? "Работать только с прямым Campus Wi-Fi по сохранённым IP? USB и Ethernet не участвуют в авторизации."
-                            : "Обслуживать физические Wi-Fi, USB и Ethernet через общий IP-first? Настройка списка дополнительных подключений будет добавлена позже.";
-                        if (await ui.ConfirmAsync("СЕТЕВОЙ РЕЖИМ", description, "Применить", initialStatus).ConfigureAwait(false))
-                            await RunMenuBatchActionAsync(ui, "СЕТЕВОЙ РЕЖИМ", initialStatus,
-                                "Сохраняю режим...", progress => SetNetworkMode(mode, progress),
-                                NetworkModePolicy.DisplayName(mode)).ConfigureAwait(false);
                         break;
                     }
 
@@ -2917,26 +2899,7 @@ internal static class Program
     }
 
 
-    private static void SetDirectNetworkAdapter(string? adapterId, Action<string>? progress = null)
-    {
-        using var app = ApplicationRuntime.Create(ProductVersion);
-        var installation = new ProgramInstallation();
-        var restartAgent = AgentProcessControl.IsAgentRunning() && installation.IsInstalled;
-        var settingsStore = new SettingsStore(app.Paths, app.Json);
-        settingsStore.Save(app.Settings with { DirectNetworkAdapterId = adapterId });
-        // Do not log interface GUIDs, host IPs or DNS settings.
-        app.Logger.Write(DiagnosticLevel.Info, "authorization.direct-network setting-updated");
-        ReportMenuBatchProgress(progress, "Настройка сохранена");
-        if (restartAgent)
-        {
-            AgentProcessControl.StopAgentOrThrow();
-            ReportMenuBatchProgress(progress, "Фоновый режим остановлен для применения настройки");
-            StartInstalledAgent(installation.ExecutablePath);
-            ReportMenuBatchProgress(progress, "Фоновый режим запущен с новой настройкой");
-        }
-    }
-
-    private static void SetNetworkMode(NetworkMode mode, Action<string>? progress = null)
+    private static void SetAuthorizationConnections(AuthorizationConnectionSelection selection, Action<string>? progress = null)
     {
         var paths = new AppPaths();
         var json = new JsonFileStore();
@@ -2944,12 +2907,12 @@ internal static class Program
         var settings = store.Load();
         var installation = new ProgramInstallation();
         if (IsLocalRunRequested() && !installation.IsInstalledExecutable(Environment.ProcessPath) && AgentProcessControl.IsAgentRunning())
-            throw new InvalidOperationException("Перед изменением режима тестовой сборки отключите фоновый автовход установленной программы.");
+            throw new InvalidOperationException("Перед изменением подключений тестовой сборки отключите фоновый автовход установленной программы.");
         var restart = AgentProcessControl.IsAgentRunning() && installation.IsInstalled;
         if (restart) AgentProcessControl.StopAgentOrThrow();
-        store.Save(settings with { NetworkMode = mode });
+        store.Save(settings with { AuthorizationConnections = selection.Normalize() });
         new AgentNetworkSnapshotStore(paths, json).Save(AgentNetworkSnapshot.Empty);
-        ReportMenuBatchProgress(progress, "Сетевой режим сохранён");
+        ReportMenuBatchProgress(progress, "Выбранные подключения сохранены");
         if (restart) StartInstalledAgent(installation.ExecutablePath);
     }
 

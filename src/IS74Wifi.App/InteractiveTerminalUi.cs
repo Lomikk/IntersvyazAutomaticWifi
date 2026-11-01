@@ -404,16 +404,16 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
-    public async Task<(bool Confirmed, string? SelectedId)> ChooseNetworkAdapterAsync(
+    public async Task<(bool Confirmed, AuthorizationConnectionSelection Selection)> ChooseAuthorizationConnectionsAsync(
         IReadOnlyList<AgentNetworkAdapterOption> adapters,
-        string? currentId,
+        AuthorizationConnectionSelection current,
         CancellationToken cancellationToken = default)
     {
-        var screen = new AdapterSelectionScreen(adapters, currentId);
+        var screen = new ConnectionSelectionScreen(adapters, current);
 
         if (!CanUseInteractiveSession)
         {
-            return ChooseNetworkAdapterCompact(screen, currentId, cancellationToken);
+            return ChooseConnectionsCompact(screen, current, cancellationToken);
         }
 
         UpdateLayout();
@@ -436,14 +436,14 @@ internal sealed partial class InteractiveTerminalUi
 
                 var key = await keyTask.ConfigureAwait(false);
                 var result = screen.HandleKey(key, screen.GetVisibleRowCount(layout));
-                if (result.Outcome == AdapterSelectionOutcome.Confirmed)
+                if (result == ConnectionSelectionOutcome.Confirmed)
                 {
-                    return (true, result.SelectedId);
+                    return (true, screen.Selection);
                 }
 
-                if (result.Outcome == AdapterSelectionOutcome.Cancelled)
+                if (result == ConnectionSelectionOutcome.Cancelled)
                 {
-                    return (false, currentId);
+                    return (false, current);
                 }
 
                 keyTask = ReadKeyAsync();
@@ -455,29 +455,38 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
-    private static (bool Confirmed, string? SelectedId) ChooseNetworkAdapterCompact(
-        AdapterSelectionScreen screen,
-        string? currentId,
+    private static (bool Confirmed, AuthorizationConnectionSelection Selection) ChooseConnectionsCompact(
+        ConnectionSelectionScreen screen,
+        AuthorizationConnectionSelection current,
         CancellationToken cancellationToken)
     {
-        Console.Clear();
-        Console.WriteLine("IS74W — адаптер для авторизации");
-        Console.WriteLine();
-        foreach (var option in screen.Items)
+        while (true)
         {
-            Console.WriteLine($"[{option.Shortcut}] {option.DisplayLabel}");
+            Console.Clear();
+            Console.WriteLine("IS74W — подключения для авторизации");
+            for (var i = 0; i < screen.Items.Count; i++)
+            {
+                var item = screen.Items[i];
+                Console.WriteLine($"{i + 1}. [{(item.Selected ? "x" : " ")}] {item.Label}");
+            }
+            Console.WriteLine("Номер — отметить; A — добавить Wi-Fi; Enter — сохранить; 0 — отмена.");
+            cancellationToken.ThrowIfCancellationRequested();
+            var input = Console.ReadLine();
+            if (input is null || input.Trim() == "0") return (false, current);
+            if (input.Length == 0) return (true, screen.Selection);
+            if (string.Equals(input.Trim(), "a", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Write("Имя Wi-Fi (SSID), пустой ввод — назад: ");
+                var ssid = Console.ReadLine();
+                if (!string.IsNullOrEmpty(ssid) && !screen.AddWifi(ssid))
+                {
+                    Console.WriteLine("Недопустимое имя: максимум 32 байта UTF-8. Enter — продолжить.");
+                    Console.ReadLine();
+                }
+            }
+            else if (int.TryParse(input, out var index) && index >= 1 && index <= screen.Items.Count)
+                screen.Toggle(index - 1);
         }
-        Console.WriteLine();
-        Console.WriteLine("Пустой ввод — отмена.");
-        Console.Write("Выбор: ");
-        cancellationToken.ThrowIfCancellationRequested();
-        var input = Console.ReadLine()?.Trim();
-        if (string.IsNullOrEmpty(input)) return (false, currentId);
-        var selectedOption = screen.Items.FirstOrDefault(candidate =>
-            string.Equals(candidate.Shortcut, input, StringComparison.OrdinalIgnoreCase));
-        return string.IsNullOrEmpty(selectedOption.Shortcut)
-            ? (false, currentId)
-            : (true, selectedOption.Id);
     }
 
     private static bool ConfirmRegistrationCompact()
@@ -1692,7 +1701,7 @@ internal sealed partial class InteractiveTerminalUi
                 InteractiveMenuAction.ToggleAnonymousStatistics),
             new MenuItem('5', "Обновления", InteractiveMenuAction.OpenUpdates),
             new MenuItem('6', "Сеть и диагностика", InteractiveMenuAction.DiagnoseDirectNetwork),
-            new MenuItem('7', $"Сетевой режим: {(snapshot?.NetworkMode == NetworkMode.Simple ? "простой" : "продвинутый")}", InteractiveMenuAction.ToggleNetworkMode),
+            new MenuItem('7', "Подключения для авторизации", InteractiveMenuAction.ChooseAuthorizationConnections),
             new MenuItem('8', "Обновить адреса серверов", InteractiveMenuAction.RefreshServerAddresses),
             new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
@@ -1923,7 +1932,7 @@ internal sealed partial class InteractiveTerminalUi
     {
         if (s.ActivePhysicalPathCount == 0)
         {
-            return (s.NetworkMode == NetworkMode.Simple ? "ожидание Campus ○" : "нет активных ○", Palette.Dim);
+            return ("нет выбранных активных ○", Palette.Dim);
         }
         if (s.CaptivePathCount > 0)
         {

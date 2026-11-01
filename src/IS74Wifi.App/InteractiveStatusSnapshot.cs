@@ -43,7 +43,7 @@ internal sealed record InteractiveStatusSnapshot(
     int ProblemPathCount = 0,
     IReadOnlyList<InteractiveNetworkPathStatus>? NetworkPaths = null,
     bool VpnActive = false,
-    NetworkMode NetworkMode = NetworkMode.Advanced);
+    string AuthorizationConnectionsSummary = "Wi-Fi: 1, USB/Ethernet: 0");
 
 internal enum WifiNetworkState
 {
@@ -64,9 +64,8 @@ internal enum InteractiveMenuAction
     EnableAutomaticAuthorization,
     DisableAutomaticAuthorization,
     ToggleNetworkCheck,
-    ChooseDirectNetworkAdapter,
+    ChooseAuthorizationConnections,
     DiagnoseDirectNetwork,
-    ToggleNetworkMode,
     RefreshServerAddresses,
     ToggleAnonymousStatistics,
     ToggleAutomaticUpdates,

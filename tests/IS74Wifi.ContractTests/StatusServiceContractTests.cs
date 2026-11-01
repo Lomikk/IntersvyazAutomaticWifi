@@ -22,7 +22,7 @@ internal static class StatusServiceContractTests
             "missing Wi-Fi must remain unknown without inventing an SSID");
         Assert(fresh.AuthorizationExpectedExpiryUtc is null && !fresh.AuthorizationAlreadyActive,
             "fresh local status must not invent authorization state");
-        Assert(fresh.NetworkMode == NetworkMode.Simple, "fresh UI must expose Simple mode");
+        Assert(fresh.AuthorizationConnectionsSummary == "Wi-Fi: 1, USB/Ethernet: 0", "fresh UI must expose Campus-only selection");
 
         new DpapiSecretStore(paths).Save(new StoredSecrets("test-token", "9991234567"));
         var registered = service.ReadLocalSnapshot();
@@ -66,7 +66,21 @@ internal static class StatusServiceContractTests
         };
         var ignoredUsb = service.ReadSnapshot(usbSnapshot);
         Assert(ignoredUsb.ActivePhysicalPathCount == 0 && ignoredUsb.InternetAvailable == false && ignoredUsb.AuthorizationExpectedExpiryUtc is null,
-            "Simple local status must not reuse an old USB Internet/expiry snapshot");
+            "Campus-only local status must not reuse an old USB Internet/expiry snapshot");
+        var connectionStore = new SettingsStore(paths, json);
+        connectionStore.Save(connectionStore.Load() with
+        {
+            AuthorizationConnections = new() { WifiSsids = [], Adapters = [new("usb", "My phone")] }
+        });
+        var selectedUsb = service.ReadSnapshot(usbSnapshot with { Paths = [usbSnapshot.Paths[0] with { AdapterId = "usb" }] });
+        Assert(selectedUsb.ActivePhysicalPathCount == 1 && selectedUsb.InternetAvailable == true,
+            "selected USB snapshot was hidden");
+        var unselectedWifi = service.ReadSnapshot(agentSnapshot);
+        Assert(unselectedWifi.ActivePhysicalPathCount == 0 && unselectedWifi.InternetAvailable == false,
+            "deselected Campus snapshot retained Internet or expiry");
+        Assert(service.ReadSnapshot(usbSnapshot).ActivePhysicalPathCount == 0,
+            "legacy USB snapshot without an adapter ID inherited permission");
+        connectionStore.Save(connectionStore.Load() with { AuthorizationConnections = new() });
         machine = machine with { NetworkOperationRunning = true };
         var running = service.ReadLocalSnapshot();
         Assert(running.NetworkPaths?.Single().NetworkOperationRunning == true,
@@ -105,7 +119,7 @@ internal static class StatusServiceContractTests
             ShowTrayIcon = false
         });
         var changedSettings = service.ReadLocalSnapshot();
-        Assert(!changedSettings.NetworkCheckIgnored && changedSettings.DirectNetworkMode == "системный",
+        Assert(!changedSettings.NetworkCheckIgnored && changedSettings.DirectNetworkMode == "выбранные подключения · IP-first",
             "legacy network-check setting must no longer affect the path-aware UI snapshot");
         Assert(changedSettings.AnonymousStatisticsConsent == AnonymousStatisticsConsent.Declined &&
                changedSettings.AutomaticUpdates && !changedSettings.IncludePrereleaseUpdates &&

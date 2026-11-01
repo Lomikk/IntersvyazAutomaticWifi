@@ -111,16 +111,13 @@ internal sealed class ApplicationRuntime : IDisposable
         var runtimeState = new RuntimeStateStore(paths, json);
         var authorizationState = new AuthorizationStateManager(runtimeState, settings);
         var pathAddresses = new PathAddressBook(paths, json, logger);
-        var simple = settings.NetworkMode == NetworkMode.Simple;
         IReadOnlyList<PhysicalAdapter> EnumerateAuthorizationAdapters() => PhysicalAdapterSelection.Enumerate()
-            .Where(adapter => !simple || adapter.IsCampus && adapter.HardwareInterface == true && !adapter.LooksVirtual).ToArray();
+            .Where(adapter => adapter.HardwareInterface == true && !adapter.LooksVirtual &&
+                settings.AuthorizationConnections!.Allows(NetworkPathSnapshot.FromAdapter(adapter))).ToArray();
 
         // Direct authorization never uses the system VPN route or VPN DNS. The
-        // legacy route remains an explicit choice in network settings.
-        var direct = !simple && string.Equals(settings.DirectNetworkAdapterId,
-            PhysicalAdapterSelection.SystemRoute, StringComparison.OrdinalIgnoreCase)
-            ? null
-            : new DirectNetworkConnector(EnumerateAuthorizationAdapters, simple ? null : settings.DirectNetworkAdapterId,
+        // selection never silently expands to other adapters or the system route.
+        var direct = new DirectNetworkConnector(EnumerateAuthorizationAdapters, preferredAdapterId: null,
                 addressLookup: pathAddresses.ResolveAsync,
                 connected: pathAddresses.RememberConnected);
         var apiHttp = HttpClientProfiles.CreateApiClient(direct);
@@ -199,7 +196,7 @@ internal sealed class ApplicationRuntime : IDisposable
 
         var notifications = new WindowsNotificationService(settingsStore, logger);
         var pathState = new PathAuthorizationStateStore(paths, json, runtimeState);
-        var pathEnumerator = new NetworkPathEnumerator(mode: settings.NetworkMode);
+        var pathEnumerator = new NetworkPathEnumerator(selection: settings.AuthorizationConnections);
         var pathProbe = new NetworkPathProbe(pathAddresses);
         var preferredPath = new PreferredNetworkPathResolver();
         var pathAuthorization = new PathAuthorizationRunner(
