@@ -6,5 +6,5 @@ public static class NetworkModePolicy
         mode != NetworkMode.Simple || path.IsWifi && SsidPolicy.IsTarget(path.Ssid);
 
     public static string DisplayName(NetworkMode mode) =>
-        mode == NetworkMode.Simple ? "простой · Campus Wi-Fi" : "продвинутый · прежняя логика";
+        mode == NetworkMode.Simple ? "простой · Campus Wi-Fi" : "продвинутый · физические пути";
 }

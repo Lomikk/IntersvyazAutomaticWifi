@@ -56,15 +56,19 @@ internal sealed class AgentNetworkOperations(
     public async Task<AgentNetworkSnapshot> RefreshAddressesAsync(CancellationToken cancellationToken = default)
     {
         using var crossProcessGate = await AgentNetworkOperationGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
-        if (app.Settings.NetworkMode != NetworkMode.Simple)
-            throw new InvalidOperationException("Обновление сохранённых IP доступно в простом режиме.");
-        var paths = new NetworkPathEnumerator(mode: NetworkMode.Simple).EnumerateAutomaticCandidates()
+        var paths = new NetworkPathEnumerator(mode: app.Settings.NetworkMode).EnumerateAutomaticCandidates()
             .Where(path => path.CanProbe).ToArray();
-        if (paths.Length == 0) throw new InvalidOperationException("Подключитесь напрямую к Campus Wi-Fi для обновления адресов.");
+        if (paths.Length == 0) throw new InvalidOperationException("Нет активного физического подключения, разрешённого выбранным сетевым режимом.");
         return await RunAndCaptureAsync(async () =>
         {
+            var failedPaths = 0;
             foreach (var path in paths)
-                await app.CampusAddresses.RefreshAsync(path, cancellationToken).ConfigureAwait(false);
+            {
+                try { await app.PathAddresses.RefreshAsync(path, cancellationToken).ConfigureAwait(false); }
+                catch (IOException) { failedPaths++; }
+            }
+            if (failedPaths > 0)
+                throw new IOException($"Не полностью обновлено подключений: {failedPaths} из {paths.Length}. Неудачные записи сохранены, остальные адреса обновлены.");
         }, CaptureAndPersistSnapshot, app.Logger).ConfigureAwait(false);
     }
 

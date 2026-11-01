@@ -507,7 +507,7 @@ public sealed class PathAwareAgentCoordinator(
             $"agent.path-probe window-exhausted adapter={Safe(path.Name)} expiry={expiry:O} status={observed.Status}");
         Publish(new AgentNotification(
             "Не удалось проверить Wi-Fi",
-            $"Путь {path.Name}: состояние Интернета не определено. Откройте IS74Wifi и при необходимости выполните авторизацию вручную.",
+            $"Путь {path.Name}: состояние Интернета не определено. Откройте IS74Wifi и при необходимости выполните авторизацию вручную.{ModemHint(path)}",
             AgentNotificationImportance.Important,
             AgentNotificationSeverity.Error));
     }
@@ -526,11 +526,14 @@ public sealed class PathAwareAgentCoordinator(
         {
             Publish(new AgentNotification(
                 "Автоавторизация остановлена",
-                $"Путь {path.Name}: требуется действие пользователя.",
+                $"Путь {path.Name}: требуется действие пользователя.{(outcome.Kind == AuthorizationOutcomeKind.UserActionRequired ? ModemHint(path) : string.Empty)}",
                 AgentNotificationImportance.Important,
                 AgentNotificationSeverity.Error));
         }
     }
+
+    internal static string ModemHint(NetworkPathSnapshot path) => path.IsWifi ? string.Empty :
+        " Если это USB-раздача телефона, возможно, используется LTE или другая сеть. Проверьте подключение телефона к Campus Wi-Fi.";
 
     private void Publish(AgentNotification notification)
     {

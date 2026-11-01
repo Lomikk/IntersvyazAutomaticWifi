@@ -67,7 +67,7 @@ internal enum InteractiveMenuAction
     ChooseDirectNetworkAdapter,
     DiagnoseDirectNetwork,
     ToggleNetworkMode,
-    RefreshCampusAddresses,
+    RefreshServerAddresses,
     ToggleAnonymousStatistics,
     ToggleAutomaticUpdates,
     TogglePrereleaseUpdates,

@@ -13,7 +13,7 @@ internal enum ConfirmationRequestFailureDisposition
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.1";
+    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.2";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
@@ -1912,7 +1912,7 @@ internal static class Program
                         var mode = initialStatus.NetworkMode == NetworkMode.Simple ? NetworkMode.Advanced : NetworkMode.Simple;
                         var description = mode == NetworkMode.Simple
                             ? "Работать только с прямым Campus Wi-Fi по сохранённым IP? USB и Ethernet не участвуют в авторизации."
-                            : "Вернуть прежнюю работу со всеми физическими путями? Расширенная настройка USB/LTE будет добавлена позже.";
+                            : "Обслуживать физические Wi-Fi, USB и Ethernet через общий IP-first? Настройка списка дополнительных подключений будет добавлена позже.";
                         if (await ui.ConfirmAsync("СЕТЕВОЙ РЕЖИМ", description, "Применить", initialStatus).ConfigureAwait(false))
                             await RunMenuBatchActionAsync(ui, "СЕТЕВОЙ РЕЖИМ", initialStatus,
                                 "Сохраняю режим...", progress => SetNetworkMode(mode, progress),
@@ -1920,13 +1920,13 @@ internal static class Program
                         break;
                     }
 
-                    case InteractiveMenuAction.RefreshCampusAddresses:
+                    case InteractiveMenuAction.RefreshServerAddresses:
                     {
-                        if (!await ui.ConfirmAsync("АДРЕСА CAMPUS", "Получить свежие адреса через DNS и проверить их доступность? Неудачное обновление сохраняет предыдущие адреса. Авторизация не запускается.",
+                        if (!await ui.ConfirmAsync("АДРЕСА СЕРВЕРОВ", "Получить свежие адреса через DNS для разрешённых подключений? Неудачное обновление сохраняет предыдущие адреса. Авторизация не запускается.",
                             "Обновить", initialStatus).ConfigureAwait(false)) break;
                         var history = new InteractiveActionHistory();
-                        history.Start("Обновляю адреса серверов Campus...");
-                        ui.ShowActionProgress("АДРЕСА CAMPUS", history, initialStatus);
+                        history.Start("Обновляю адреса серверов...");
+                        ui.ShowActionProgress("АДРЕСА СЕРВЕРОВ", history, initialStatus);
                         try
                         {
                             await AgentNetworkClient.RefreshAddressesAsync().ConfigureAwait(false);
@@ -1934,7 +1934,7 @@ internal static class Program
                             history.AddSuccess("Адреса обновлены");
                         }
                         catch (Exception ex) { history.FailActive("Обновление не завершено"); history.AddError(ex.Message); }
-                        await ui.ShowActionHistoryAsync("АДРЕСА CAMPUS", history, GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                        await ui.ShowActionHistoryAsync("АДРЕСА СЕРВЕРОВ", history, GetInteractiveStatusSnapshot()).ConfigureAwait(false);
                         break;
                     }
 

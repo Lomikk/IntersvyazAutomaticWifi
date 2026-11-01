@@ -96,7 +96,7 @@ internal sealed class ApplicationRuntime : IDisposable
     public NetworkPathDiagnosticsService NetworkPathDiagnostics { get; }
     public ManualAuthorizationPathSelector ManualAuthorizationPathSelector { get; }
     public IPathAuthorizationRunner PathAuthorization { get; }
-    public CampusAddressBook CampusAddresses { get; private set; } = null!;
+    public PathAddressBook PathAddresses { get; private set; } = null!;
 
     public static ApplicationRuntime Create(string appVersion = "dev")
     {
@@ -110,12 +110,10 @@ internal sealed class ApplicationRuntime : IDisposable
         var session = new SessionMetadataStore(paths, json);
         var runtimeState = new RuntimeStateStore(paths, json);
         var authorizationState = new AuthorizationStateManager(runtimeState, settings);
-        var campusAddresses = new CampusAddressBook(paths, json, logger);
+        var pathAddresses = new PathAddressBook(paths, json, logger);
         var simple = settings.NetworkMode == NetworkMode.Simple;
         IReadOnlyList<PhysicalAdapter> EnumerateAuthorizationAdapters() => PhysicalAdapterSelection.Enumerate()
             .Where(adapter => !simple || adapter.IsCampus && adapter.HardwareInterface == true && !adapter.LooksVirtual).ToArray();
-        DirectNetworkConnector ConnectorForPath(NetworkPathSnapshot path) => simple
-            ? campusAddresses.CreateConnector(path) : new DirectNetworkConnector(path);
 
         // Direct authorization never uses the system VPN route or VPN DNS. The
         // legacy route remains an explicit choice in network settings.
@@ -123,8 +121,8 @@ internal sealed class ApplicationRuntime : IDisposable
             PhysicalAdapterSelection.SystemRoute, StringComparison.OrdinalIgnoreCase)
             ? null
             : new DirectNetworkConnector(EnumerateAuthorizationAdapters, simple ? null : settings.DirectNetworkAdapterId,
-                addressLookup: simple ? campusAddresses.ResolveAsync : null,
-                connected: simple ? campusAddresses.RememberConnected : null);
+                addressLookup: pathAddresses.ResolveAsync,
+                connected: pathAddresses.RememberConnected);
         var apiHttp = HttpClientProfiles.CreateApiClient(direct);
         var portalHttp = HttpClientProfiles.CreatePortalClient(direct);
         var internetHttp = HttpClientProfiles.CreateInternetProbeClient(direct);
@@ -202,14 +200,14 @@ internal sealed class ApplicationRuntime : IDisposable
         var notifications = new WindowsNotificationService(settingsStore, logger);
         var pathState = new PathAuthorizationStateStore(paths, json, runtimeState);
         var pathEnumerator = new NetworkPathEnumerator(mode: settings.NetworkMode);
-        var pathProbe = new NetworkPathProbe(connectorFactory: ConnectorForPath);
+        var pathProbe = new NetworkPathProbe(pathAddresses);
         var preferredPath = new PreferredNetworkPathResolver();
         var pathAuthorization = new PathAuthorizationRunner(
             pathState,
             settings,
             logger,
-            telemetryRecorder,
-            connectorFactory: ConnectorForPath);
+            pathAddresses,
+            telemetryRecorder);
         var networkPathDiagnostics = new NetworkPathDiagnosticsService(
             pathEnumerator.EnumerateAutomaticCandidates,
             pathState,
@@ -272,7 +270,7 @@ internal sealed class ApplicationRuntime : IDisposable
             portalHttp,
             internetHttp,
             speedTestHttp,
-            telemetryHttp) { CampusAddresses = campusAddresses };
+            telemetryHttp) { PathAddresses = pathAddresses };
     }
 
     internal static Uri ResolveTelemetryEndpoint(AppSettings settings)

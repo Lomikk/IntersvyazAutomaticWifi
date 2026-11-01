@@ -1693,7 +1693,7 @@ internal sealed partial class InteractiveTerminalUi
             new MenuItem('5', "Обновления", InteractiveMenuAction.OpenUpdates),
             new MenuItem('6', "Сеть и диагностика", InteractiveMenuAction.DiagnoseDirectNetwork),
             new MenuItem('7', $"Сетевой режим: {(snapshot?.NetworkMode == NetworkMode.Simple ? "простой" : "продвинутый")}", InteractiveMenuAction.ToggleNetworkMode),
-            new MenuItem('8', "Обновить адреса Campus", InteractiveMenuAction.RefreshCampusAddresses),
+            new MenuItem('8', "Обновить адреса серверов", InteractiveMenuAction.RefreshServerAddresses),
             new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
     }

@@ -20,7 +20,8 @@ public sealed class AppPaths
     public string UpdateStateFile => Path.Combine(Root, "update-state.json");
     public string DeviceMetadataFile => Path.Combine(Root, "device-metadata.json");
     public string DnsCacheFile => Path.Combine(Root, "dns-cache.json");
-    public string CampusAddressFile => Path.Combine(Root, "campus-addresses.json");
+    // Retain the on-disk filename used by the first installed field-test build.
+    public string PathAddressFile => Path.Combine(Root, "campus-addresses.json");
     public string LogDirectory => Path.Combine(Root, "logs");
     public string DiagnosticLogFile => Path.Combine(LogDirectory, "diagnostic.log");
     public string TrayIconDirectory => Path.Combine(Root, "tray-icons");

@@ -194,11 +194,15 @@ public sealed record NetworkPathProbeResult(
 /// Safe read-only probe for one explicit physical path. It never calls stepOne or
 /// stepTwo and never falls back to a VPN/system TCP route.
 /// </summary>
-public sealed class NetworkPathProbe(
-    Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>>? probeOverride = null,
-    Func<NetworkPathSnapshot, DirectNetworkConnector>? connectorFactory = null)
+public sealed class NetworkPathProbe
 {
-    private readonly Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>>? probe = probeOverride;
+    private readonly Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>> probe;
+
+    public NetworkPathProbe(PathAddressBook addresses) =>
+        probe = (path, timeout, token) => ProbeBoundAsync(addresses, path, timeout, token);
+
+    public NetworkPathProbe(Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>> probeOverride) =>
+        probe = probeOverride ?? throw new ArgumentNullException(nameof(probeOverride));
 
     public async Task<NetworkPathProbeResult> ProbeAsync(
         NetworkPathSnapshot path,
@@ -224,9 +228,7 @@ public sealed class NetworkPathProbe(
                     Elapsed: TimeSpan.Zero));
         }
 
-        var result = probe is null
-            ? await ProbeBoundAsync(path, timeout, cancellationToken).ConfigureAwait(false)
-            : await probe(path, timeout, cancellationToken).ConfigureAwait(false);
+        var result = await probe(path, timeout, cancellationToken).ConfigureAwait(false);
 
         return new NetworkPathProbeResult(path.Identity, Classify(result), result);
     }
@@ -249,12 +251,13 @@ public sealed class NetworkPathProbe(
         return NetworkPathProbeStatus.Ambiguous;
     }
 
-    private async Task<InternetProbeResult> ProbeBoundAsync(
+    private static async Task<InternetProbeResult> ProbeBoundAsync(
+        PathAddressBook addresses,
         NetworkPathSnapshot path,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        var connector = connectorFactory?.Invoke(path) ?? new DirectNetworkConnector(path);
+        var connector = addresses.CreateConnector(path);
         using var http = HttpClientProfiles.CreateInternetProbeClient(connector);
         return await new InternetConnectivityProbe(new HttpTransport(http))
             .ProbeAsync(timeout, cancellationToken)

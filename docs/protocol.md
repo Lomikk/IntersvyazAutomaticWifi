@@ -380,10 +380,10 @@ Authorization: Bearer <TOKEN>
 
 ### Политика адресов и история DNS-эксперимента
 
-Текущая локальная реализация разделяет сетевые режимы: простой прямой Campus
-использует `CampusAddressBook` (persistent IP-first, DNS при отсутствии адреса
-или явном обновлении), продвинутый сохраняет adapter DNS/system-address fallback
-через `DirectNetworkConnector`. Полный контракт и ограничения —
+Текущая локальная реализация разделяет отбор путей: простой — прямой Campus,
+продвинутый — физические Wi-Fi/USB/Ethernet. Оба используют общий `PathAddressBook`
+и один `PathAuthorizationRunner` (persistent IP-first, DNS при отсутствии адреса
+или явном обновлении, неизменные проверки/повторы). Полный контракт и ограничения —
 [direct-network.md](direct-network.md). Ниже сохранены результаты старого
 эксперимента, на который новый код не переключает runtime.
 
