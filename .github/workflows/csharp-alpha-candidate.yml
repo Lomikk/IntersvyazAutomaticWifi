@@ -1,19 +1,11 @@
 name: C# alpha candidate
 
+# Build field-test ZIPs only when explicitly requested; not on every main push.
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'IS74Wifi.slnx'
-      - 'src/IS74Wifi.App/**'
-      - 'src/IS74Wifi.Core/**'
-      - 'tests/**'
-      - 'scripts/**'
-      - 'IS74Wifi.ps1'
-      - 'agent.ps1'
-      - 'src/IS74Wifi.psm1'
-      - '.github/workflows/csharp-alpha-candidate.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   package:

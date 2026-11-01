@@ -3,7 +3,30 @@ name: PowerShell compatibility
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'IS74Wifi.ps1'
+      - 'agent.ps1'
+      - 'src/IS74Wifi.psm1'
+      - 'tests/powershell_reference_contract.ps1'
+      - 'tests/critical_path_contract.ps1'
+      - 'tests/static_checks.py'
+      - '.github/workflows/ps51.yml'
   pull_request:
+    paths:
+      - 'IS74Wifi.ps1'
+      - 'agent.ps1'
+      - 'src/IS74Wifi.psm1'
+      - 'tests/powershell_reference_contract.ps1'
+      - 'tests/critical_path_contract.ps1'
+      - 'tests/static_checks.py'
+      - '.github/workflows/ps51.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: powershell-compatibility-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ps51:

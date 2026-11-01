@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Text;
 using IS74Wifi.Core;
 
 internal static class NetworkPathContractTests
@@ -142,6 +143,78 @@ internal static class NetworkPathContractTests
         Assert((await probe.ProbeAsync(usbPath, TimeSpan.FromSeconds(1))).Status == NetworkPathProbeStatus.Internet,
             "validated 302 on the bound SUSU probe must classify as Internet");
 
+        // VPN can block interface UDP/53 while system DNS still returns an IP.
+        // The first captive HTTP probe has time for that fallback; a subsequent
+        // short confirmation must reuse the address instead of starting over. This
+        // transport test deliberately uses 300 ms; coordinator budgets are checked separately.
+        var blockedDnsQueries = 0;
+        var slowDnsQueries = 0;
+        var probeDialedPaths = new List<NetworkPathSnapshot>();
+        var slowDns = new InterfaceDnsResolver(
+            (_, _, _) =>
+            {
+                blockedDnsQueries++;
+                throw new IOException("VPN blocked interface DNS");
+            },
+            async (_, token) =>
+            {
+                slowDnsQueries++;
+                await Task.Delay(450, token);
+                return [IPAddress.Parse("198.51.100.22")];
+            });
+        using var probeTemp = TempDirectory.Create();
+        var probePaths = new AppPaths(probeTemp.Path);
+        var probeJson = new JsonFileStore();
+        PathAddressBook CreateBook(Func<string, PhysicalAdapter, CancellationToken, Task<DnsResolution>> lookup) =>
+            new(probePaths, probeJson, lookup: lookup,
+                testDialer: (selectedAdapter, address, port, _) =>
+                {
+                    probeDialedPaths.Add(NetworkPathSnapshot.FromAdapter(selectedAdapter));
+                    Assert(address.Equals(IPAddress.Parse("198.51.100.22")) && port == 80,
+                        "bound probe did not preserve the resolved IPv4 endpoint");
+                    return ValueTask.FromResult<Stream>(new StubHttpStream());
+                });
+        var sharedProbe = new NetworkPathProbe(CreateBook(slowDns.ResolveWithSourceAsync));
+        var firstCaptive = await sharedProbe.ProbeAsync(campusPath, TimeSpan.FromSeconds(2));
+        var confirmedCaptive = await sharedProbe.ProbeAsync(campusPath, TimeSpan.FromMilliseconds(300));
+        Assert(firstCaptive.Status == NetworkPathProbeStatus.Captive &&
+               confirmedCaptive.Status == NetworkPathProbeStatus.Captive &&
+               slowDnsQueries == 1 && blockedDnsQueries == 1,
+            "successive VPN-affected captive probes discarded their shared IP candidates");
+        Assert(probeDialedPaths.Count == 2 && probeDialedPaths.All(path =>
+                   path.AdapterId == campusPath.AdapterId &&
+                   path.InterfaceIndex == campusPath.InterfaceIndex &&
+                   path.SourceIPv4?.Equals(campusPath.SourceIPv4) == true),
+            "shared IP candidates changed the physical socket binding");
+
+        // Persistent server addresses survive a restart and local binding changes;
+        // each independent HTTP response still needs a fresh, correctly bound socket.
+        var restartedProbe = new NetworkPathProbe(CreateBook((_, _, _) =>
+            throw new InvalidOperationException("persisted probe attempted DNS")));
+        var changedGateway = campusPath with { GatewayIPv4 = IPAddress.Parse("192.168.137.254") };
+        var changedNetwork = await restartedProbe.ProbeAsync(changedGateway, TimeSpan.FromSeconds(2));
+        Assert(changedNetwork.Status == NetworkPathProbeStatus.Captive &&
+               slowDnsQueries == 1 && blockedDnsQueries == 1 &&
+               probeDialedPaths[^1].GatewayIPv4?.Equals(changedGateway.GatewayIPv4) == true,
+            "gateway change lost the persisted server address or reused the previous socket binding");
+        var changedBinding = campusPath with { InterfaceIndex = 77, SourceIPv4 = IPAddress.Parse("192.168.137.230") };
+        var changedIfIndexProbe = await restartedProbe.ProbeAsync(changedBinding, TimeSpan.FromSeconds(2));
+        Assert(changedIfIndexProbe.Status == NetworkPathProbeStatus.Captive &&
+               slowDnsQueries == 1 && blockedDnsQueries == 1 && probeDialedPaths.Count == 4 &&
+               probeDialedPaths[^1].InterfaceIndex == 77 && probeDialedPaths[^1].SourceIPv4!.Equals(changedBinding.SourceIPv4),
+            "DHCP/ifIndex change triggered DNS or retained the previous socket binding");
+
+        // Separately retain the upstream protection for the resolver's own short
+        // DNS cache. This is not an invalidation policy for persistent server IPs.
+        await slowDns.ResolveWithSourceAsync("online.susu.ru",
+            campus with { GatewayIPv4 = changedGateway.GatewayIPv4 }, CancellationToken.None);
+        Assert(slowDnsQueries == 2 && blockedDnsQueries == 2,
+            "raw DNS resolver reused the previous gateway's short-lived cache entry");
+        await slowDns.ResolveWithSourceAsync("online.susu.ru",
+            campus with { IPv4Index = 77 }, CancellationToken.None);
+        Assert(slowDnsQueries == 3 && blockedDnsQueries == 3,
+            "raw DNS resolver reused the previous interface index's short-lived cache entry");
+
         var unreachable = NetworkPathProbe.Classify(new InternetProbeResult(
             false, false, null, null, TransportFailureKind.DirectRouteUnavailable, TimeSpan.Zero));
         Assert(unreachable == NetworkPathProbeStatus.Unreachable,
@@ -257,6 +330,40 @@ internal static class NetworkPathContractTests
             Assert(pathStore.Find(usbPath.Identity)?.Status == PathAuthorizationStatus.Internet &&
                    pathStore.Find(campusPath.Identity)?.Status == PathAuthorizationStatus.Captive,
                 "network diagnostics did not persist per-path observations");
+        }
+    }
+
+    // Separate read/write halves emulate one captive HTTP response for a
+    // SocketsHttpHandler ConnectCallback without opening a real socket.
+    private sealed class StubHttpStream : Stream
+    {
+        private readonly MemoryStream response = new(
+            Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+            writable: false);
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public override int Read(byte[] buffer, int offset, int count) => response.Read(buffer, offset, count);
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            response.ReadAsync(buffer, offset, count, cancellationToken);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            response.ReadAsync(buffer, cancellationToken);
+        public override void Write(byte[] buffer, int offset, int count) { }
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) response.Dispose();
+            base.Dispose(disposing);
         }
     }
 

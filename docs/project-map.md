@@ -60,6 +60,12 @@
   Portable запуск с `IS74W_RUN_LOCAL=1` использует worker своей сборки вместо установленного агента.
 - Локальный `StatusService.ReadLocalSnapshot()` не выполняет HTTP и не создаёт `ApplicationRuntime`, но сохраняет прежние локальные нормализации: `SettingsStore.Load()` может создать default `settings.json`, а `UpdateMaintenanceService.LoadState()` — очистить и сохранить устаревшее состояние доступного обновления. Сетевые побочные эффекты находятся только в явно переданных delegate для `RefreshNetworkSnapshotAsync`/подробного отчёта.
 - Авторизационная сеть имеет одного владельца: interactive/CLI код не перечисляет адаптеры/SSID/VPN, не читает `PathAuthorizationState` и не вызывает `NetworkPathDiagnostics`, `Internet.ProbeAsync`, `ManualAuthorizationPathSelector` или `PathAuthorization.RunAsync` напрямую. Он использует `AgentNetworkClient`; agent возвращает полный network/auth snapshot и сохраняет его для локального первого кадра UI. Long-lived worker обслуживает named pipe, а при выключенном/недоступном фоне запускается короткоживущий `agent-network-worker` той же версии. `probe-only` сохраняет диагностический контракт без stepOne/stepTwo.
+- `PathAuthorizationStateStore` хранит сроки/попытки под межпроцессным mutex,
+  строго различает отсутствие и ошибку чтения и восстанавливает `.bak`.
+  IP-кеш `PathAddressBook` имеет отдельный жизненный цикл; нельзя заменять им
+  durable authorization state. См. [path-state-durability.md](path-state-durability.md).
+  Вторая независимая captive-проба получает минимум 2 секунды даже при сохранённых
+  300 мс в настройках; общий IP-first не отменяет это транспортное ограничение.
 - Авторизация не должна зависеть от скорости отрисовки: callback кладёт прогресс
   в очередь, App читает её отдельно. Не добавлять Console/HTTP/disk I/O в callback.
 - После pre-step отказа timer shot coordinator выполняет одну bound-probe для свежего

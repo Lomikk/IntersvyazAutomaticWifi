@@ -1,13 +1,11 @@
 name: C# packaging benchmark
 
+# Packaging comparisons are occasional experiments, not a required code check.
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'src/IS74Wifi.App/**'
-      - 'src/IS74Wifi.Core/**'
-      - '.github/workflows/package-benchmark.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   package:

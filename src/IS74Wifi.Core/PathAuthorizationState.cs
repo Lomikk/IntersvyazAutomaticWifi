@@ -1,4 +1,7 @@
 using System.Net.NetworkInformation;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace IS74Wifi.Core;
 
@@ -69,21 +72,99 @@ public sealed class PathAuthorizationStateStore(
 {
     private readonly RuntimeStateStore legacyState = legacyRuntimeState ?? new RuntimeStateStore(paths, json);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
+    private readonly DiagnosticLogger logger = new(paths);
+    private readonly string lockName = "Local\\IS74Wifi.PathState." +
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            Path.GetFullPath(paths.PathAuthorizationStateFile).ToUpperInvariant())));
 
-    public PathAuthorizationStateDocument Load()
+    private string BackupPath => paths.PathAuthorizationStateFile + ".bak";
+
+    public PathAuthorizationStateDocument Load() => WithStateLock(LoadLocked);
+
+    private PathAuthorizationStateDocument LoadLocked()
     {
-        var existing = json.Read(paths.PathAuthorizationStateFile, PersistenceJsonContext.Default.PathAuthorizationStateDocument);
-        if (existing is not null)
+        Exception? primaryInvalid = null;
+        PathAuthorizationStateDocument? primary = null;
+        try
         {
-            return Normalize(existing);
+            primary = ReadOptional(paths.PathAuthorizationStateFile);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException)
+        {
+            primaryInvalid = ex;
+            logger.Write(DiagnosticLevel.Warn, $"path-state.read invalid=primary type={ex.GetType().Name}");
+        }
+
+        if (primary is not null)
+        {
+            return Normalize(primary);
+        }
+
+        Exception? backupInvalid = null;
+        PathAuthorizationStateDocument? backup = null;
+        try
+        {
+            backup = ReadOptional(BackupPath);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException)
+        {
+            backupInvalid = ex;
+            logger.Write(DiagnosticLevel.Warn, $"path-state.read invalid=backup type={ex.GetType().Name}");
+        }
+
+        if (backup is not null)
+        {
+            // Restore without rotating the broken primary into the good backup.
+            // In particular, a transient IOException is never treated as missing.
+            var restored = Normalize(backup);
+            json.Write(paths.PathAuthorizationStateFile, restored,
+                PersistenceJsonContext.Default.PathAuthorizationStateDocument);
+            logger.Write(DiagnosticLevel.Warn, "path-state.recovered source=backup");
+            return restored;
+        }
+
+        if (primaryInvalid is not null || backupInvalid is not null)
+        {
+            // Do not manufacture fresh state and overwrite unreadable history.
+            throw new InvalidDataException(
+                "Состояние сетевой авторизации повреждено, а проверенной резервной копии нет.",
+                primaryInvalid ?? backupInvalid);
         }
 
         var initial = CreateInitialDocument();
-        if (!File.Exists(paths.PathAuthorizationStateFile))
-        {
-            Save(initial);
-        }
+        SaveLocked(initial);
+        logger.Write(DiagnosticLevel.Info, "path-state.initialized source=legacy-hint");
         return initial;
+    }
+
+    private PathAuthorizationStateDocument? ReadOptional(string path)
+    {
+        try
+        {
+            var state = json.ReadStrict(path,
+                PersistenceJsonContext.Default.PathAuthorizationStateDocument);
+            if (state is null || state.Paths is null)
+            {
+                throw new InvalidDataException("Invalid path authorization state document.");
+            }
+            return state;
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            var source = string.Equals(path, BackupPath, StringComparison.OrdinalIgnoreCase)
+                ? "backup" : "primary";
+            logger.Write(DiagnosticLevel.Warn,
+                $"path-state.read io-error source={source} type={ex.GetType().Name}");
+            throw;
+        }
     }
 
     public PathAuthorizationState? Find(NetworkPathIdentity identity) =>
@@ -242,39 +323,44 @@ public sealed class PathAuthorizationStateStore(
         IReadOnlyCollection<NetworkPathIdentity> currentlyPresent)
     {
         ArgumentNullException.ThrowIfNull(currentlyPresent);
-        var document = RequireWritable(Load());
-        var changed = false;
-        var pathsState = document.Paths.Select(state =>
+        WithStateLock(() =>
         {
-            if (currentlyPresent.Any(identity => SameIdentity(identity, state.Identity)) ||
-                state.Status == PathAuthorizationStatus.Disconnected)
+            var document = RequireWritable(LoadLocked());
+            var changed = false;
+            var pathsState = document.Paths.Select(state =>
             {
-                return state;
+                if (currentlyPresent.Any(identity => SameIdentity(identity, state.Identity)) ||
+                    state.Status == PathAuthorizationStatus.Disconnected)
+                {
+                    return state;
+                }
+
+                changed = true;
+                return state with { Status = PathAuthorizationStatus.Disconnected };
+            }).ToArray();
+
+            if (changed)
+            {
+                SaveLocked(document with { Paths = pathsState });
             }
-
-            changed = true;
-            return state with { Status = PathAuthorizationStatus.Disconnected };
-        }).ToArray();
-
-        if (changed)
-        {
-            Save(document with { Paths = pathsState });
-        }
+            return true;
+        });
     }
 
     private PathAuthorizationState Mutate(
         NetworkPathIdentity identity,
-        Func<PathAuthorizationState?, PathAuthorizationState> update)
-    {
-        var document = RequireWritable(Load());
-        var list = document.Paths.ToList();
-        var index = list.FindIndex(state => SameIdentity(state.Identity, identity));
-        var next = update(index >= 0 ? list[index] : null);
-        if (index >= 0) list[index] = next;
-        else list.Add(next);
-        Save(document with { Paths = list.ToArray() });
-        return next;
-    }
+        Func<PathAuthorizationState?, PathAuthorizationState> update) =>
+        WithStateLock(() =>
+        {
+            var document = RequireWritable(LoadLocked());
+            var list = document.Paths.ToList();
+            var index = list.FindIndex(state => SameIdentity(state.Identity, identity));
+            var next = update(index >= 0 ? list[index] : null);
+            if (index >= 0) list[index] = next;
+            else list.Add(next);
+            SaveLocked(document with { Paths = list.ToArray() });
+            return next;
+        });
 
     private PathAuthorizationStateDocument CreateInitialDocument()
     {
@@ -323,10 +409,40 @@ public sealed class PathAuthorizationStateStore(
         return Normalize(document);
     }
 
-    private void Save(PathAuthorizationStateDocument document)
+    private void SaveLocked(PathAuthorizationStateDocument document)
     {
         paths.EnsureDirectories();
-        json.Write(paths.PathAuthorizationStateFile, document, PersistenceJsonContext.Default.PathAuthorizationStateDocument);
+        json.WriteWithBackup(paths.PathAuthorizationStateFile, BackupPath, document,
+            PersistenceJsonContext.Default.PathAuthorizationStateDocument);
+    }
+
+    private T WithStateLock<T>(Func<T> action)
+    {
+        using var mutex = new Mutex(initiallyOwned: false, name: lockName);
+        var acquired = false;
+        try
+        {
+            try
+            {
+                acquired = mutex.WaitOne(TimeSpan.FromSeconds(5));
+            }
+            catch (AbandonedMutexException)
+            {
+                acquired = true;
+                logger.Write(DiagnosticLevel.Warn, "path-state.lock abandoned=true");
+            }
+
+            if (!acquired)
+            {
+                throw new IOException("Timed out waiting for path authorization state lock.");
+            }
+
+            return action();
+        }
+        finally
+        {
+            if (acquired) mutex.ReleaseMutex();
+        }
     }
 
     private static PathAuthorizationState SnapshotState(

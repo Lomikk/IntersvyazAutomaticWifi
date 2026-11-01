@@ -106,9 +106,24 @@ Full не выполняет NativeAOT publish и полевые проверк�
 релиз, push и обновление Apps Script выполняются только по явному запросу.
 `.github/workflows/dotnet.yml` и preflight alpha-кандидата используют Full с явным
 пропуском приватного backend; CLI/clean-state smoke запускаются отдельно только
-в чистом CI-окружении. Совместимость PowerShell также проверяется в `ps51.yml`.
+в чистом CI-окружении. Совместимость PowerShell также проверяется в `ps51.yml` — отдельный запуск
+происходит только при изменении reference PowerShell-кода и связанных тестов;
+`Full` в `Client checks` по-прежнему проверяет PowerShell на изменениях C#.
+После правок документации без изменений исходников автоматические Windows-сборки
+не запускаются. GitHub Actions `C# alpha candidate` (полевой ZIP + SHA-256)
+и `C# packaging benchmark` (сравнение вариантов упаковки) запускаются **вручную**
+через `Actions → нужный workflow → Run workflow`. Это не ослабляет официальный
+`Release`: он по-прежнему независимо собирает NativeAOT и проверяет артефакт
+перед публикацией. Длинная `Virtual years simulation` также остаётся ручной.
 
 ## Долгие виртуальные испытания расписания
+
+`network-path-foundation` также проверяет две настоящие HTTP-пробы через общий
+IP-first при медленном DNS fallback, persisted IP после перезапуска, новые сокеты
+при gateway/DHCP/ifIndex и отдельно усиленный ключ короткого DNS-кеша.
+`path-aware-agent` проверяет минимум 2 секунды на вторую captive-пробу и запрет
+stepOne при её отказе. `path-authorization-state` включает upstream-регрессии
+backup/recovery, строгих ошибок чтения и конкурентных изменений.
 
 Группа `authorization-connections` проверяет default Campus-only, миграцию режимов
 и явного адаптера, незавершённую первоначальную настройку, сохранение ответа Да/Нет,

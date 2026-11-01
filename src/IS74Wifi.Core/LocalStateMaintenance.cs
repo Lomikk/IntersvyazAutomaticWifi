@@ -11,6 +11,7 @@ public sealed class LocalStateMaintenance(AppPaths paths)
                      paths.DeviceMetadataFile,
                      paths.RuntimeStateFile,
                      paths.PathAuthorizationStateFile,
+                     paths.PathAuthorizationStateFile + ".bak",
                      paths.DeviceIdFile
                  })
         {

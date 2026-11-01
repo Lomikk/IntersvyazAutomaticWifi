@@ -210,6 +210,14 @@ assert 'InteractiveMenuAction.ToggleTrayIconVisibility' in csharp_ui and 'Зна
 tray_service = (root / 'src' / 'IS74Wifi.App' / 'WindowsTrayIconService.cs').read_text(encoding='utf-8')
 assert 'TrayIconSemanticState.Normal' in tray_service and 'TrayIconSemanticState.Working' in tray_service and 'TrayIconSemanticState.Question' in tray_service and 'TrayIconSemanticState.Warning' in tray_service and 'TrayIconSemanticState.Error' in tray_service, 'semantic tray icon states missing'
 assert 'TaskbarCreated' in tray_service and 'ShellNotifyIconW' in tray_service, 'persistent tray icon must survive Explorer restart'
+notification_service = (root / 'src' / 'IS74Wifi.App' / 'WindowsNotificationService.cs').read_text(encoding='utf-8')
+assert 'WindowsTrayIconService.TryShowBalloon(notification)' in notification_service, 'notifications must reuse the persistent tray icon when available'
+assert 'internal static void LaunchNotificationAction' in notification_service, 'balloon actions must work on the shared tray icon'
+assert 'pendingBalloons' in tray_service and 'BalloonMessage' in tray_service, 'balloon notifications must be marshalled to the tray message pump'
+assert 'NinBalloonUserClick' in tray_service and 'WindowsNotificationService.LaunchNotificationAction(action)' in tray_service, 'update balloon clicks must remain actionable'
+shared_balloon_body = tray_service.split('private unsafe void ShowBalloon(AgentNotification notification)', 1)[-1].split('private void CleanupNativeResources()', 1)[0]
+assert 'ShellNotifyIconW(NativeMethods.NimModify, ref data)' in shared_balloon_body and 'NimAdd' not in shared_balloon_body, 'shared notifications must modify, not register, a second icon'
+assert 'ShowBalloon(notification);' in notification_service, 'disabled-tray transient fallback must still exist'
 app_project = (root / 'src' / 'IS74Wifi.App' / 'IS74Wifi.App.csproj').read_text(encoding='utf-8')
 assert r'<ApplicationIcon>Assets\IS74Wifi.ico</ApplicationIcon>' in app_project, 'application icon is not wired into the Windows executable'
 assert 'registered ? "Сбросить регистрацию" : "Зарегистрировать устройство"' in csharp_ui

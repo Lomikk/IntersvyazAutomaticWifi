@@ -343,7 +343,12 @@ public sealed class PathAwareAgentCoordinator(
             return false;
         }
 
-        var timeout = TimeSpan.FromMilliseconds(Math.Max(100, settings.GuardProbeTimeoutMilliseconds));
+        // Old installations persist a 300-ms guard budget. That is too short
+        // for a fresh TCP handshake under VPN and cannot tolerate DNS fallback.
+        // A second independent HTTP response remains mandatory, but it gets at
+        // least the same end-to-end budget as the first probe.
+        var timeout = TimeSpan.FromMilliseconds(Math.Max(
+            (int)InitialProbeTimeout.TotalMilliseconds, settings.GuardProbeTimeoutMilliseconds));
         NetworkPathProbeResult confirmation;
         try
         {
@@ -358,7 +363,9 @@ public sealed class PathAwareAgentCoordinator(
 
         var updated = state.RecordProbe(path, confirmation, clock.GetUtcNow());
         logger.Write(DiagnosticLevel.Info,
-            $"agent.path-probe-confirm adapter={Safe(path.Name)} status={confirmation.Status} expiry={updated.ExpectedExpiryUtc:O}");
+            $"agent.path-probe-confirm adapter={Safe(path.Name)} status={confirmation.Status} " +
+            $"failure={confirmation.InternetProbe.FailureKind} elapsed-ms={confirmation.InternetProbe.Elapsed.TotalMilliseconds:F0} " +
+            $"budget-ms={timeout.TotalMilliseconds:F0} expiry={updated.ExpectedExpiryUtc:O}");
         return confirmation.Status == NetworkPathProbeStatus.Captive && !updated.UserActionRequired;
     }
 

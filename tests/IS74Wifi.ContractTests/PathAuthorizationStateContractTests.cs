@@ -172,22 +172,100 @@ internal static class PathAuthorizationStateContractTests
         Assert(store.Find(usb.Identity)?.AutomaticStepOneAttempts == 0,
             "per-path authorization attempt budget leaked into another path");
 
+        // A corrupt primary with no verified backup must never be silently
+        // interpreted as absent state or overwritten on the next mutation.
         using var corruptTemp = TempDirectory.Create();
         var corruptPaths = new AppPaths(corruptTemp.Path);
         corruptPaths.EnsureDirectories();
         File.WriteAllText(corruptPaths.PathAuthorizationStateFile, "{not-json");
         var corruptStore = new PathAuthorizationStateStore(
-            corruptPaths,
-            new JsonFileStore(),
-            new RuntimeStateStore(corruptPaths, new JsonFileStore()),
-            clock);
-        var recovered = corruptStore.Load();
-        Assert(recovered.Paths.Length == 0 &&
-               recovered.SchemaVersion == PathAuthorizationStateDocument.CurrentSchemaVersion,
-            "corrupt path state must fail safe instead of crashing startup");
-        corruptStore.Observe(usb, now);
-        Assert(corruptStore.Find(usb.Identity) is not null,
-            "store did not recover on the first explicit mutation after corrupt state");
+            corruptPaths, new JsonFileStore(), timeProvider: clock);
+        AssertThrows<InvalidDataException>(() => corruptStore.Load(),
+            "corrupt primary without backup returned empty state");
+        AssertThrows<InvalidDataException>(() => corruptStore.Observe(usb, now),
+            "corrupt primary was overwritten by a network observation");
+        Assert(File.ReadAllText(corruptPaths.PathAuthorizationStateFile) == "{not-json",
+            "corrupt primary was modified instead of preserved for diagnosis");
+
+        // The backup is the prior committed generation, not the old global
+        // runtime hint. Restore a matching path and expiry, never invent one.
+        using var backupTemp = TempDirectory.Create();
+        var backupPaths = new AppPaths(backupTemp.Path);
+        var backupStore = new PathAuthorizationStateStore(
+            backupPaths, new JsonFileStore(), timeProvider: clock);
+        backupStore.RecordConfirmedAuthorization(usb, authorizedAt, expiry, authorizedAt);
+        backupStore.RecordProbe(usb, Probe(usb, NetworkPathProbeStatus.Internet), authorizedAt.AddSeconds(2));
+        var backupPath = backupPaths.PathAuthorizationStateFile + ".bak";
+        Assert(File.Exists(backupPath), "rotating previous-generation backup was not created");
+        var preservedBackup = File.ReadAllText(backupPath);
+        File.WriteAllText(backupPaths.PathAuthorizationStateFile, "{broken-primary");
+        var fallback = backupStore.Load();
+        Assert(fallback.Paths.Single().Identity == usb.Identity &&
+               fallback.Paths.Single().ExpectedExpiryUtc == expiry &&
+               File.ReadAllText(backupPath) == preservedBackup &&
+               File.ReadAllText(backupPaths.PathAuthorizationStateFile) != "{broken-primary",
+            "backup recovery did not preserve matching path expiry and backup");
+        backupStore.RecordProbe(usb, Probe(usb, NetworkPathProbeStatus.Internet), authorizedAt.AddSeconds(3));
+        Assert(backupStore.Find(usb.Identity)?.ExpectedExpiryUtc == expiry,
+            "normal writes after recovery lost the expected expiry");
+
+        // Crash after removal, before replacement: the remaining backup is
+        // still authoritative and must not trigger a legacy-global migration.
+        File.Delete(backupPaths.PathAuthorizationStateFile);
+        var restoredAfterMissing = backupStore.Load();
+        Assert(restoredAfterMissing.Paths.Single().ExpectedExpiryUtc == expiry &&
+               File.Exists(backupPaths.PathAuthorizationStateFile),
+            "missing primary did not recover from a verified backup");
+
+        // Transient sharing violations are not corruption: never overwrite
+        // the current primary or rotate its backup when a read fails.
+        var bytesBeforeLock = File.ReadAllBytes(backupPaths.PathAuthorizationStateFile);
+        using (var lockedFile = new FileStream(backupPaths.PathAuthorizationStateFile,
+                   FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            AssertThrows<IOException>(() => backupStore.Observe(usb, now),
+                "temporary file sharing violation was interpreted as empty state");
+        }
+        Assert(File.ReadAllBytes(backupPaths.PathAuthorizationStateFile).SequenceEqual(bytesBeforeLock) &&
+               backupStore.Find(usb.Identity)?.ExpectedExpiryUtc == expiry,
+            "temporary read failure corrupted durable state");
+
+        // An unreadable primary AND backup means fail closed, retaining both
+        // artifacts for manual diagnosis rather than erasing evidence.
+        File.WriteAllText(backupPaths.PathAuthorizationStateFile, "{primary");
+        File.WriteAllText(backupPath, "{backup");
+        AssertThrows<InvalidDataException>(() => backupStore.Load(),
+            "double-corruption silently reset path authorization state");
+        Assert(File.ReadAllText(backupPaths.PathAuthorizationStateFile) == "{primary" &&
+               File.ReadAllText(backupPath) == "{backup",
+            "double-corruption overwrote the evidence");
+
+        // Competing store instances must not lose unrelated path observations.
+        using var concurrentTemp = TempDirectory.Create();
+        var concurrentPaths = new AppPaths(concurrentTemp.Path);
+        var firstStore = new PathAuthorizationStateStore(
+            concurrentPaths, new JsonFileStore(), timeProvider: clock);
+        firstStore.RecordConfirmedAuthorization(usb, authorizedAt, expiry, authorizedAt);
+        Parallel.For(0, 12, i =>
+        {
+            var path = Path("parallel-" + i, NetworkInterfaceType.Ethernet,
+                "10.23.0.3", "10.23.0.1");
+            var anotherStore = new PathAuthorizationStateStore(
+                concurrentPaths, new JsonFileStore(), timeProvider: clock);
+            anotherStore.Observe(path, now);
+        });
+        Assert(firstStore.Load().Paths.Length == 13 &&
+               firstStore.Find(usb.Identity)?.ExpectedExpiryUtc == expiry,
+            "concurrent per-path updates lost an existing authorization expiry");
+
+        // Registration reset must also remove the fallback, or a later startup
+        // would resurrect an intentionally erased authorization history.
+        var oldStateBackup = concurrentPaths.PathAuthorizationStateFile + ".bak";
+        Assert(File.Exists(oldStateBackup), "concurrency test did not create a backup");
+        new LocalStateMaintenance(concurrentPaths).ResetRegistration();
+        Assert(!File.Exists(concurrentPaths.PathAuthorizationStateFile) &&
+               !File.Exists(oldStateBackup),
+            "registration reset left stale per-path authorization history");
 
         using var oldSchemaTemp = TempDirectory.Create();
         var oldSchemaPaths = new AppPaths(oldSchemaTemp.Path);
@@ -251,6 +329,20 @@ internal static class PathAuthorizationStateContractTests
     private sealed class TestTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private static void AssertThrows<T>(Action action, string message) where T : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (T)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(message);
     }
 
     private static void Assert(bool condition, string message)
