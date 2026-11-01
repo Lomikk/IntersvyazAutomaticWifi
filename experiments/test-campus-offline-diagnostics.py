@@ -3,6 +3,8 @@ import importlib.util
 import socket
 import ssl
 import struct
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -36,6 +38,33 @@ class FakeSocket:
 
 
 class Contracts(unittest.TestCase):
+    def test_authorization_requires_explicit_confirmation(self):
+        with patch.object(diag, "confirm_word", return_value=False), patch.object(subprocess, "run") as run:
+            from unittest.mock import Mock
+            report = Mock()
+            diag.invoke_authorization(report, Path("IS74Wifi.exe"))
+        run.assert_not_called()
+        report.save.assert_called_once_with("authorization_skipped", reason="not explicitly confirmed")
+
+    def test_authorization_invokes_installed_client_once_without_shell_or_retry(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder) / "IS74Wifi.exe"
+            executable.write_bytes(b"synthetic executable; never run")
+            report = Mock()
+            with patch.dict(diag.os.environ, {"LOCALAPPDATA": folder}), patch.object(diag, "confirm_word", return_value=True), patch.object(subprocess, "run", return_value=Mock(returncode=1)) as run, patch("builtins.print"):
+                diag.invoke_authorization(report, executable)
+            run.assert_called_once_with([str(executable), "connect"], check=False)
+            end = next(call for call in report.save.call_args_list if call.args[0] == "authorization_end")
+            self.assertEqual(end.kwargs["exit_code"], 1)
+
+    def test_api_root_200_is_not_classified_as_captive(self):
+        sock = FakeSocket(b"HTTP/1.1 200 OK\r\n\r\n")
+        with patch.object(diag, "bound_socket", return_value=sock), patch.object(ssl, "create_default_context") as context:
+            context.return_value.wrap_socket.return_value = sock
+            result = diag.request("api.is74.ru", "192.0.2.2", {}, 2)
+        self.assertEqual(result["outcome"], "OtherHTTP")
+
     def test_adapter_selection_reprompts_without_logging_phone(self):
         with patch("builtins.input", side_effect=["+70000000000", "", "2", "1"]), patch("builtins.print") as output:
             self.assertEqual(diag.choose_adapter([{"id": "wifi"}]), "wifi")

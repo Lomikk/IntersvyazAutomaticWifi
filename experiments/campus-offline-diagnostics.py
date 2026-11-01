@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Interactive Windows field experiment. No authorization, redirects or settings writes."""
+"""Windows field wizard: bound probes, or opt-in installed-client authorization."""
 import argparse
+import hashlib
 import datetime as dt
 import ipaddress
 import json
@@ -203,7 +204,7 @@ def request(host, address, adapter, budget, resolve_fresh=False):
         target = urlsplit(location)
         row["location_host"] = target.hostname
         row["expected_internet_redirect"] = location.lower() == "https://online.susu.ru/" and 300 <= row["status"] < 400
-        row["outcome"] = ("Internet" if row["expected_internet_redirect"] else "HTTP200_candidate_captive" if row["status"] == 200 else "OtherHTTP")
+        row["outcome"] = ("Internet" if host == HOSTS[0] and row["expected_internet_redirect"] else "HTTP200_candidate_captive" if host == HOSTS[0] and row["status"] == 200 else "OtherHTTP")
     except (OSError, ValueError, IndexError, struct.error) as exc:
         row.update(outcome="Failure", failed_phase=phase, error=type(exc).__name__, detail=str(exc)[:300])
     finally:
@@ -222,6 +223,77 @@ class Report:
     def save(self, event, **data):
         self.file.write(json.dumps(dict(time=dt.datetime.now().astimezone().isoformat(), event=event, **data), ensure_ascii=False) + "\n")
         self.file.flush()
+
+
+def confirm_word(message, word):
+    return ask(message + f" Введи {word}").upper() == word
+
+
+def invoke_authorization(report, executable):
+    """One explicit invocation of the installed runtime; never retries or handles secrets."""
+    if not confirm_word("Это реальная попытка авторизации штатным IS74Wifi, возможен расход попытки портала.", "АВТОРИЗОВАТЬ"):
+        report.save("authorization_skipped", reason="not explicitly confirmed")
+        return
+    root = Path(os.environ["LOCALAPPDATA"]) / "IS74Wifi"
+    log = root / "logs" / "diagnostic.log"
+    before = log.stat().st_size if log.exists() else 0
+    report.save("authorization_start", executable=str(executable), sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+                transport="installed C# runtime; DNS policy unchanged; NOT IP-only authorization",
+                diagnostic_log=str(log), log_offset_before=before)
+    started = time.perf_counter()
+    # No shell interpolation, credential extraction, automatic retry or child timeout:
+    # killing the CLI would not reliably cancel an agent-owned authorization flow.
+    result = subprocess.run([str(executable), "connect"], check=False)
+    report.save("authorization_end", exit_code=result.returncode,
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+                log_size_after=log.stat().st_size if log.exists() else 0)
+    print("Код завершения клиента:", result.returncode,
+          "(0 может означать и AlreadyOnline; сам по себе не доказывает новую авторизацию).")
+
+
+def auth_scenario(report, adapter_id, cache, executable):
+    print("\nСЦЕНАРИЙ: VPN ПОДКЛЮЧЁН НА LTE → LTE ОТКЛЮЧЁН → CAPTIVE CAMPUS")
+    print("IS74Wifi должен быть заранее зарегистрирован. Телефон/код вводятся только в самом приложении при регистрации, не здесь.")
+    print("Приостанови фоновую автоавторизацию и закрой меню IS74Wifi. Скрипт выполнит только одну команду connect.")
+    print("1. На LTE установи VPN-соединение и убедись, что VPN действительно подключён.")
+    if not confirm_word("VPN подключён на работающем LTE?", "VPN"):
+        report.save("authorization_scenario_skipped", reason="VPN not established on LTE")
+        return
+    report.save("vpn_established_on_lte", adapters=snapshot(), declaration="user confirmed; tunnel not independently verified")
+    print("2. Не выключая исследуемый VPN, отключи LTE/USB-тетеринг и другие интернет-каналы.")
+    print("3. Подключи прямой Wi-Fi к НЕАВТОРИЗОВАННОМУ Campus. Radmin отключи; исследуемый VPN-клиент оставь включённым.")
+    print("Удалённая связь пропадёт. VPN может показывать reconnecting — сохрани это состояние, не подключай LTE заново.")
+    if not confirm_word("LTE отключён, Campus подключён, VPN-клиент остался включённым?", "CAMPUS"):
+        report.save("authorization_scenario_skipped", reason="network transition not confirmed")
+        return
+    notes = ask("Укажи состояние VPN после отключения LTE (connected/reconnecting/другое)")
+    adapter = selected(snapshot(), adapter_id)
+    report.save("vpn_after_lte_loss", declared_conditions=notes, selected=adapter)
+    for part, budget in ((1, FIRST_BUDGET), (2, CONFIRM_BUDGET)):
+        if part == 2:
+            time.sleep(CONFIRM_DELAY)
+        result = request(HOSTS[0], cache[HOSTS[0]][0], adapter, budget)
+        report.save("pre_authorization_probe", part=part, **result)
+        print("До авторизации:", result["outcome"], result.get("status", ""))
+    # These Python probes are observations, not a replacement for runtime gates.
+    # Refuse a changed transport and require the user's explicit condition declaration.
+    current = selected(snapshot(), adapter_id)
+    if binding(current) != binding(adapter):
+        raise RuntimeError("Binding Wi-Fi изменился. Авторизация не запущена; повтори сценарий.")
+    if not confirm_word("Проверь ещё раз: LTE/другие интернет-пути выключены; Campus ещё НЕ авторизован; автоавторизация приостановлена.", "ГОТОВО"):
+        report.save("authorization_scenario_skipped", reason="final conditions not confirmed")
+        return
+    print("Штатный клиент сам выбирает путь и использует собственную DNS-политику. Python не подменяет его транспорт.")
+    invoke_authorization(report, executable)
+    after = selected(snapshot(), adapter_id)
+    report.save("after_authorization_binding", binding_stable=binding(after) == binding(adapter), selected=after)
+    for number in range(1, 4):
+        result = request(HOSTS[0], cache[HOSTS[0]][0], after, FIRST_BUDGET)
+        report.save("post_authorization_probe", number=number, **result)
+        print("После попытки:", result["outcome"], result.get("status", ""))
+        if number < 3:
+            time.sleep(1)
+    print("Повторная авторизация автоматически не запускается. Возвращай LTE/Radmin для разбора результатов.")
 
 
 def run_stage(report, adapter_id, cache, name, instructions, pairs):
@@ -272,6 +344,8 @@ def run_stage(report, adapter_id, cache, name, instructions, pairs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pairs", type=int, default=10, choices=range(1, 21))
+    parser.add_argument("--vpn-auth", action="store_true", help="Guided pre-established VPN loss scenario with one confirmed installed-client connect")
+    parser.add_argument("--app", type=Path, help="Path to installed IS74Wifi.exe for --vpn-auth")
     base = Path(__file__).resolve().parent
     default_output = base.parent / "artifacts" / "campus-offline" if base.name == "experiments" else base / "results"
     parser.add_argument("--output", type=Path, default=default_output)
@@ -284,7 +358,7 @@ def main():
         parser.error("Этот эксперимент поддерживает только Windows")
     report = Report(args.output / dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
     try:
-        print("CAMPUS: автономная диагностика, без SMS и авторизации\n")
+        print("CAMPUS: " + ("сценарий с одной явной авторизацией штатным клиентом" if args.vpn_auth else "автономная диагностика, без SMS и авторизации") + "\n")
         print("Результаты: " + str(report.folder))
         print("Сеть, VPN, службы и настройки скрипт не переключает. Все действия выполняешь ты.")
         print("Закрой IS74Wifi и приостанови его фоновую автоавторизацию, чтобы она не изменила состояние во время опыта.")
@@ -315,13 +389,23 @@ def main():
         adapter_id = choose_adapter(wifi)
         report.save("session", python=sys.version, adapter_id=adapter_id, addresses=cache,
                     note="Python experiment, not C# runtime or packet capture. No operator identity inferred.")
+        if args.vpn_auth:
+            executable = args.app or Path(os.environ["LOCALAPPDATA"]) / "Programs" / "IS74Wifi" / "IS74Wifi.exe"
+            if not executable.is_file() or executable.name.lower() != "is74wifi.exe":
+                raise RuntimeError("Не найден IS74Wifi.exe. Укажи --app с путём к программе.")
+            if not (Path(os.environ["LOCALAPPDATA"]) / "IS74Wifi" / "secrets.dpapi").is_file():
+                raise RuntimeError("Сначала зарегистрируй IS74Wifi обычным способом на LTE, затем повтори опыт. Скрипт не читает секреты.")
+            auth_scenario(report, adapter_id, cache, executable)
+            report.save("completed", mode="vpn-auth")
+            return
         run_stage(report, adapter_id, cache, "1. БЕЗ АВТОРИЗАЦИИ / VPN OFF",
                   "Подключи ноутбук напрямую к Campus Wi-Fi. Отключи LTE/USB-тетеринг, Ethernet с Интернетом, VPN и Radmin VPN.\n"
                   "Удалённая связь пропадёт — это ожидаемо. Не открывай страницу авторизации.\n"
                   "Если Campus уже авторизован, пропусти этот этап: скрипт не снимает авторизацию.", args.pairs)
         run_stage(report, adapter_id, cache, "2. БЕЗ АВТОРИЗАЦИИ / VPN ON",
-                  "Сохрани Campus без авторизации и LTE выключенным. Включи исследуемый VPN. Radmin оставь выключенным.\n"
-                  "Если VPN не подключается без Интернета, отметь это в замечании. Не возвращай LTE ради его запуска.", args.pairs)
+                  "Временно верни LTE, подключи исследуемый VPN на работающем Интернете.\n"
+                  "Затем, НЕ выключая VPN-клиент, отключи LTE и оставь неавторизованный Campus. Radmin выключи.\n"
+                  "В замечании укажи connected/reconnecting после отключения LTE. Не авторизуй Campus на этом этапе.", args.pairs)
         print("\nПроверки неавторизованного состояния закончены. Можно завершить опыт прямо сейчас.")
         if ask("Хочешь вручную авторизоваться и проверить ещё два состояния? Введи ДА").upper() == "ДА":
             run_stage(report, adapter_id, cache, "3. ПОСЛЕ РУЧНОЙ АВТОРИЗАЦИИ / VPN OFF",
