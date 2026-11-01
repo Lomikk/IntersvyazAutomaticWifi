@@ -10,6 +10,7 @@ check-confirm-success.json
 artifacts/
 is-auth-test/
 is-auth-curl/
+experiments/__pycache__/
 
 # PowerShell / editor noise
 .vscode/
