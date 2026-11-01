@@ -91,7 +91,7 @@ internal sealed class StatusService
         var network = await refreshNetwork(cancellationToken).ConfigureAwait(false);
         var local = ReadLocalState();
         var settings = local.Settings;
-        network = SelectNetwork(network, settings.AuthorizationConnections!);
+        network = SelectNetwork(network, settings);
         var machine = local.Machine;
 
         var lines = new List<string>
@@ -107,7 +107,7 @@ internal sealed class StatusService
             $"Установленный EXE: {(machine.Installed ? machine.InstalledExecutablePath : "—")}",
             string.Empty,
             "=== Состояние ===",
-            $"Выбранные подключения: {settings.AuthorizationConnections!.Describe()}",
+            $"Выбранные подключения: {DescribeConnections(settings)}",
             $"Интернет: {(network.InternetAvailable == true ? "доступен" : "не подтверждён")}",
             $"Физические пути: {network.Paths.Length}",
             $"Авторизация: {FormatPathAuthorizationSummary(network)}",
@@ -206,7 +206,7 @@ internal sealed class StatusService
         AgentNetworkSnapshot? networkOverride)
     {
         var network = networkOverride ?? local.Network;
-        network = SelectNetwork(network, local.Settings.AuthorizationConnections!);
+        network = SelectNetwork(network, local.Settings);
         var wifiNetwork = SsidPolicy.IsTarget(network.WifiSsid)
             ? WifiNetworkState.Campus
             : network.WifiSsid is not null
@@ -271,14 +271,19 @@ internal sealed class StatusService
             ProblemPathCount: problemPathCount,
             NetworkPaths: networkPaths,
             VpnActive: network.VpnActive,
-            AuthorizationConnectionsSummary: local.Settings.AuthorizationConnections!.Describe());
+            AuthorizationConnectionsSummary: DescribeConnections(local.Settings));
     }
 
-    private static AgentNetworkSnapshot SelectNetwork(AgentNetworkSnapshot network, AuthorizationConnectionSelection selection)
+    private static AgentNetworkSnapshot SelectNetwork(AgentNetworkSnapshot network, AppSettings settings)
     {
+        if (settings.ConnectionSelectionPending) return network;
+        var selection = settings.AuthorizationConnections!;
         var paths = network.Paths.Where(path => selection.Allows(path.Ssid is not null, path.Ssid, path.AdapterId)).ToArray();
         return network with { Paths = paths, InternetAvailable = paths.Any(path => path.Status == PathAuthorizationStatus.Internet) };
     }
+
+    private static string DescribeConnections(AppSettings settings) => settings.ConnectionSelectionPending
+        ? "Все подключения до выбора сетей" : settings.AuthorizationConnections!.Describe();
 
     private static StatusMachineState ReadDefaultMachineState()
     {

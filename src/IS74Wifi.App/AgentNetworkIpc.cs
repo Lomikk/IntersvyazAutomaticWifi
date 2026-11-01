@@ -56,7 +56,8 @@ internal sealed class AgentNetworkOperations(
     public async Task<AgentNetworkSnapshot> RefreshAddressesAsync(CancellationToken cancellationToken = default)
     {
         using var crossProcessGate = await AgentNetworkOperationGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
-        var paths = new NetworkPathEnumerator(selection: app.Settings.AuthorizationConnections).EnumerateAutomaticCandidates()
+        var paths = new NetworkPathEnumerator(selection: app.Settings.AuthorizationConnections,
+                selectionPending: app.Settings.ConnectionSelectionPending).EnumerateAutomaticCandidates()
             .Where(path => path.CanProbe).ToArray();
         if (paths.Length == 0) throw new InvalidOperationException("Нет активного подключения из выбранного списка.");
         return await RunAndCaptureAsync(async () =>
@@ -167,7 +168,8 @@ internal sealed class AgentNetworkOperations(
         var adapters = PhysicalAdapterSelection.Enumerate();
         var paths = adapters
             .Select(NetworkPathSnapshot.FromAdapter)
-            .Where(path => path.IsAutomaticAuthorizationCandidate && path.CanAutomaticallyAuthorize && app.Settings.AuthorizationConnections!.Allows(path))
+            .Where(path => path.IsAutomaticAuthorizationCandidate && path.CanAutomaticallyAuthorize &&
+                app.Settings.AuthorizationConnections!.Allows(path, app.Settings.ConnectionSelectionPending))
             .GroupBy(path => path.Identity)
             .Select(group => group.First())
             .ToArray();

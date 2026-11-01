@@ -11,6 +11,11 @@ public enum AnonymousStatisticsConsent
 
 public sealed record AppSettings
 {
+    // null identifies settings written before the first-run setup wizard.
+    public bool? InitialSetupCompleted { get; init; }
+    public bool? InitialAutomaticAuthorizationChoice { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ConnectionSelectionPending => InitialSetupCompleted == false;
     public AuthorizationConnectionSelection? AuthorizationConnections { get; init; }
     // Read only for migration from builds with simple/advanced modes.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

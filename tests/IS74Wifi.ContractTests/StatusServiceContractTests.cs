@@ -22,7 +22,9 @@ internal static class StatusServiceContractTests
             "missing Wi-Fi must remain unknown without inventing an SSID");
         Assert(fresh.AuthorizationExpectedExpiryUtc is null && !fresh.AuthorizationAlreadyActive,
             "fresh local status must not invent authorization state");
-        Assert(fresh.AuthorizationConnectionsSummary == "Wi-Fi: 1, USB/Ethernet: 0", "fresh UI must expose Campus-only selection");
+        Assert(fresh.AuthorizationConnectionsSummary == "Все подключения до выбора сетей", "fresh UI must expose pending setup");
+        var initialStore = new SettingsStore(paths, json);
+        initialStore.Save(initialStore.Load() with { InitialSetupCompleted = true });
 
         new DpapiSecretStore(paths).Save(new StoredSecrets("test-token", "9991234567"));
         var registered = service.ReadLocalSnapshot();
@@ -67,6 +69,10 @@ internal static class StatusServiceContractTests
         var ignoredUsb = service.ReadSnapshot(usbSnapshot);
         Assert(ignoredUsb.ActivePhysicalPathCount == 0 && ignoredUsb.InternetAvailable == false && ignoredUsb.AuthorizationExpectedExpiryUtc is null,
             "Campus-only local status must not reuse an old USB Internet/expiry snapshot");
+        initialStore.Save(initialStore.Load() with { InitialSetupCompleted = false });
+        Assert(service.ReadSnapshot(usbSnapshot).ActivePhysicalPathCount == 1,
+            "pending setup must not hide the only USB connection");
+        initialStore.Save(initialStore.Load() with { InitialSetupCompleted = true });
         var connectionStore = new SettingsStore(paths, json);
         connectionStore.Save(connectionStore.Load() with
         {

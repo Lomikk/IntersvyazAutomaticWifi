@@ -115,7 +115,8 @@ public sealed record NetworkPathSnapshot(
 }
 
 public sealed class NetworkPathEnumerator(Func<IReadOnlyList<PhysicalAdapter>>? enumerate = null,
-    AuthorizationConnectionSelection? selection = null)
+    AuthorizationConnectionSelection? selection = null,
+    bool selectionPending = false)
 {
     private readonly Func<IReadOnlyList<PhysicalAdapter>> enumerateAdapters =
         enumerate ?? PhysicalAdapterSelection.Enumerate;
@@ -128,7 +129,7 @@ public sealed class NetworkPathEnumerator(Func<IReadOnlyList<PhysicalAdapter>>? 
 
     public IReadOnlyList<NetworkPathSnapshot> EnumerateAutomaticCandidates() =>
         EnumerateAll().Where(path => path.IsAutomaticAuthorizationCandidate &&
-            (selection ?? new AuthorizationConnectionSelection()).Allows(path)).ToArray();
+            (selection ?? new AuthorizationConnectionSelection()).Allows(path, selectionPending)).ToArray();
 }
 
 public sealed record SystemRouteSnapshot(

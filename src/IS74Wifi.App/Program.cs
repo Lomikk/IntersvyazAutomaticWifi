@@ -13,7 +13,7 @@ internal enum ConfirmationRequestFailureDisposition
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.3";
+    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.4";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
@@ -249,6 +249,7 @@ internal static class Program
 
     private static async Task<int> RegisterAsync()
     {
+        PrepareInitialSetup();
         using var app = ApplicationRuntime.Create(ProductVersion);
         app.Logger.Write(DiagnosticLevel.Info, "cli.start command=register runtime=csharp");
         if (app.Secrets.Load() is not null)
@@ -614,7 +615,7 @@ internal static class Program
         return 0;
     }
 
-    private static int EnableAutomaticAuthorization(bool quiet = false, Action<string>? progress = null)
+    private static int EnableAutomaticAuthorization(bool quiet = false, Action<string>? progress = null, bool startNow = true)
     {
         var installation = new ProgramInstallation();
         if (!CanEnableAutomaticAuthorization(IsLocalRunRequested(), installation.IsInstalledExecutable(Environment.ProcessPath)))
@@ -634,8 +635,8 @@ internal static class Program
 
         new WindowsInstalledAppRegistration().Register(installation, installation.ReadInstalledVersion() ?? ProductVersion);
         ReportMenuBatchProgress(progress, "Запись программы в Windows обновлена");
-        app.Autostart.Enable(installation.ExecutablePath, startNow: true);
-        ReportMenuBatchProgress(progress, "Автозапуск включён, фоновый режим запущен");
+        app.Autostart.Enable(installation.ExecutablePath, startNow: startNow);
+        ReportMenuBatchProgress(progress, startNow ? "Автозапуск включён, фоновый режим запущен" : "Автозапуск подготовлен");
         app.Logger.Write(DiagnosticLevel.Info, "autostart.enabled mode=hkcu-run installed-copy=true");
         if (!quiet)
         {
@@ -1678,6 +1679,7 @@ internal static class Program
     private static async Task<int> RunMenuAsync(bool startInUpdates = false)
     {
         using var interactiveSession = WindowsNotificationService.TryMarkInteractiveSession();
+        PrepareInitialSetup();
         TryRecoverAutomaticAuthorizationAgent();
         var ui = new InteractiveTerminalUi(ProductVersion);
         var showReveal = !string.Equals(
@@ -1869,17 +1871,8 @@ internal static class Program
                     }
 
                     case InteractiveMenuAction.ChooseAuthorizationConnections:
-                    {
-                        var adapters = await AgentNetworkClient.GetAdapterOptionsAsync().ConfigureAwait(false);
-                        var current = new SettingsStore(new AppPaths(), new JsonFileStore()).Load().AuthorizationConnections!;
-                        var choice = await ui.ChooseAuthorizationConnectionsAsync(adapters, current).ConfigureAwait(false);
-                        if (choice.Confirmed)
-                            await RunMenuBatchActionAsync(ui, "ПОДКЛЮЧЕНИЯ", initialStatus,
-                                "Сохраняю выбранные подключения...",
-                                progress => SetAuthorizationConnections(choice.Selection, progress),
-                                "Подключения сохранены").ConfigureAwait(false);
+                        _ = await ChooseAuthorizationConnectionsAsync(ui, initialStatus).ConfigureAwait(false);
                         break;
-                    }
 
                     case InteractiveMenuAction.DiagnoseDirectNetwork:
                     {
@@ -2102,10 +2095,12 @@ internal static class Program
         {
             bool registered;
             AnonymousStatisticsConsent consent;
+            AppSettings settings;
             using (var app = ApplicationRuntime.Create(ProductVersion))
             {
                 registered = app.Secrets.Load() is not null;
                 consent = app.Settings.AnonymousStatisticsConsent;
+                settings = app.Settings;
             }
 
             if (consent == AnonymousStatisticsConsent.Unknown)
@@ -2128,8 +2123,57 @@ internal static class Program
                 continue;
             }
 
-            return true;
+            if (!settings.ConnectionSelectionPending) return true;
+
+            if (settings.InitialAutomaticAuthorizationChoice is null)
+            {
+                var status = GetInteractiveStatusSnapshot();
+                var enabled = await ui.ConfirmYesNoAsync(
+                    "4. АВТОМАТИЧЕСКАЯ АВТОРИЗАЦИЯ",
+                    "IS74Wifi может автоматически восстанавливать доступ к Интернету в Campus Wi-Fi, когда заканчивается срок авторизации.\n\nВключить автоматическую авторизацию?",
+                    "Да, включить",
+                    "Нет, буду запускать вручную",
+                    status, fullWidth: true).ConfigureAwait(false);
+                if (!await RunMenuBatchActionAsync(ui, "АВТОМАТИЧЕСКАЯ АВТОРИЗАЦИЯ", status,
+                    "Сохраняю выбор...", progress =>
+                    {
+                        var store = new SettingsStore(new AppPaths(), new JsonFileStore());
+                        store.Save(store.Load() with { InitialAutomaticAuthorizationChoice = enabled });
+                    }, enabled ? "Выбор сохранён; автовход включится после выбора сетей" : "Выбран ручной запуск").ConfigureAwait(false))
+                    return false;
+                continue;
+            }
+
+            return await ChooseAuthorizationConnectionsAsync(ui, GetInteractiveStatusSnapshot(), initialSetup: true).ConfigureAwait(false);
         }
+    }
+
+    // A pre-wizard registered installation keeps its settings and skips first-run questions.
+    // An unfinished wizard remains unfinished after registration or process restart.
+    internal static AppSettings InitializeInitialSetupState(AppSettings settings, bool registered) =>
+        settings.InitialSetupCompleted is null ? settings with { InitialSetupCompleted = registered } : settings;
+
+    private static void PrepareInitialSetup()
+    {
+        var paths = new AppPaths();
+        var store = new SettingsStore(paths, new JsonFileStore());
+        var settings = store.Load();
+        if (settings.InitialSetupCompleted is not null) return;
+        store.Save(InitializeInitialSetupState(settings, new DpapiSecretStore(paths).Load() is not null));
+    }
+
+    private static async Task<bool> ChooseAuthorizationConnectionsAsync(
+        InteractiveTerminalUi ui, InteractiveStatusSnapshot status, bool initialSetup = false)
+    {
+        var adapters = await AgentNetworkClient.GetAdapterOptionsAsync().ConfigureAwait(false);
+        var current = new SettingsStore(new AppPaths(), new JsonFileStore()).Load().AuthorizationConnections!;
+        var choice = await ui.ChooseAuthorizationConnectionsAsync(adapters, current,
+            title: initialSetup ? "5. КАКИЕ СЕТИ ОБСЛУЖИВАТЬ?" : "ПОДКЛЮЧЕНИЯ ДЛЯ АВТОРИЗАЦИИ").ConfigureAwait(false);
+        if (!choice.Confirmed) return false;
+        return await RunMenuBatchActionAsync(ui, "ПОДКЛЮЧЕНИЯ", status,
+            "Сохраняю выбранные подключения...",
+            progress => SetAuthorizationConnections(choice.Selection, progress, initialSetup),
+            "Подключения сохранены").ConfigureAwait(false);
     }
 
     private static async Task RegisterFromMenuAsync(
@@ -2899,7 +2943,7 @@ internal static class Program
     }
 
 
-    private static void SetAuthorizationConnections(AuthorizationConnectionSelection selection, Action<string>? progress = null)
+    private static void SetAuthorizationConnections(AuthorizationConnectionSelection selection, Action<string>? progress = null, bool initialSetup = false)
     {
         var paths = new AppPaths();
         var json = new JsonFileStore();
@@ -2910,10 +2954,21 @@ internal static class Program
             throw new InvalidOperationException("Перед изменением подключений тестовой сборки отключите фоновый автовход установленной программы.");
         var restart = AgentProcessControl.IsAgentRunning() && installation.IsInstalled;
         if (restart) AgentProcessControl.StopAgentOrThrow();
-        store.Save(settings with { AuthorizationConnections = selection.Normalize() });
+        if (initialSetup)
+        {
+            if (settings.InitialAutomaticAuthorizationChoice == true)
+                EnableAutomaticAuthorization(quiet: true, progress: progress, startNow: false);
+            else if (new WindowsAutostartService().IsEnabledFor(installation.ExecutablePath))
+                DisableAutostart(quiet: true, progress: progress);
+        }
+        store.Save(settings with { AuthorizationConnections = selection.Normalize(), InitialSetupCompleted = true });
         new AgentNetworkSnapshotStore(paths, json).Save(AgentNetworkSnapshot.Empty);
         ReportMenuBatchProgress(progress, "Выбранные подключения сохранены");
-        if (restart) StartInstalledAgent(installation.ExecutablePath);
+        if (initialSetup ? settings.InitialAutomaticAuthorizationChoice == true : restart)
+        {
+            StartInstalledAgent(installation.ExecutablePath);
+            ReportMenuBatchProgress(progress, "Фоновый режим запущен с выбранными подключениями");
+        }
     }
 
     private static void SetIgnoreNetworkCheck(bool enabled, Action<string>? progress = null)

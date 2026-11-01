@@ -407,13 +407,14 @@ internal sealed partial class InteractiveTerminalUi
     public async Task<(bool Confirmed, AuthorizationConnectionSelection Selection)> ChooseAuthorizationConnectionsAsync(
         IReadOnlyList<AgentNetworkAdapterOption> adapters,
         AuthorizationConnectionSelection current,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string title = "ПОДКЛЮЧЕНИЯ ДЛЯ АВТОРИЗАЦИИ")
     {
-        var screen = new ConnectionSelectionScreen(adapters, current);
+        var screen = new ConnectionSelectionScreen(adapters, current, title);
 
         if (!CanUseInteractiveSession)
         {
-            return ChooseConnectionsCompact(screen, current, cancellationToken);
+            return ChooseConnectionsCompact(screen, current, title, cancellationToken);
         }
 
         UpdateLayout();
@@ -458,12 +459,13 @@ internal sealed partial class InteractiveTerminalUi
     private static (bool Confirmed, AuthorizationConnectionSelection Selection) ChooseConnectionsCompact(
         ConnectionSelectionScreen screen,
         AuthorizationConnectionSelection current,
+        string title,
         CancellationToken cancellationToken)
     {
         while (true)
         {
             Console.Clear();
-            Console.WriteLine("IS74W — подключения для авторизации");
+            Console.WriteLine("IS74W — " + title);
             for (var i = 0; i < screen.Items.Count; i++)
             {
                 var item = screen.Items[i];
@@ -948,7 +950,8 @@ internal sealed partial class InteractiveTerminalUi
         string yesLabel,
         string noLabel,
         InteractiveStatusSnapshot currentStatus,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool fullWidth = false)
     {
         status = currentStatus;
         if (!CanUseInteractiveSession)
@@ -979,7 +982,8 @@ internal sealed partial class InteractiveTerminalUi
                 cancellationToken.ThrowIfCancellationRequested();
                 UpdateLayout();
                 UpdateAmbientSweepState();
-                RenderYesNoFrame(title, message, yesLabel, noLabel);
+                if (fullWidth) Render(BuildFullWidthYesNoFrame(layout, title, message, yesLabel, noLabel, selected));
+                else RenderYesNoFrame(title, message, yesLabel, noLabel);
 
                 var completed = await Task.WhenAny(keyTask, Task.Delay(16, cancellationToken)).ConfigureAwait(false);
                 if (completed != keyTask)
@@ -1319,6 +1323,28 @@ internal sealed partial class InteractiveTerminalUi
         }
         Center(canvas, CanvasHeight - 1, "↑ ↓ выбрать   Enter продолжить   1/0 сразу   Esc отмена", Palette.Dim);
         Render(canvas);
+    }
+
+    internal static Cell[,] BuildFullWidthYesNoFrame(TerminalLayout layout, string title, string message,
+        string yesLabel, string noLabel, int selected)
+    {
+        var canvas = Create(layout.CanvasWidth, CanvasHeight);
+        var width = Math.Min(layout.CanvasWidth - 2, 112);
+        var x = Math.Max(1, (layout.CanvasWidth - width) / 2);
+        DrawBox(canvas, x, 1, width, CanvasHeight - 3, title);
+        var contentWidth = Math.Max(1, width - 6);
+        var row = 4;
+        foreach (var paragraph in message.Split('\n'))
+        {
+            if (paragraph.Length == 0) { row++; continue; }
+            foreach (var line in WrapText(paragraph, contentWidth))
+                Put(canvas, x + 3, row++, line, Palette.Text);
+        }
+        row += 2;
+        Put(canvas, x + 3, row, Truncate($"{(selected == 0 ? "›" : " ")} [Y] {yesLabel}", contentWidth), Palette.Bright);
+        Put(canvas, x + 3, row + 1, Truncate($"{(selected == 1 ? "›" : " ")} [N] {noLabel}", contentWidth), Palette.Bright);
+        Center(canvas, CanvasHeight - 1, "↑↓ выбрать · Enter · Y/N · Esc — нет", Palette.Dim);
+        return canvas;
     }
 
     private void RenderYesNoFrame(

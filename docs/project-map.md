@@ -11,7 +11,7 @@
 
 | Что меняем | Где сейчас владелец поведения | Проверка |
 |---|---|---|
-| Запуск, CLI, меню, регистрация, вызов действий | `App/Program.cs`; создание/освобождение сервисов — `App/ApplicationRuntime.cs` | App; при изменении сценариев/сервисов Full |
+| Запуск, CLI, меню, первоначальная настройка, регистрация, вызов действий | `App/Program.cs`; создание/освобождение сервисов — `App/ApplicationRuntime.cs` | App; при изменении сценариев/сервисов Full |
 | Компоновка и сессия терминала | `App/InteractiveTerminalUi.cs`; примитивы кадра — `App/Ui/TerminalCanvas.cs`, геометрия — `App/Ui/TerminalLayout.cs`, framebuffer/diff/вывод — `App/Ui/TerminalOutput.cs`; общая геометрия больших списков — `App/Ui/ListWindow.cs`; история — `InteractiveActionHistory.cs` | App + ручная проверка затронутого экрана |
 | Выбор подключений для авторизации | `App/Ui/ConnectionSelectionScreen.cs` — только пункты/selection/scroll/кадр; список адаптеров UI получает через `AgentNetworkClient` от agent-owned `PhysicalAdapterSelection.Enumerate`, а сохранение выбранной настройки остаётся в `Program.cs` | App + `agent-network-ipc` + ручная проверка экрана |
 | Снимок состояния и подробный отчёт | `App/AgentNetworkSnapshot.cs` — agent-owned snapshot сетевых путей/SSID/VPN/authorization state, сохраняемый после agent tick/IPC операции; `StatusService.cs` только объединяет этот snapshot с локальными настройками/регистрацией для UI/отчёта; live refresh идёт через `AgentNetworkClient` | App (`status-service` + `agent-network-ipc` + Python live-status) |
@@ -40,7 +40,12 @@
 
 - `ApplicationRuntime` сейчас подключает **DirectNetworkConnector** к API/portal/probe:
   agent/manual/probe/snapshot используют один пользовательский список подключений.
-  Новая установка выбирает только Campus Wi-Fi; дополнительные Wi-Fi выбираются по
+  В первом запуске после согласия и регистрации добавлены вопрос об автовходе и
+  выбор подключений. До подтверждения списка (`initialSetupCompleted=false`)
+  сохраняются все физические пути для регистрации без Wi-Fi; затем стартует агент
+  с выбранным фильтром. Ответ шага 4 сохраняется для возобновления. Старые уже
+  зарегистрированные установки пропускают новые вопросы. Подробнее — [direct-network.md](direct-network.md).
+  По умолчанию в списке отмечен Campus Wi-Fi; дополнительные Wi-Fi выбираются по
   точному SSID, USB/Ethernet — по adapter GUID. Сохранённые отключённые устройства
   остаются в списке. Вариант «простой/продвинутый» заменён чекбоксами:
   legacy Simple переносится в Campus-only, прежний явный adapter override —

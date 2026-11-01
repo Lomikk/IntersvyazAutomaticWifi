@@ -113,7 +113,7 @@ internal sealed class ApplicationRuntime : IDisposable
         var pathAddresses = new PathAddressBook(paths, json, logger);
         IReadOnlyList<PhysicalAdapter> EnumerateAuthorizationAdapters() => PhysicalAdapterSelection.Enumerate()
             .Where(adapter => adapter.HardwareInterface == true && !adapter.LooksVirtual &&
-                settings.AuthorizationConnections!.Allows(NetworkPathSnapshot.FromAdapter(adapter))).ToArray();
+                settings.AuthorizationConnections!.Allows(NetworkPathSnapshot.FromAdapter(adapter), settings.ConnectionSelectionPending)).ToArray();
 
         // Direct authorization never uses the system VPN route or VPN DNS. The
         // selection never silently expands to other adapters or the system route.
@@ -196,7 +196,7 @@ internal sealed class ApplicationRuntime : IDisposable
 
         var notifications = new WindowsNotificationService(settingsStore, logger);
         var pathState = new PathAuthorizationStateStore(paths, json, runtimeState);
-        var pathEnumerator = new NetworkPathEnumerator(selection: settings.AuthorizationConnections);
+        var pathEnumerator = new NetworkPathEnumerator(selection: settings.AuthorizationConnections, selectionPending: settings.ConnectionSelectionPending);
         var pathProbe = new NetworkPathProbe(pathAddresses);
         var preferredPath = new PreferredNetworkPathResolver();
         var pathAuthorization = new PathAuthorizationRunner(

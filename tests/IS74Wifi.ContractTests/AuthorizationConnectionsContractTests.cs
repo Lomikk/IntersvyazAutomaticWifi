@@ -13,6 +13,18 @@ internal static class AuthorizationConnectionsContractTests
         var settings = new SettingsStore(paths, json);
         Assert(settings.Load().AuthorizationConnections!.WifiSsids.SequenceEqual(["Campus Wi-Fi"]),
             "new installation must select Campus only");
+        Assert(settings.Load().ConnectionSelectionPending && settings.Load().InitialAutomaticAuthorizationChoice is null,
+            "new installation must keep registration paths open until setup is confirmed");
+        var legacy = new AppSettings();
+        Assert(IS74Wifi.App.Program.InitializeInitialSetupState(legacy, registered: true).InitialSetupCompleted == true,
+            "registered legacy installation must skip first-run questions");
+        Assert(IS74Wifi.App.Program.InitializeInitialSetupState(legacy, registered: false).ConnectionSelectionPending,
+            "unregistered legacy installation must get first-run setup");
+        var unfinished = settings.Load() with { InitialAutomaticAuthorizationChoice = false };
+        settings.Save(unfinished);
+        Assert(IS74Wifi.App.Program.InitializeInitialSetupState(settings.Load(), registered: true).ConnectionSelectionPending &&
+            settings.Load().InitialAutomaticAuthorizationChoice == false,
+            "registration/restart must not complete setup or lose an explicit No");
         File.WriteAllText(paths.SettingsFile, "{\"showTrayIcon\":false,\"directNetworkAdapterId\":\"usb\"}");
         var migrated = settings.Load();
         Assert(migrated.AuthorizationConnections!.Adapters.Single().Id == "usb" && !migrated.ShowTrayIcon &&
@@ -45,6 +57,14 @@ internal static class AuthorizationConnectionsContractTests
         var allowed = new NetworkPathEnumerator(() => [campus, usb, other, vpn], selected);
         Assert(allowed.EnumerateAutomaticCandidates().Select(p => p.AdapterId).SequenceEqual([campus.Id, usb.Id, other.Id]),
             "explicit list did not include all selected physical paths or allowed a VPN");
+        Assert(new NetworkPathEnumerator(() => [usb, other, vpn], new(), selectionPending: true)
+            .EnumerateAutomaticCandidates().Select(path => path.AdapterId).SequenceEqual([usb.Id, other.Id]),
+            "pre-selection setup must allow registration without a Campus/Wi-Fi adapter but exclude VPN");
+        Assert(new NetworkPathEnumerator(() => [usb], new() { WifiSsids = [], Adapters = [] }, selectionPending: true)
+            .EnumerateAutomaticCandidates().Count == 1, "unconfirmed draft must not cut off registration");
+        settings.Save(settings.Load() with { InitialSetupCompleted = true, InitialAutomaticAuthorizationChoice = true });
+        Assert(!settings.Load().ConnectionSelectionPending && settings.Load().InitialAutomaticAuthorizationChoice == true,
+            "confirmed setup/Yes did not persist");
         var changed = usb with { Name = "Ethernet 13", IPv4Index = 99, SourceIPv4 = IPAddress.Parse("192.0.2.99") };
         Assert(selected.Allows(NetworkPathSnapshot.FromAdapter(changed)), "profile/index/address change lost USB selection");
         Assert(!selected.Allows(NetworkPathSnapshot.FromAdapter(changed with { Id = "replacement" })), "a new adapter instance inherited permission");

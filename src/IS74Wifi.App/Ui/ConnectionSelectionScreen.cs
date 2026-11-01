@@ -10,12 +10,15 @@ internal sealed record ConnectionSelectionItem(string Label, string? Ssid, Selec
 /// <summary>Edits a draft only. Enter applies the whole list; Escape discards it.</summary>
 internal sealed class ConnectionSelectionScreen
 {
+    private readonly string title;
     private readonly List<ConnectionSelectionItem> items = [];
     private string? ssidInput;
     private string message = "Wi-Fi — по имени сети; USB/Ethernet — по устройству.";
 
-    internal ConnectionSelectionScreen(IReadOnlyList<AgentNetworkAdapterOption> adapters, AuthorizationConnectionSelection current)
+    internal ConnectionSelectionScreen(IReadOnlyList<AgentNetworkAdapterOption> adapters, AuthorizationConnectionSelection current,
+        string title = "ПОДКЛЮЧЕНИЯ ДЛЯ АВТОРИЗАЦИИ")
     {
+        this.title = title;
         var physical = adapters.Where(adapter => !adapter.LooksVirtual).ToArray();
         var ssids = new[] { AuthorizationConnectionSelection.CampusWifi }.Concat(current.WifiSsids)
             .Concat(physical.Where(adapter => adapter.IsWifi).Select(adapter => adapter.Ssid)
@@ -102,7 +105,7 @@ internal sealed class ConnectionSelectionScreen
         var width = Math.Min(layout.CanvasWidth - 2, 112);
         var x = Math.Max(1, (layout.CanvasWidth - width) / 2);
         var height = TerminalLayout.CanvasHeight - 3;
-        DrawBox(canvas, x, 1, width, height, "ПОДКЛЮЧЕНИЯ ДЛЯ АВТОРИЗАЦИИ");
+        DrawBox(canvas, x, 1, width, height, title);
         var contentWidth = Math.Max(1, width - 6);
         Put(canvas, x + 3, 3, Truncate("Отметьте подключения, через которые разрешена авторизация.", contentWidth), Palette.Text);
         var window = ListWindow.AroundSelection(items.Count, SelectedIndex, GetVisibleRowCount(layout));

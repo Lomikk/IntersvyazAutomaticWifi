@@ -229,6 +229,11 @@ onboarding_start = csharp_program.index('private static async Task<bool> Complet
 onboarding_end = csharp_program.index('private static async Task RegisterFromMenuAsync', onboarding_start)
 onboarding = csharp_program[onboarding_start:onboarding_end]
 assert onboarding.index('consent == AnonymousStatisticsConsent.Unknown') < onboarding.index('if (!registered)'), 'anonymous statistics consent must be requested before device registration during onboarding'
+assert onboarding.index('if (!registered)') < onboarding.index('settings.InitialAutomaticAuthorizationChoice is null') < onboarding.index('initialSetup: true'), 'first-run order must be consent, registration, automatic authorization choice, connections'
+automatic_question = onboarding.split('if (settings.InitialAutomaticAuthorizationChoice is null)', 1)[1].split('return await ChooseAuthorizationConnectionsAsync', 1)[0]
+assert 'EnableAutomaticAuthorization(' not in automatic_question, 'first-run automatic authorization must wait for the connection list to be confirmed'
+assert 'InitialAutomaticAuthorizationChoice = enabled' in automatic_question, 'first-run Yes/No must persist independently of the connection draft'
+assert 'startNow: false' in csharp_program and 'InitialSetupCompleted = true' in csharp_program, 'first-run autostart must be prepared before saving and starting the configured agent'
 register_start = csharp_program.index('private static async Task<int> RegisterAsync()')
 register_end = csharp_program.index('private static async Task<int> ConnectAsync()', register_start)
 register_flow = csharp_program[register_start:register_end]

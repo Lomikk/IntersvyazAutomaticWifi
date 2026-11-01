@@ -16,6 +16,7 @@ internal static class TerminalUiContractTests
         ResizeAndInvalidationForceFullRender();
         ConnectionScreenEditsDraftAndRetainsMissingDevices();
         ConnectionScreenNavigationResizeAndSsidInput();
+        InitialAutomaticAuthorizationQuestionFits();
         SharedListWindowKeepsLargeListsVisible();
         PathPaneFormatsIndependentCountdowns();
         TraySemanticStatesFollowPathHealth();
@@ -168,6 +169,21 @@ internal static class TerminalUiContractTests
         _ = screen.HandleKey(Key(ConsoleKey.Home), rows);
         _ = screen.HandleKey(Key(ConsoleKey.DownArrow), rows);
         Assert(Flatten(screen.BuildFrame(TerminalLayout.Calculate(50, 30))).Contains('…'), "long labels did not clip");
+    }
+
+    private static void InitialAutomaticAuthorizationQuestionFits()
+    {
+        foreach (var width in new[] { 50, 80, 120 })
+        {
+            var frame = InteractiveTerminalUi.BuildFullWidthYesNoFrame(TerminalLayout.Calculate(width, 30),
+                "4. АВТОМАТИЧЕСКАЯ АВТОРИЗАЦИЯ",
+                "IS74Wifi может автоматически восстанавливать доступ к Интернету в Campus Wi-Fi, когда заканчивается срок авторизации.\n\nВключить автоматическую авторизацию?",
+                "Да, включить", "Нет, буду запускать вручную", 1);
+            var text = Flatten(frame);
+            Assert(text.Contains("Campus Wi-Fi", StringComparison.Ordinal) && text.Contains("Включить автоматическую", StringComparison.Ordinal) &&
+                text.Contains("[Y] Да, включить", StringComparison.Ordinal) && text.Contains("› [N] Нет, буду запускать вручную", StringComparison.Ordinal),
+                "initial setup question or choices overlapped/disappeared after wrapping");
+        }
     }
 
     private static void SharedListWindowKeepsLargeListsVisible()

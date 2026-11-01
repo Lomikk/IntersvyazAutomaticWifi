@@ -16,7 +16,7 @@ public sealed class SettingsStore(AppPaths paths, JsonFileStore json)
             return settings with { AuthorizationConnections = settings.AuthorizationConnections!.Normalize() };
         }
 
-        settings = AuthorizationConnectionSelection.Migrate(new AppSettings());
+        settings = AuthorizationConnectionSelection.Migrate(new AppSettings { InitialSetupCompleted = false });
         Save(settings);
         return settings;
     }

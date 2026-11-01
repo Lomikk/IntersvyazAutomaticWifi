@@ -23,7 +23,8 @@ public sealed record AuthorizationConnectionSelection
             .DistinctBy(adapter => adapter.Id, StringComparer.OrdinalIgnoreCase).ToArray()
     };
 
-    public bool Allows(NetworkPathSnapshot path) => Allows(path.IsWifi, path.Ssid, path.AdapterId);
+    public bool Allows(NetworkPathSnapshot path, bool selectionPending = false) =>
+        selectionPending || Allows(path.IsWifi, path.Ssid, path.AdapterId);
 
     public bool Allows(bool isWifi, string? currentSsid, string adapterId) => isWifi
         ? WifiSsids.Any(ssid => string.Equals(ssid, currentSsid, StringComparison.Ordinal) ||
