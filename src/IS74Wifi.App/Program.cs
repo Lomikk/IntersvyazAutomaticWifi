@@ -616,6 +616,9 @@ internal static class Program
 
     private static int EnableAutomaticAuthorization(bool quiet = false, Action<string>? progress = null)
     {
+        var installation = new ProgramInstallation();
+        if (!CanEnableAutomaticAuthorization(IsLocalRunRequested(), installation.IsInstalledExecutable(Environment.ProcessPath)))
+            throw new InvalidOperationException("Тестовая portable-копия не включает автовход установленной версии. Для проверки этой сборки выберите «Авторизовать сейчас»; фоновый тест выполняется отдельно.");
         using var app = ApplicationRuntime.Create(ProductVersion);
         if (app.Secrets.Load() is null)
         {
@@ -623,7 +626,6 @@ internal static class Program
         }
         ReportMenuBatchProgress(progress, "Регистрация устройства проверена");
 
-        var installation = new ProgramInstallation();
         if (!installation.IsInstalled)
         {
             throw new InvalidOperationException("IS74Wifi не установлена. Сначала запустите программу обычным способом и выполните установку.");
@@ -644,6 +646,9 @@ internal static class Program
         }
         return 0;
     }
+
+    internal static bool CanEnableAutomaticAuthorization(bool localRunRequested, bool installedExecutable) =>
+        !localRunRequested || installedExecutable;
 
     private static void ReportMenuBatchProgress(Action<string>? progress, string message)
     {

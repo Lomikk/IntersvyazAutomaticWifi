@@ -11,6 +11,10 @@ internal static class AgentNetworkIpcContractTests
                AgentNetworkClient.UseExistingAgent("1", true) &&
                AgentNetworkClient.UseExistingAgent(null, false),
             "local portable build must use its own request worker without changing installed runtime behavior");
+        Assert(!IS74Wifi.App.Program.CanEnableAutomaticAuthorization(true, false) &&
+               IS74Wifi.App.Program.CanEnableAutomaticAuthorization(true, true) &&
+               IS74Wifi.App.Program.CanEnableAutomaticAuthorization(false, false),
+            "portable local test must not enable old installed autostart; installed and normal workflows must remain available");
         await RefreshCommandsStayAgentOwnedAsync();
         await AdapterEnumerationStaysAgentOwnedAsync();
         await AuthorizationProgressAndResultRoundTripAsync();
