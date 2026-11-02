@@ -6,6 +6,7 @@ internal static class PathAwareAgentContractTests
 {
     public static async Task RunAsync()
     {
+        await ProbeReasonsDoNotChangeSchedulingAsync();
         using var temp = TempDirectory.Create();
         var paths = new AppPaths(temp.Path);
         var json = new JsonFileStore();
@@ -236,6 +237,50 @@ internal static class PathAwareAgentContractTests
             "known authorization boundary did not schedule the same pre-edge wake used by the agent");
         Assert(PathAuthorizationSchedule.GetNextCheckUtc(timedInternet, settling, settings, now, agentRunning: false) is null,
             "stopped agent must not advertise a background check that cannot occur");
+    }
+
+    private static async Task ProbeReasonsDoNotChangeSchedulingAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var json = new JsonFileStore();
+        var logger = new DiagnosticLogger(paths);
+        var now = DateTimeOffset.UtcNow;
+        var clock = new MutableTimeProvider(now);
+        var settings = new AppSettings();
+        var state = new PathAuthorizationStateStore(paths, json, timeProvider: clock);
+        var wifi = Path("logging-wifi", NetworkInterfaceType.Wireless80211, "192.0.2.2", "192.0.2.1", "test");
+        state.RecordProbe(wifi, new(wifi.Identity, NetworkPathProbeStatus.Internet, ProbeResult(NetworkPathProbeStatus.Internet)), now);
+        var calls = 0;
+        var probe = new NetworkPathProbe((_, _, _) =>
+        {
+            calls++;
+            return Task.FromResult(calls == 1
+                ? new InternetProbeResult(false, false, null, "private-response-body", TransportFailureKind.Timeout, TimeSpan.FromSeconds(2))
+                : ProbeResult(NetworkPathProbeStatus.Internet));
+        }, logger);
+        var runner = new FakePathAuthorizationRunner(state, clock, settings);
+        var coordinator = new PathAwareAgentCoordinator(() => new("token", "9991234567"), () => "device",
+            () => [wifi], state, probe, runner, settings, logger, clock);
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.WindowsAddress);
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.Resume);
+        await coordinator.TickAsync();
+        await coordinator.TickAsync();
+        Assert(calls == 1 && runner.Paths.Count == 0, "diagnostic causes added a retry or authorization to an untimed failure");
+        Assert(state.Find(wifi.Identity)?.ExpectedExpiryUtc is null && coordinator.GetSleepDelay() == PathAuthorizationSchedule.MaximumWait,
+            "diagnostics created an authorization boundary or polling deadline");
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.WindowsAvailability);
+        await coordinator.TickAsync();
+        var log = File.ReadAllText(paths.DiagnosticLogFile);
+        Assert(calls == 2 && log.Contains("reason=event.WindowsAddress+Resume", StringComparison.Ordinal) &&
+               log.Contains("reason=event.WindowsAvailability", StringComparison.Ordinal), "coalesced or subsequent event causes were lost");
+        Assert(log.Contains("failure=Timeout", StringComparison.Ordinal) && log.Contains("transport-ms=2000", StringComparison.Ordinal) &&
+               log.Contains("budget-ms=2000", StringComparison.Ordinal) && log.Contains("ifIndex=26", StringComparison.Ordinal),
+            "probe logs omit transport failure, budget or binding");
+        Assert(!log.Contains("private-response-body", StringComparison.Ordinal) && !log.Contains("9991234567", StringComparison.Ordinal),
+            "probe diagnostics leaked request secrets or response body");
+        Assert(log.Split("network.probe start ").Length - 1 == 2 && log.Split("network.probe result ").Length - 1 == 2,
+            "actual probes cannot be counted from matching start/result records");
     }
 
     private static NetworkPathSnapshot Path(

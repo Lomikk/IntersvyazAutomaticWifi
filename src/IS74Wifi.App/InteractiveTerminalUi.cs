@@ -1846,8 +1846,8 @@ internal sealed partial class InteractiveTerminalUi
 
         // Header and data use the same three column ranges. Two untouched
         // border cells between columns remain visible as separators.
-        PutCenteredInRange(canvas, columns.ContentX, columns.StateStart - 2, PaneY, "ПУТЬ", Palette.Highlight);
-        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - 2, PaneY, "СТАТУС", Palette.Highlight);
+        PutCenteredInRange(canvas, columns.ContentX, columns.StateStart - columns.Gap, PaneY, "ПУТЬ", Palette.Highlight);
+        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - columns.Gap, PaneY, "СТАТУС", Palette.Highlight);
         PutCenteredInRange(canvas, columns.TimerStart, columns.RightExclusive, PaneY, "ДО ПРОВЕРКИ", Palette.Highlight);
     }
 
@@ -1859,22 +1859,26 @@ internal sealed partial class InteractiveTerminalUi
         var label = marker + path.Name;
 
         Put(canvas, columns.ContentX, row, Truncate(label, columns.LabelWidth), path.Preferred ? Palette.Highlight : Palette.Text);
-        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - 2, row, presentation.StateText, presentation.StateColor);
+        PutCenteredInRange(canvas, columns.StateStart, columns.TimerStart - columns.Gap, row, presentation.StateText, presentation.StateColor);
         PutCenteredInRange(canvas, columns.TimerStart, columns.RightExclusive, row, presentation.TimerText, presentation.TimerColor);
     }
 
-    private (int ContentX, int RightExclusive, int LabelWidth, int StateStart, int TimerStart) GetNetworkPathColumns()
+    private (int ContentX, int RightExclusive, int LabelWidth, int StateStart, int TimerStart, int Gap) GetNetworkPathColumns() =>
+        CalculateNetworkPathColumns(rightPaneX, paneWidth);
+
+    internal static (int ContentX, int RightExclusive, int LabelWidth, int StateStart, int TimerStart, int Gap)
+        CalculateNetworkPathColumns(int paneX, int width)
     {
-        var contentX = rightPaneX + 3;
-        var rightExclusive = rightPaneX + paneWidth - 3;
-        const int stateWidth = 11;
-        const int timerWidth = 12;
-        const int gap = 2;
+        var contentX = paneX + 3;
+        var rightExclusive = paneX + width - 3;
+        const int stateWidth = 13;
         var available = Math.Max(1, rightExclusive - contentX);
-        var labelWidth = Math.Max(7, available - stateWidth - timerWidth - (gap * 2));
+        var timerWidth = available < 36 ? 10 : 12;
+        var gap = available < 36 ? 1 : 2;
+        var labelWidth = Math.Max(1, available - stateWidth - timerWidth - (gap * 2));
         var stateStart = contentX + labelWidth + gap;
         var timerStart = rightExclusive - timerWidth;
-        return (contentX, rightExclusive, labelWidth, stateStart, timerStart);
+        return (contentX, rightExclusive, labelWidth, stateStart, timerStart, gap);
     }
 
     private static void PutCenteredInRange(Cell[,] canvas, int left, int rightExclusive, int row, string text, Palette color)
@@ -1910,7 +1914,7 @@ internal sealed partial class InteractiveTerminalUi
                 (path.EdgeWatchActive ? "наблюдение" : "онлайн", timerText, Palette.Good, timerColor),
             // A live captive observation disproves the old predicted window.
             PathAuthorizationStatus.Captive => ("нужна авторизация", "—", Palette.Highlight, Palette.Dim),
-            PathAuthorizationStatus.Unreachable => ("недоступен", timerText, Palette.Dim, Palette.Dim),
+            PathAuthorizationStatus.Unreachable => ("сбой проверки", timerText, Palette.Warning, Palette.Dim),
             PathAuthorizationStatus.Ambiguous => ("неясно", timerText, Palette.Highlight, Palette.Dim),
             PathAuthorizationStatus.Disconnected => ("отключён", timerText, Palette.Dim, Palette.Dim),
             _ => ("проверка...", timerText, Palette.Dim, Palette.Dim)
@@ -1921,7 +1925,7 @@ internal sealed partial class InteractiveTerminalUi
     {
         if (path.NextCheckUtc is not { } nextCheck)
         {
-            return path.CheckOnConnectivityEvent ? "по сети" : "—";
+            return path.CheckOnConnectivityEvent ? "по событию" : "—";
         }
 
         var remaining = nextCheck - nowUtc;

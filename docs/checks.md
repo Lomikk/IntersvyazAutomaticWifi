@@ -124,6 +124,10 @@ IP-first при медленном DNS fallback, persisted IP после пер�
 `path-aware-agent` проверяет минимум 2 секунды на вторую captive-пробу и запрет
 stepOne при её отказе. `path-authorization-state` включает upstream-регрессии
 backup/recovery, строгих ошибок чтения и конкурентных изменений.
+`path-aware-agent` также проверяет объединение причин сетевых событий без новых
+HTTP-проб/авторизаций/таймеров и запись timeout/budget/binding. `network-path-foundation`
+проверяет TCP cached-IP/Winsock diagnostics с подменённым dialer. Поля журнала и
+анализ частоты описаны в [network-probe-logging.md](network-probe-logging.md).
 
 Группа `authorization-connections` проверяет default Campus-only, миграцию режимов
 и явного адаптера, незавершённую первоначальную настройку, сохранение ответа Да/Нет,

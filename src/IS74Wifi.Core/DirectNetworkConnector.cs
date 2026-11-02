@@ -18,15 +18,17 @@ public sealed class DirectNetworkConnector(
     InterfaceDnsResolver? resolver = null,
     Func<PhysicalAdapter, IPAddress, int, CancellationToken, ValueTask<Stream>>? testDialer = null,
     Func<string, PhysicalAdapter, CancellationToken, Task<DnsResolution>>? addressLookup = null,
-    Action<string, PhysicalAdapter, IPAddress>? connected = null)
+    Action<string, PhysicalAdapter, IPAddress>? connected = null,
+    DiagnosticLogger? probeLogger = null)
 {
     public DirectNetworkConnector(
         NetworkPathSnapshot path,
         InterfaceDnsResolver? resolver = null,
         Func<PhysicalAdapter, IPAddress, int, CancellationToken, ValueTask<Stream>>? testDialer = null,
         Func<string, PhysicalAdapter, CancellationToken, Task<DnsResolution>>? addressLookup = null,
-        Action<string, PhysicalAdapter, IPAddress>? connected = null)
-        : this(() => [path.ToPhysicalAdapter()], path.AdapterId, resolver, testDialer, addressLookup, connected)
+        Action<string, PhysicalAdapter, IPAddress>? connected = null,
+        DiagnosticLogger? probeLogger = null)
+        : this(() => [path.ToPhysicalAdapter()], path.AdapterId, resolver, testDialer, addressLookup, connected, probeLogger)
     {
     }
     // Winsock IP_UNICAST_IF takes an IPv4 interface index in network byte order.
@@ -63,12 +65,14 @@ public sealed class DirectNetworkConnector(
             throw new DirectNetworkUnavailableException("Прямой маршрут разрешён только для серверов авторизации и проверки Интернета.");
         }
         var adapter = GetAdapter();
-        var addresses = (await ResolveAsync(host, adapter, token).ConfigureAwait(false)).Addresses;
+        var resolution = await ResolveAsync(host, adapter, token).ConfigureAwait(false);
+        var addresses = resolution.Addresses;
         Exception? lastError = null;
         foreach (var address in addresses)
         {
             token.ThrowIfCancellationRequested();
             Socket? socket = null;
+            var dialElapsed = Stopwatch.StartNew();
             try
             {
                 if (testDialer is not null)
@@ -76,27 +80,38 @@ public sealed class DirectNetworkConnector(
                     // Test seam: production always uses the real bound Winsock socket below.
                     var stream = await testDialer(adapter, address, port, token).ConfigureAwait(false);
                     connected?.Invoke(host, adapter, address);
+                    LogDial(null);
                     return stream;
                 }
                 socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                 BindSocket(socket, adapter);
                 await socket.ConnectAsync(new IPEndPoint(address, port), token).ConfigureAwait(false);
                 connected?.Invoke(host, adapter, address);
+                LogDial(null);
                 return new NetworkStream(socket, ownsSocket: true);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
+                LogDial("cancelled");
                 throw;
             }
             catch (SocketException ex)
             {
+                LogDial(ex.SocketErrorCode.ToString());
                 lastError = ex;
+            }
+            catch (Exception ex)
+            {
+                LogDial((ex.InnerException as SocketException)?.SocketErrorCode.ToString() ?? ex.GetType().Name);
+                throw;
             }
             finally
             {
                 // NetworkStream owns the connected socket; failed sockets need closing.
                 if (socket is { Connected: false }) socket.Dispose();
             }
+            void LogDial(string? failure) => probeLogger?.Write(DiagnosticLevel.Info,
+                $"network.probe-tcp host={host} remote={address}:{port} ifIndex={adapter.IPv4Index} address-source={resolution.Source} cached={resolution.FromCache} result={failure ?? "connected"} elapsed-ms={dialElapsed.Elapsed.TotalMilliseconds:F0}");
         }
         throw new DirectNetworkUnavailableException(
             "Не удалось открыть прямое TCP-соединение через выбранный адаптер (возможно, VPN kill switch).",

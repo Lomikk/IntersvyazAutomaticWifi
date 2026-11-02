@@ -197,7 +197,7 @@ internal sealed class ApplicationRuntime : IDisposable
         var notifications = new WindowsNotificationService(settingsStore, logger);
         var pathState = new PathAuthorizationStateStore(paths, json, runtimeState);
         var pathEnumerator = new NetworkPathEnumerator(selection: settings.AuthorizationConnections, selectionPending: settings.ConnectionSelectionPending);
-        var pathProbe = new NetworkPathProbe(pathAddresses);
+        var pathProbe = new NetworkPathProbe(pathAddresses, logger);
         var preferredPath = new PreferredNetworkPathResolver();
         var pathAuthorization = new PathAuthorizationRunner(
             pathState,

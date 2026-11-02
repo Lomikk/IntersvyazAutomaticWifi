@@ -21,7 +21,8 @@ public sealed class NetworkPathDiagnosticsService(
 {
     public async Task<IReadOnlyList<NetworkPathDiagnostic>> InspectAsync(
         TimeSpan timeout,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string reason = "diagnostics")
     {
         var current = enumeratePaths()
             .Where(path => path.CanAutomaticallyAuthorize)
@@ -50,7 +51,7 @@ public sealed class NetworkPathDiagnosticsService(
             NetworkPathProbeResult probeResult;
             try
             {
-                probeResult = await probe.ProbeAsync(path, timeout, cancellationToken).ConfigureAwait(false);
+                probeResult = await probe.ProbeAsync(path, timeout, cancellationToken, reason).ConfigureAwait(false);
             }
             catch (DirectNetworkUnavailableException ex)
             {

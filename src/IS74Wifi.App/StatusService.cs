@@ -183,7 +183,7 @@ internal sealed class StatusService
                 if (path.NextCheckUtc is { } scheduledCheck)
                     lines.Add($"  Следующая проверка: {scheduledCheck.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
                 else if (path.CheckOnConnectivityEvent)
-                    lines.Add("  Следующая проверка: по событию Windows/NCSI");
+                    lines.Add("  Следующая проверка: по событию Windows/NCSI; периодический опрос не назначен");
                 else
                     lines.Add("  Следующая проверка: не запланирована");
                 lines.Add($"  Последняя авторизация: {FormatDiagnosticTime(path.LastSuccessfulAuthUtc)}");
@@ -378,7 +378,7 @@ internal sealed class StatusService
     {
         PathAuthorizationStatus.Internet => "Интернет доступен",
         PathAuthorizationStatus.Captive => "требуется авторизация",
-        PathAuthorizationStatus.Unreachable => "недоступен",
+        PathAuthorizationStatus.Unreachable => "сбой проверки (HTTP-ответ не получен)",
         PathAuthorizationStatus.Ambiguous => "состояние неясно",
         PathAuthorizationStatus.Disconnected => "отключён",
         _ => "ещё не проверен"

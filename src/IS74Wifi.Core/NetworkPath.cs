@@ -199,40 +199,70 @@ public sealed record NetworkPathProbeResult(
 public sealed class NetworkPathProbe
 {
     private readonly Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>> probe;
+    private readonly DiagnosticLogger? logger;
+    private static long sequence;
 
-    public NetworkPathProbe(PathAddressBook addresses) =>
-        probe = (path, timeout, token) => ProbeBoundAsync(addresses, path, timeout, token);
+    public NetworkPathProbe(PathAddressBook addresses, DiagnosticLogger? logger = null)
+    {
+        this.logger = logger;
+        probe = (path, timeout, token) => ProbeBoundAsync(addresses, path, timeout, token, logger);
+    }
 
-    public NetworkPathProbe(Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>> probeOverride) =>
+    public NetworkPathProbe(Func<NetworkPathSnapshot, TimeSpan, CancellationToken, Task<InternetProbeResult>> probeOverride,
+        DiagnosticLogger? logger = null)
+    {
+        this.logger = logger;
         probe = probeOverride ?? throw new ArgumentNullException(nameof(probeOverride));
+    }
 
     public async Task<NetworkPathProbeResult> ProbeAsync(
         NetworkPathSnapshot path,
         TimeSpan timeout,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string reason = "unspecified")
     {
         ArgumentNullException.ThrowIfNull(path);
-        if (!path.IsPhysicalCandidate)
+        var id = Interlocked.Increment(ref sequence);
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        logger?.Write(DiagnosticLevel.Info,
+            $"network.probe start id={id} reason={reason} adapter={path.AdapterId} ifIndex={path.InterfaceIndex} source-ip={path.SourceIPv4} gateway={path.GatewayIPv4} endpoint=online.susu.ru budget-ms={timeout.TotalMilliseconds:F0}");
+        try
         {
-            throw new DirectNetworkUnavailableException("VPN/виртуальный интерфейс не является путем captive-авторизации.");
+            if (!path.IsPhysicalCandidate)
+            {
+                throw new DirectNetworkUnavailableException("VPN/виртуальный интерфейс не является путем captive-авторизации.");
+            }
+            if (!path.CanProbe)
+            {
+                var unavailable = new NetworkPathProbeResult(
+                    path.Identity,
+                    NetworkPathProbeStatus.Unreachable,
+                    new InternetProbeResult(
+                        Online: false,
+                        HttpResponseReceived: false,
+                        StatusCode: null,
+                        Body: null,
+                        FailureKind: TransportFailureKind.DirectRouteUnavailable,
+                        Elapsed: TimeSpan.Zero));
+                LogResult(unavailable);
+                return unavailable;
+            }
+
+            var result = await probe(path, timeout, cancellationToken).ConfigureAwait(false);
+
+            var observed = new NetworkPathProbeResult(path.Identity, Classify(result), result);
+            LogResult(observed);
+            return observed;
         }
-        if (!path.CanProbe)
+        catch (Exception ex)
         {
-            return new NetworkPathProbeResult(
-                path.Identity,
-                NetworkPathProbeStatus.Unreachable,
-                new InternetProbeResult(
-                    Online: false,
-                    HttpResponseReceived: false,
-                    StatusCode: null,
-                    Body: null,
-                    FailureKind: TransportFailureKind.DirectRouteUnavailable,
-                    Elapsed: TimeSpan.Zero));
+            logger?.Write(DiagnosticLevel.Warn,
+                $"network.probe aborted id={id} error={ex.GetType().Name} elapsed-ms={elapsed.Elapsed.TotalMilliseconds:F0}");
+            throw;
         }
 
-        var result = await probe(path, timeout, cancellationToken).ConfigureAwait(false);
-
-        return new NetworkPathProbeResult(path.Identity, Classify(result), result);
+        void LogResult(NetworkPathProbeResult value) => logger?.Write(DiagnosticLevel.Info,
+            $"network.probe result id={id} status={value.Status} failure={value.InternetProbe.FailureKind} http-status={(int?)value.InternetProbe.StatusCode} elapsed-ms={elapsed.Elapsed.TotalMilliseconds:F0} transport-ms={value.InternetProbe.Elapsed.TotalMilliseconds:F0}");
     }
 
     public static NetworkPathProbeStatus Classify(InternetProbeResult result)
@@ -257,9 +287,10 @@ public sealed class NetworkPathProbe
         PathAddressBook addresses,
         NetworkPathSnapshot path,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DiagnosticLogger? logger)
     {
-        var connector = addresses.CreateConnector(path);
+        var connector = addresses.CreateConnector(path, logger);
         using var http = HttpClientProfiles.CreateInternetProbeClient(connector);
         return await new InternetConnectivityProbe(new HttpTransport(http))
             .ProbeAsync(timeout, cancellationToken)

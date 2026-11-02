@@ -1,5 +1,12 @@
 namespace IS74Wifi.Core;
 
+[Flags]
+public enum NetworkChangeReason
+{
+    Unspecified = 1, WindowsAddress = 2, WindowsAvailability = 4, Ncsi = 8,
+    Resume = 16, StartupOffline = 32, IpcCaptiveRefresh = 64
+}
+
 /// <summary>
 /// Schedules independent physical authorization paths. It never treats VPN or
 /// other non-hardware adapters as authorization targets and runs at most one
@@ -31,8 +38,8 @@ public sealed class PathAwareAgentCoordinator(
     private NetworkPathIdentity? lastPreferredPath;
     private int connectivityChangePending;
 
-    public void NotifyNetworkConnectivityChanged() =>
-        Interlocked.Exchange(ref connectivityChangePending, 1);
+    public void NotifyNetworkConnectivityChanged(NetworkChangeReason reason = NetworkChangeReason.Unspecified) =>
+        Interlocked.Or(ref connectivityChangePending, (int)reason);
 
     public TimeSpan GetSleepDelay()
     {
@@ -93,7 +100,8 @@ public sealed class PathAwareAgentCoordinator(
         }
 
         var now = clock.GetUtcNow();
-        var connectivityChanged = Interlocked.Exchange(ref connectivityChangePending, 0) != 0;
+        var changeReasons = (NetworkChangeReason)Interlocked.Exchange(ref connectivityChangePending, 0);
+        var connectivityChanged = changeReasons != 0;
         var current = CurrentPaths();
         state.MarkMissingAsDisconnected(current.Select(path => path.Identity).ToArray());
         if (current.Count == 0)
@@ -163,7 +171,9 @@ public sealed class PathAwareAgentCoordinator(
                 continue;
             }
 
-            var probeOutcome = await ProbePathAsync(path, changed, cancellationToken).ConfigureAwait(false);
+            var probeReason = changed ? "binding." + observationReason : connectivityTriggeredProbe
+                ? "event." + changeReasons.ToString().Replace(", ", "+") : "scheduled_recheck";
+            var probeOutcome = await ProbePathAsync(path, changed, cancellationToken, reason: probeReason).ConfigureAwait(false);
             if (probeOutcome is null)
             {
                 continue;
@@ -230,13 +240,14 @@ public sealed class PathAwareAgentCoordinator(
         NetworkPathSnapshot path,
         bool settlingAllowed,
         CancellationToken cancellationToken,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        string reason = "pre-step-failure")
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         NetworkPathProbeResult first;
         try
         {
-            first = await probe.ProbeAsync(path, timeout ?? InitialProbeTimeout, cancellationToken).ConfigureAwait(false);
+            first = await probe.ProbeAsync(path, timeout ?? InitialProbeTimeout, cancellationToken, reason).ConfigureAwait(false);
         }
         catch (DirectNetworkUnavailableException ex)
         {
@@ -279,7 +290,7 @@ public sealed class PathAwareAgentCoordinator(
 
         try
         {
-            var retry = await probe.ProbeAsync(path, InitialProbeTimeout, cancellationToken).ConfigureAwait(false);
+            var retry = await probe.ProbeAsync(path, InitialProbeTimeout, cancellationToken, reason + ".settling-retry").ConfigureAwait(false);
             logger.Write(DiagnosticLevel.Info,
                 $"agent.path-probe settling-retry adapter={Safe(path.Name)} status={retry.Status}");
             return new ProbePathOutcome(
@@ -352,7 +363,7 @@ public sealed class PathAwareAgentCoordinator(
         NetworkPathProbeResult confirmation;
         try
         {
-            confirmation = await probe.ProbeAsync(path, timeout, cancellationToken).ConfigureAwait(false);
+            confirmation = await probe.ProbeAsync(path, timeout, cancellationToken, "captive-confirmation").ConfigureAwait(false);
         }
         catch (DirectNetworkUnavailableException ex)
         {

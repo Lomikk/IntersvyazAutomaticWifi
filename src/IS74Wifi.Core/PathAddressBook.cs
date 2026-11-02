@@ -31,8 +31,8 @@ public sealed class PathAddressBook(AppPaths paths, JsonFileStore json, Diagnost
     private readonly string fileGateName = "Local\\IS74Wifi.CampusAddresses." +
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(paths.PathAddressFile).ToUpperInvariant())));
 
-    public DirectNetworkConnector CreateConnector(NetworkPathSnapshot path) =>
-        new(path, testDialer: testDialer, addressLookup: ResolveAsync, connected: RememberConnected);
+    public DirectNetworkConnector CreateConnector(NetworkPathSnapshot path, DiagnosticLogger? probeLogger = null) =>
+        new(path, testDialer: testDialer, addressLookup: ResolveAsync, connected: RememberConnected, probeLogger: probeLogger);
 
     public Task RefreshAsync(NetworkPathSnapshot path, CancellationToken token) =>
         RefreshAsync(path.ToPhysicalAdapter(), token);

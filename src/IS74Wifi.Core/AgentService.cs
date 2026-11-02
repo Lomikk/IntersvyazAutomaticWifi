@@ -202,8 +202,8 @@ public sealed class AgentService(
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private DateTimeOffset? notifiedExpiryUtc;
 
-    public void NotifyNetworkConnectivityChanged() =>
-        pathAware?.NotifyNetworkConnectivityChanged();
+    public void NotifyNetworkConnectivityChanged(NetworkChangeReason reason = NetworkChangeReason.Unspecified) =>
+        pathAware?.NotifyNetworkConnectivityChanged(reason);
 
     public TimeSpan GetSleepDelay()
     {

@@ -8,6 +8,7 @@ internal static class NetworkPathContractTests
 {
     public static async Task RunAsync()
     {
+        await TcpProbeDiagnosticsAsync();
         var campus = Adapter(
             id: "wifi-guid",
             type: NetworkInterfaceType.Wireless80211,
@@ -398,6 +399,30 @@ internal static class NetworkPathContractTests
             ConnectorPresent = hardware
         };
         return adapter;
+    }
+
+    private static async Task TcpProbeDiagnosticsAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var logger = new DiagnosticLogger(paths);
+        var adapter = Adapter("log-adapter", NetworkInterfaceType.Wireless80211, "192.0.2.2", "192.0.2.1", "test");
+        var calls = 0;
+        var connector = new DirectNetworkConnector(NetworkPathSnapshot.FromAdapter(adapter),
+            testDialer: (_, _, _, _) => { calls++; throw new SocketException((int)SocketError.ConnectionRefused); },
+            addressLookup: (_, _, _) => Task.FromResult(new DnsResolution([IPAddress.Parse("192.0.2.50")], DnsAddressSource.PersistentAddress, true)),
+            probeLogger: logger);
+        try
+        {
+            await connector.ConnectHostAsync("online.susu.ru", 80, CancellationToken.None);
+            throw new InvalidOperationException("failed dial unexpectedly succeeded");
+        }
+        catch (DirectNetworkUnavailableException) { }
+        var log = File.ReadAllText(paths.DiagnosticLogFile);
+        Assert(calls == 1 && log.Contains("result=ConnectionRefused", StringComparison.Ordinal) &&
+               log.Contains("remote=192.0.2.50:80", StringComparison.Ordinal) &&
+               log.Contains("address-source=PersistentAddress cached=True", StringComparison.Ordinal),
+            "TCP probe diagnostics lost destination/cache/Winsock error or changed retry count");
     }
 
     private static void Assert(bool condition, string message)

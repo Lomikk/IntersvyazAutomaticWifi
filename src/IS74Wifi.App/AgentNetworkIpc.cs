@@ -85,11 +85,12 @@ internal sealed class AgentNetworkOperations(
         return await RunAndCaptureAsync(async () =>
         {
             var diagnostics = await app.NetworkPathDiagnostics
-                .InspectAsync(DiagnosticProbeTimeout, cancellationToken).ConfigureAwait(false);
+                .InspectAsync(DiagnosticProbeTimeout, cancellationToken,
+                    allowAutomaticAuthorization ? "ipc.refresh" : "ipc.probe-only").ConfigureAwait(false);
             if (allowAutomaticAuthorization && automaticAuthorizationEnabled() &&
                 diagnostics.Any(item => item.Status == NetworkPathProbeStatus.Captive))
             {
-                app.Agent.NotifyNetworkConnectivityChanged();
+                app.Agent.NotifyNetworkConnectivityChanged(NetworkChangeReason.IpcCaptiveRefresh);
                 await app.Agent.TickAsync(cancellationToken).ConfigureAwait(false);
             }
         }, CaptureAndPersistSnapshot, app.Logger).ConfigureAwait(false);

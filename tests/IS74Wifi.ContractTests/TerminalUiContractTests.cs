@@ -19,6 +19,15 @@ internal static class TerminalUiContractTests
         InitialAutomaticAuthorizationQuestionFits();
         SharedListWindowKeepsLargeListsVisible();
         PathPaneFormatsIndependentCountdowns();
+        foreach (var width in new[] { 80, 100, 120 })
+        {
+            var layout = TerminalLayout.Calculate(width, 30);
+            var columns = InteractiveTerminalUi.CalculateNetworkPathColumns(layout.RightPaneX, layout.PaneWidth);
+            Assert(columns.TimerStart - columns.Gap - columns.StateStart >= "сбой проверки".Length &&
+                   columns.RightExclusive - columns.TimerStart >= "по событию".Length &&
+                   columns.ContentX + columns.LabelWidth <= columns.StateStart - columns.Gap,
+                "new path labels overlap or truncate in a supported rich terminal");
+        }
         TraySemanticStatesFollowPathHealth();
         return Task.CompletedTask;
     }
@@ -252,10 +261,10 @@ internal static class TerminalUiContractTests
         Assert(opaquePresentation.StateText == "онлайн" && opaquePresentation.TimerText == "18:12",
             "approximate authorization windows must not make the exact scheduled wake look approximate");
         var untimedPresentation = InteractiveTerminalUi.FormatPathPaneStatus(untimed, now);
-        Assert(untimedPresentation.StateText == "онлайн" && untimedPresentation.TimerText == "по сети",
+        Assert(untimedPresentation.StateText == "онлайн" && untimedPresentation.TimerText == "по событию",
             "path without a known authorization window must show event-driven connectivity waiting");
         var unreachablePresentation = InteractiveTerminalUi.FormatPathPaneStatus(unreachable, now);
-        Assert(unreachablePresentation.StateText == "недоступен" && unreachablePresentation.TimerText == "23:36",
+        Assert(unreachablePresentation.StateText == "сбой проверки" && unreachablePresentation.TimerText == "23:36",
             "temporary transport failure must not erase the scheduled wake");
         var ambiguousPresentation = InteractiveTerminalUi.FormatPathPaneStatus(ambiguous, now);
         Assert(ambiguousPresentation.StateText == "неясно" && ambiguousPresentation.TimerText == "23:36",

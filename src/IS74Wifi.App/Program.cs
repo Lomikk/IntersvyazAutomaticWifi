@@ -13,7 +13,7 @@ internal enum ConfirmationRequestFailureDisposition
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.7";
+    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.8";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
@@ -3353,7 +3353,7 @@ internal static class Program
             // so no NetworkStatusChanged edge is guaranteed to arrive. Perform
             // one synchronization probe for untimed paths when NCSI already says
             // Internet access is absent; this is not a periodic poll.
-            app.Agent.NotifyNetworkConnectivityChanged();
+            app.Agent.NotifyNetworkConnectivityChanged(NetworkChangeReason.StartupOffline);
         }
         // A laptop may join the campus Wi-Fi after a long idle wait or after
         // resuming from sleep. Network change events shorten that wait without
@@ -3363,13 +3363,18 @@ internal static class Program
             // A callback already queued by Windows may race with shutdown.
             try { networkWake.Set(); } catch (ObjectDisposedException) { }
         }
-        void SynchronizeForNetworkChange()
+        void SynchronizeForNetworkChange(NetworkChangeReason reason)
         {
-            app.Agent.NotifyNetworkConnectivityChanged();
+            app.Logger.Write(DiagnosticLevel.Info, $"agent.event source={reason}");
+            app.Agent.NotifyNetworkConnectivityChanged(reason);
             WakeForNetworkChange();
         }
-        void OnNetworkAddressChanged(object? _, EventArgs __) => SynchronizeForNetworkChange();
-        void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs __) => SynchronizeForNetworkChange();
+        void OnNetworkAddressChanged(object? _, EventArgs __) => SynchronizeForNetworkChange(NetworkChangeReason.WindowsAddress);
+        void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs args)
+        {
+            app.Logger.Write(DiagnosticLevel.Info, $"agent.availability available={args.IsAvailable}");
+            SynchronizeForNetworkChange(NetworkChangeReason.WindowsAvailability);
+        }
         void OnNetworkStatusChanged(object? _)
         {
             // NetworkStatusChanged is noisy on some Windows systems. Treat the
@@ -3387,14 +3392,14 @@ internal static class Program
 
             app.Logger.Write(DiagnosticLevel.Info,
                 $"agent.ncsi connectivity-changed internet-access={currentInternetAccess} profiles-changed={profilesChanged}");
-            app.Agent.NotifyNetworkConnectivityChanged();
+            app.Agent.NotifyNetworkConnectivityChanged(NetworkChangeReason.Ncsi);
             WakeForNetworkChange();
         }
         NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
         NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
         Windows.Networking.Connectivity.NetworkInformation.NetworkStatusChanged += OnNetworkStatusChanged;
         using var resumeMonitor = AgentPowerResumeMonitor.TryRegister(
-            SynchronizeForNetworkChange,
+            () => SynchronizeForNetworkChange(NetworkChangeReason.Resume),
             error => app.Logger.Write(DiagnosticLevel.Warn, $"agent.resume-monitor unavailable error={error}"));
         using var stopCts = new CancellationTokenSource();
         var stopRegistration = ThreadPool.RegisterWaitForSingleObject(
@@ -3413,8 +3418,12 @@ internal static class Program
             networkOperationGate,
             app.Logger,
             stopCts.Token,
-            WakeForNetworkChange);
-        app.Logger.Write(DiagnosticLevel.Info, "agent.worker start runtime=csharp");
+            () =>
+            {
+                app.Logger.Write(DiagnosticLevel.Info, "agent.event source=ipc-complete (deadline-recompute-only)");
+                WakeForNetworkChange();
+            });
+        app.Logger.Write(DiagnosticLevel.Info, $"agent.worker start runtime=csharp version={ProductVersion}");
         try
         {
             while (!stopCts.IsCancellationRequested)
@@ -3493,6 +3502,7 @@ internal static class Program
                 }
 
                 var delay = app.Agent.GetSleepDelay();
+                var authorizationDelay = delay;
                 if (resumeMonitor is null)
                 {
                     // Power notifications are unavailable on this machine.
@@ -3525,7 +3535,12 @@ internal static class Program
                 // The first handle remains the existing cross-process stop
                 // signal. Joining/leaving a network may wake the idle agent,
                 // but does not override the user's IgnoreNetworkCheck choice.
-                if (WaitHandle.WaitAny([stopEvent, networkWake], delay) == 0)
+                app.Logger.Write(DiagnosticLevel.Info,
+                    $"agent.wait authorization-ms={authorizationDelay.TotalMilliseconds:F0} effective-ms={delay.TotalMilliseconds:F0}");
+                var wakeResult = WaitHandle.WaitAny([stopEvent, networkWake], delay);
+                app.Logger.Write(DiagnosticLevel.Info,
+                    $"agent.wake source={(wakeResult == 0 ? "stop" : wakeResult == 1 ? "signal" : "timeout")}");
+                if (wakeResult == 0)
                 {
                     break;
                 }
