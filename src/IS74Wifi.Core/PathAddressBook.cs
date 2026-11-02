@@ -58,6 +58,25 @@ public sealed class PathAddressBook(AppPaths paths, JsonFileStore json, Diagnost
                     return persisted;
                 }
             }
+            // Borrow only destination candidates, never another interface or its
+            // authorization state. Keep path-specific addresses above authoritative.
+            // A borrowed IP is persisted for this path only by RememberConnected.
+            var shared = document.Entries
+                .Where(pair => !string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase) &&
+                    pair.Key.EndsWith("|" + host, StringComparison.OrdinalIgnoreCase) && pair.Value is not null)
+                .Select(pair => pair.Value)
+                .OrderByDescending(value => value.ConnectedAtUtc)
+                .ThenByDescending(value => value.ResolvedAtUtc)
+                .ToArray();
+            var sharedAddresses = Parse(shared.SelectMany(value => value.Addresses ?? []));
+            if (sharedAddresses.Length > 0)
+            {
+                var borrowed = new DnsResolution(sharedAddresses, DnsAddressSource.PersistentAddress, true);
+                candidates[key] = (borrowed, shared[0].ResolvedAtUtc);
+                logger?.Write(DiagnosticLevel.Info,
+                    $"network.address source=persistent-other-path host={host} ifIndex={adapter.IPv4Index} candidates={sharedAddresses.Length}");
+                return borrowed;
+            }
             var resolution = await LookupAsync(host, adapter, token).ConfigureAwait(false);
             candidates[key] = (resolution, DateTimeOffset.UtcNow);
             logger?.Write(DiagnosticLevel.Info, $"network.address source={resolution.Source} host={host}");

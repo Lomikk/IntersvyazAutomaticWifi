@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Text.Json;
 using IS74Wifi.Core;
 
 internal static class AuthorizationConnectionsContractTests
@@ -113,7 +114,7 @@ internal static class AuthorizationConnectionsContractTests
             catch (DirectNetworkUnavailableException) { }
         }
         // The same book accepts every allowed physical path. It does not decide
-        // LTE/Campus or transfer Wi-Fi addresses/auth state to another adapter.
+        // LTE/Campus or transfer auth state. Own addresses outrank shared candidates.
         var usbAddress = IPAddress.Parse("198.51.100.30");
         usb = usb with { GatewayIPv4 = IPAddress.Parse("192.0.2.1") };
         var usbLookups = 0;
@@ -121,17 +122,19 @@ internal static class AuthorizationConnectionsContractTests
         {
             usbLookups++;
             return Task.FromResult(new DnsResolution([usbAddress], DnsAddressSource.AdapterDns, false));
-        });
-        await usbBook.ResolveAsync("online.susu.ru", usb, CancellationToken.None);
-        usbBook.RememberConnected("online.susu.ru", usb, usbAddress);
+        }, validate: (_, _, _, _) => Task.CompletedTask);
+        await usbBook.RefreshAsync(usb, CancellationToken.None);
         var usbRestart = await forbiddenDns.ResolveAsync("online.susu.ru", usb with { Name = "Network 13", IPv4Index = 42 }, CancellationToken.None);
-        Assert(usbLookups == 1 && usbRestart.Addresses.SequenceEqual([usbAddress]), "USB address was not independently persisted/reused across profile/index changes");
+        Assert(usbLookups == 3 && usbRestart.Addresses.SequenceEqual([usbAddress]), "USB address was not independently persisted/reused across profile/index changes");
         Assert((await forbiddenDns.ResolveAsync("online.susu.ru", campus, CancellationToken.None)).Addresses.SequenceEqual([ip]),
             "USB overwrote Campus addresses");
-        await usbBook.ResolveAsync("online.susu.ru", usb with { GatewayIPv4 = IPAddress.Parse("192.0.2.2") }, CancellationToken.None);
-        Assert(usbLookups == 2, "new USB gateway reused another context's candidates");
+        var newGateway = await usbBook.ResolveAsync("online.susu.ru", usb with { GatewayIPv4 = IPAddress.Parse("192.0.2.2") }, CancellationToken.None);
+        Assert(usbLookups == 3 && newGateway.Addresses[0].Equals(usbAddress),
+            "new gateway must borrow the latest connected candidate without DNS or a confirmed path entry");
         var otherResult = await usbBook.ResolveAsync("online.susu.ru", other, CancellationToken.None);
-        Assert(otherResult.Addresses.SequenceEqual([usbAddress]), "Advanced physical Wi-Fi used another transport policy");
+        Assert(otherResult.Addresses[0].Equals(usbAddress) && otherResult.Addresses.Contains(ip) && usbLookups == 3,
+            "other physical Wi-Fi did not use shared IP candidates before DNS");
+        await SharedAddressesStayBoundToNewPathAsync(campus, usb, other);
         await SharedProbeAndRunnerUseIpFirstAsync(paths, json, new[] { campus, usb, other }, ip);
         var original = File.ReadAllText(paths.PathAddressFile);
         var failedRefresh = new PathAddressBook(paths, json, lookup: Lookup,
@@ -155,6 +158,114 @@ internal static class AuthorizationConnectionsContractTests
         cancelled.Cancel();
         try { await book.ResolveAsync("online.susu.ru", campus, cancelled.Token); throw new Exception("cancellation ignored"); }
         catch (OperationCanceledException) { }
+    }
+
+    private static async Task SharedAddressesStayBoundToNewPathAsync(
+        PhysicalAdapter campus, PhysicalAdapter usb, PhysicalAdapter other)
+    {
+        using var temp = TempDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var json = new JsonFileStore();
+        var logger = new DiagnosticLogger(paths);
+        var addresses = new Dictionary<string, IPAddress>
+        {
+            ["online.susu.ru"] = IPAddress.Parse("198.51.100.40"),
+            ["api.is74.ru"] = IPAddress.Parse("198.51.100.41"),
+            ["w.is74.ru"] = IPAddress.Parse("10.0.0.18")
+        };
+        var seed = new PathAddressBook(paths, json,
+            lookup: (host, _, _) => Task.FromResult(new DnsResolution([addresses[host]], DnsAddressSource.AdapterDns, false)),
+            validate: (_, _, _, _) => Task.CompletedTask);
+        await seed.RefreshAsync(campus, CancellationToken.None);
+        var original = File.ReadAllText(paths.PathAddressFile);
+
+        // Reproduce the incident: only Wi-Fi has all IPs, USB DNS is blocked.
+        // Real runner/probe must reach the bound dialer instead of failing in DNS.
+        foreach (var adapter in new[] { usb, other })
+        {
+            var dials = new List<int>();
+            var failed = new PathAddressBook(paths, json, logger,
+                lookup: (_, _, _) => throw new InvalidOperationException("DNS blocked by VPN"),
+                testDialer: (selected, ip, port, _) =>
+                {
+                    Assert(selected.Id == adapter.Id && selected.IPv4Index == adapter.IPv4Index &&
+                        selected.SourceIPv4!.Equals(adapter.SourceIPv4) && addresses.Values.Contains(ip),
+                        "borrowed address switched to the donor adapter/binding");
+                    dials.Add(port);
+                    throw new SocketException((int)SocketError.NetworkUnreachable);
+                });
+            var path = NetworkPathSnapshot.FromAdapter(adapter);
+            Assert((await new NetworkPathProbe(failed).ProbeAsync(path, TimeSpan.FromSeconds(1))).Status == NetworkPathProbeStatus.Unreachable,
+                "borrowed probe unexpectedly succeeded");
+            var runner = new PathAuthorizationRunner(new PathAuthorizationStateStore(paths, json), new AppSettings(), logger, failed);
+            var outcome = await runner.RunAsync(path,
+                new AuthorizationRequest("test-token", "9991234567", "test-device", AuthorizationAttemptReason.Manual, Force: true));
+            Assert(outcome.Kind == AuthorizationOutcomeKind.RetryableBeforeStepOne && dials.Contains(443) && dials.Contains(80),
+                "cold-path runner/probe did not borrow both API and probe destinations without DNS");
+            Assert(File.ReadAllText(paths.PathAddressFile) == original,
+                "unreachable borrowed addresses were persisted as connected on a new path");
+        }
+
+        var rebound = usb with { IPv4Index = 99, SourceIPv4 = IPAddress.Parse("192.0.2.99") };
+        var connected = new PathAddressBook(paths, json, logger,
+            lookup: (_, _, _) => throw new InvalidOperationException("borrowed destinations must avoid DNS"),
+            testDialer: (selected, _, _, _) =>
+            {
+                Assert(selected.Id == usb.Id && selected.IPv4Index == 99 && selected.SourceIPv4!.Equals(rebound.SourceIPv4),
+                    "successful borrowed connect lost current USB binding");
+                return ValueTask.FromResult<Stream>(new MemoryStream());
+            });
+        foreach (var host in PathAddressBook.Hosts)
+        {
+            var candidate = await connected.ResolveAsync(host, rebound, CancellationToken.None);
+            Assert(candidate.FromCache && candidate.Addresses.SequenceEqual([addresses[host]]),
+                "borrowed candidate mixed hosts or lost its cache marker");
+            await using var stream = await connected.CreateConnector(NetworkPathSnapshot.FromAdapter(rebound))
+                .ConnectHostAsync(host, host == "api.is74.ru" ? 443 : 80, CancellationToken.None);
+        }
+        using var document = JsonDocument.Parse(File.ReadAllText(paths.PathAddressFile));
+        Assert(document.RootElement.GetProperty("entries").EnumerateObject().Count() == 6,
+            "connected IPs were not independently persisted for USB");
+        var restart = new PathAddressBook(paths, json,
+            lookup: (_, _, _) => throw new InvalidOperationException("connected USB destinations lost across restart"));
+        foreach (var host in PathAddressBook.Hosts)
+            Assert((await restart.ResolveAsync(host, usb, CancellationToken.None)).Addresses.SequenceEqual([addresses[host]]),
+                "borrowed IP did not become a reusable USB entry");
+        Assert(File.ReadAllText(paths.DiagnosticLogFile).Contains("source=persistent-other-path host=api.is74.ru", StringComparison.Ordinal),
+            "shared candidate selection was not identifiable in the diagnostic log");
+
+        // With no usable candidate for this exact hostname, retain DNS fallback.
+        using var empty = TempDirectory.Create();
+        var emptyPaths = new AppPaths(empty.Path);
+        var now = DateTimeOffset.UtcNow;
+        var unrelated = new PathAddressDocument();
+        unrelated.Entries["donor|Campus|not-api.is74.ru"] = new(["198.51.100.90"], now, DnsAddressSource.AdapterDns, now);
+        unrelated.Entries["donor|Campus|api.is74.ru"] = new(["garbage", "127.0.0.1", "::1", "0.0.0.0", "255.255.255.255"], now, DnsAddressSource.AdapterDns, now);
+        var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+        File.WriteAllText(emptyPaths.PathAddressFile, JsonSerializer.Serialize(unrelated, jsonOptions));
+        var lookups = 0;
+        var fallback = new PathAddressBook(emptyPaths, json, lookup: (host, selected, _) =>
+        {
+            Assert(host == "api.is74.ru" && selected.Id == usb.Id, "DNS fallback lost host/path");
+            lookups++;
+            return Task.FromResult(new DnsResolution([addresses[host]], DnsAddressSource.AdapterDns, false));
+        });
+        var resolved = await fallback.ResolveAsync("api.is74.ru", usb, CancellationToken.None);
+        Assert(lookups == 1 && resolved.Source == DnsAddressSource.AdapterDns,
+            "invalid/unrelated shared entries prevented DNS fallback");
+
+        // Different donor IPs are bounded, deduplicated and newest-first.
+        var many = new PathAddressDocument();
+        for (var i = 0; i < 6; i++)
+            many.Entries[$"donor{i}|Campus|api.is74.ru"] = new(
+                [$"198.51.100.{50 + i}", $"198.51.100.{50 + i}"], now, DnsAddressSource.AdapterDns, now.AddSeconds(i));
+        File.WriteAllText(emptyPaths.PathAddressFile, JsonSerializer.Serialize(many, jsonOptions));
+        var bounded = new PathAddressBook(emptyPaths, json,
+            lookup: (_, _, _) => throw new InvalidOperationException("usable shared IPs must avoid DNS"));
+        var chosen = await bounded.ResolveAsync("api.is74.ru", usb, CancellationToken.None);
+        Assert(chosen.Addresses.Select(ip => ip.ToString()).SequenceEqual(
+            new[] { "198.51.100.55", "198.51.100.54", "198.51.100.53", "198.51.100.52" }),
+            "shared candidates were not bounded/deduplicated/newest-first");
     }
 
     private static async Task SharedProbeAndRunnerUseIpFirstAsync(AppPaths paths, JsonFileStore json, PhysicalAdapter[] adapters, IPAddress address)
