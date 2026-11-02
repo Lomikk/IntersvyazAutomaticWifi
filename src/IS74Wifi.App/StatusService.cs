@@ -17,17 +17,20 @@ internal sealed class StatusService
     private readonly AppPaths paths;
     private readonly JsonFileStore json;
     private readonly Func<StatusMachineState> readMachineState;
+    private readonly Func<WifiDiagnosticSnapshot> readWifi;
 
     public StatusService(
         string currentVersion,
         AppPaths paths,
         JsonFileStore json,
-        Func<StatusMachineState>? readMachineState = null)
+        Func<StatusMachineState>? readMachineState = null,
+        Func<WifiDiagnosticSnapshot>? readWifi = null)
     {
         this.currentVersion = currentVersion;
         this.paths = paths;
         this.json = json;
         this.readMachineState = readMachineState ?? ReadDefaultMachineState;
+        this.readWifi = readWifi ?? WindowsWifiDiagnostics.ReadCached;
     }
 
     public InteractiveStatusSnapshot ReadLocalSnapshot()
@@ -88,10 +91,14 @@ internal sealed class StatusService
     {
         ArgumentNullException.ThrowIfNull(refreshNetwork);
 
-        var network = await refreshNetwork(cancellationToken).ConfigureAwait(false);
+        AgentNetworkSnapshot? refreshed = null;
+        string? refreshError = null;
+        try { refreshed = await refreshNetwork(cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) { refreshError = "Обновление сетевых путей недоступно: " + ex.GetType().Name + ". Показан сохранённый снимок."; }
         var local = ReadLocalState();
         var settings = local.Settings;
-        network = SelectNetwork(network, settings);
+        var network = SelectNetwork(refreshed ?? local.Network, settings);
         var machine = local.Machine;
 
         var lines = new List<string>
@@ -145,6 +152,12 @@ internal sealed class StatusService
         lines.Add($"Карантин: {telemetryStatus.RejectedFiles} файлов / {FormatByteCount(telemetryStatus.RejectedBytes)}");
 
         lines.Add(string.Empty);
+        WifiDiagnosticSnapshot wifi;
+        try { wifi = await Task.Run(readWifi, cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) { wifi = WifiDiagnosticSnapshot.Unavailable("Данные Wi-Fi недоступны: " + ex.GetType().Name); }
+        lines.AddRange(WifiDiagnosticText.BuildReport(wifi));
+        lines.Add(string.Empty);
         lines.Add("=== Сетевые пути ===");
         if (network.Paths.Length == 0)
         {
@@ -154,30 +167,50 @@ internal sealed class StatusService
         {
             foreach (var path in network.Paths)
             {
-                lines.Add($"{path.Name}: {FormatPathStatus(path.Status)}");
+                lines.Add($"{WifiDiagnosticText.Safe(path.Name)}{(path.Preferred ? " · основной" : "")}: {FormatPathStatus(path.Status)}");
+                lines.Add($"  Адаптер: {path.AdapterId}; SSID: {(path.Ssid is null ? "не Wi-Fi" : WifiDiagnosticText.Ssid(path.Ssid))}");
                 lines.Add($"  IPv4: {path.SourceIPv4 ?? "—"}; gateway: {path.GatewayIPv4 ?? "—"}; ifIndex: {path.InterfaceIndex}");
+                lines.Add($"  Последняя bound-проверка: {FormatDiagnosticTime(path.LastProbeUtc)}");
+                lines.Add($"  Последняя попытка авторизации: {FormatDiagnosticTime(path.LastAttemptUtc)}");
+                lines.Add($"  Последний результат: {FormatRuntimeResultForUi(path.LastResult)} ({LogRedactor.Redact(path.LastResult ?? "недоступно")})");
                 if (path.ExpectedExpiryUtc is { } pathExpiry)
                     lines.Add($"  Ожидаемая граница: {pathExpiry.ToLocalTime():dd.MM.yyyy HH:mm:ss}" +
                               (path.AuthorizationWindowApproximate ? " (приблизительно)" : string.Empty));
+                else
+                    lines.Add("  Ожидаемая граница: недоступно");
                 if (path.EdgeWatchActive)
                     lines.Add("  Режим: наблюдение фактической границы (сервер всё ещё считает путь авторизованным)");
                 if (path.NextCheckUtc is { } scheduledCheck)
                     lines.Add($"  Следующая проверка: {scheduledCheck.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
                 else if (path.CheckOnConnectivityEvent)
                     lines.Add("  Следующая проверка: по событию Windows/NCSI");
-                if (path.LastSuccessfulAuthUtc is { } pathAuth)
-                    lines.Add($"  Последняя авторизация: {pathAuth.ToLocalTime():dd.MM.yyyy HH:mm:ss}");
+                else
+                    lines.Add("  Следующая проверка: не запланирована");
+                lines.Add($"  Последняя авторизация: {FormatDiagnosticTime(path.LastSuccessfulAuthUtc)}");
                 if (path.UserActionRequired)
                     lines.Add("  Требуется действие пользователя: да");
             }
         }
 
         lines.Add(string.Empty);
+        lines.Add("=== Дополнительная диагностика сетевых путей ===");
+        lines.Add($"Снимок агента: {FormatDiagnosticTime(network.CapturedAtUtc == DateTimeOffset.MinValue ? null : network.CapturedAtUtc)}");
+        if (refreshError is not null) lines.Add(refreshError);
+        lines.Add($"VPN: {(network.VpnActive ? "обнаружен" : "не обнаружен в снимке")}");
+        lines.Add("VPN/виртуальные адаптеры не являются путями captive-авторизации.");
+        lines.Add("Bound probes выполняет агент через выбранный IPv4/ifIndex физического интерфейса.");
+        lines.Add("Общий IP-first сохраняет адреса серверов; default route и VPN не изменяются.");
+        lines.Add("Наличие VPN не подтверждает доступ в Интернет; kill switch может блокировать прямой путь.");
+        lines.Add("Отчёт не запускает авторизацию, stepOne/stepTwo или измерение скорости.");
+        lines.Add(string.Empty);
         lines.Add("=== Пути файлов ===");
         lines.Add($"Данные приложения: {paths.Root}");
         lines.Add($"Диагностический журнал: {paths.DiagnosticLogFile}");
         return lines;
     }
+
+    private static string FormatDiagnosticTime(DateTimeOffset? value) =>
+        value?.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") ?? "недоступно";
 
     private LocalStatusState ReadLocalState()
     {

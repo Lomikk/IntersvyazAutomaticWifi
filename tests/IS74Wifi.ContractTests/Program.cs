@@ -20,6 +20,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("manual-authorization-progress", ManualAuthorizationProgressContractTests.RunAsync),
     ("agent-network-ipc", AgentNetworkIpcContractTests.RunAsync),
     ("terminal-ui", TerminalUiContractTests.RunAsync),
+    ("terminal-ui-wifi-diagnostics", WifiDiagnosticsContractTests.RunAsync),
     ("status-service", StatusServiceContractTests.RunAsync),
     ("telemetry-local-first", TelemetryContractTests.RunAsync),
     ("backend-wire-format", BackendWireContractTests.RunAsync),

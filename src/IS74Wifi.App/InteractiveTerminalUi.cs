@@ -1696,18 +1696,19 @@ internal sealed partial class InteractiveTerminalUi
         _ => "МЕНЮ"
     };
 
-    private static IReadOnlyList<MenuItem> GetPrimaryItems(InteractiveStatusSnapshot? snapshot) =>
+    internal static IReadOnlyList<MenuItem> GetPrimaryItems(InteractiveStatusSnapshot? snapshot) =>
     [
         new MenuItem('1', "Авторизовать Wi-Fi сейчас", InteractiveMenuAction.Connect),
         new MenuItem('2', "Скорость и рейтинг", InteractiveMenuAction.SpeedTools),
-        new MenuItem('3', "Состояние и подробный отчёт", InteractiveMenuAction.ShowDetailedStatus),
-        new MenuItem('4', "Настройки", InteractiveMenuAction.OpenSettings),
-        new MenuItem('5', "Обслуживание", InteractiveMenuAction.OpenMaintenance),
-        new MenuItem('6', "Поддержать проект", InteractiveMenuAction.SupportProject),
+        new MenuItem('3', "Сигнал Wi-Fi и точки доступа", InteractiveMenuAction.ShowWifiDiagnostics),
+        new MenuItem('4', "Состояние и подробный отчёт", InteractiveMenuAction.ShowDetailedStatus),
+        new MenuItem('5', "Настройки", InteractiveMenuAction.OpenSettings),
+        new MenuItem('6', "Обслуживание", InteractiveMenuAction.OpenMaintenance),
+        new MenuItem('7', "Поддержать проект", InteractiveMenuAction.SupportProject),
         new MenuItem('0', "Выход", InteractiveMenuAction.Exit)
     ];
 
-    private static IReadOnlyList<MenuItem> GetSettingsItems(InteractiveStatusSnapshot? snapshot)
+    internal static IReadOnlyList<MenuItem> GetSettingsItems(InteractiveStatusSnapshot? snapshot)
     {
         var automaticEnabled = snapshot?.AutomaticAuthorizationEnabled == true;
         return
@@ -1726,9 +1727,8 @@ internal sealed partial class InteractiveTerminalUi
                 $"Анонимная статистика: {FormatStatisticsConsent(snapshot?.AnonymousStatisticsConsent ?? AnonymousStatisticsConsent.Unknown)}",
                 InteractiveMenuAction.ToggleAnonymousStatistics),
             new MenuItem('5', "Обновления", InteractiveMenuAction.OpenUpdates),
-            new MenuItem('6', "Сеть и диагностика", InteractiveMenuAction.DiagnoseDirectNetwork),
-            new MenuItem('7', "Подключения для авторизации", InteractiveMenuAction.ChooseAuthorizationConnections),
-            new MenuItem('8', "Обновить адреса серверов", InteractiveMenuAction.RefreshServerAddresses),
+            new MenuItem('6', "Подключения для авторизации", InteractiveMenuAction.ChooseAuthorizationConnections),
+            new MenuItem('7', "Обновить адреса серверов", InteractiveMenuAction.RefreshServerAddresses),
             new MenuItem('0', "Назад", InteractiveMenuAction.Back)
         ];
     }
@@ -2139,7 +2139,7 @@ internal sealed partial class InteractiveTerminalUi
         }
     }
 
-    private readonly record struct MenuItem(
+    internal readonly record struct MenuItem(
         char Hotkey,
         string Label,
         InteractiveMenuAction Action);

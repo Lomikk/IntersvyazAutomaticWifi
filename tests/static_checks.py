@@ -187,7 +187,7 @@ assert 'Console.WindowWidth' in csharp_ui and 'UpdateLayout()' in csharp_ui and 
 assert 'Cell' in terminal_canvas and 'Palette' in terminal_canvas and 'WrapText' in terminal_canvas and 'DrawBox' in terminal_canvas, 'terminal canvas primitives must have one owner'
 assert 'ConsoleKey.UpArrow' in csharp_ui and 'ConsoleKey.DownArrow' in csharp_ui and 'ConsoleKey.Enter' in csharp_ui
 assert "new MenuItem('1', \"Авторизовать Wi-Fi сейчас\"" in csharp_ui, 'terminal UI numeric hotkeys missing'
-assert "new MenuItem('6', \"Поддержать проект\", InteractiveMenuAction.SupportProject)" in csharp_ui, 'support link must be in main menu'
+assert "new MenuItem('7', \"Поддержать проект\", InteractiveMenuAction.SupportProject)" in csharp_ui, 'support link must be in main menu'
 assert "new MenuItem('0', \"Выход\"" in csharp_ui, 'terminal UI exit hotkey missing'
 assert 'BannerMode.InitialSweep' in csharp_ui and 'BannerMode.AmbientSweep' in csharp_ui, 'brand sweep animations missing'
 assert 'glint' not in csharp_ui.lower(), 'per-letter glint animation must stay disabled'
@@ -221,7 +221,7 @@ assert 'ShowBalloon(notification);' in notification_service, 'disabled-tray tran
 app_project = (root / 'src' / 'IS74Wifi.App' / 'IS74Wifi.App.csproj').read_text(encoding='utf-8')
 assert r'<ApplicationIcon>Assets\IS74Wifi.ico</ApplicationIcon>' in app_project, 'application icon is not wired into the Windows executable'
 assert 'registered ? "Сбросить регистрацию" : "Зарегистрировать устройство"' in csharp_ui
-assert "new MenuItem('3', \"Состояние и подробный отчёт\", InteractiveMenuAction.ShowDetailedStatus)" in csharp_ui
+assert "new MenuItem('4', \"Состояние и подробный отчёт\", InteractiveMenuAction.ShowDetailedStatus)" in csharp_ui
 assert "new MenuItem('2', \"Скорость и рейтинг\", InteractiveMenuAction.SpeedTools)" in csharp_ui, 'speed/leaderboard submenu entry missing'
 assert 'TargetView' not in csharp_ui, 'rich UI must not reintroduce speculative submenu navigation'
 assert 'PromptDigitsAsync' in csharp_ui and 'ConsoleKey.Escape' in csharp_ui, 'interactive registration input must be cancellable in-pane'

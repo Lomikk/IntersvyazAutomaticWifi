@@ -30,7 +30,8 @@ internal sealed record AgentNetworkPathSnapshot(
     bool UserActionRequired,
     bool AuthorizationWindowApproximate,
     bool EdgeWatchActive = false,
-    string AdapterId = "");
+    string AdapterId = "",
+    DateTimeOffset? LastProbeUtc = null);
 
 internal sealed record AgentNetworkSnapshot(
     DateTimeOffset CapturedAtUtc,

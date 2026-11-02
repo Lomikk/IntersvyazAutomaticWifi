@@ -15,6 +15,7 @@
 | Компоновка и сессия терминала | `App/InteractiveTerminalUi.cs`; примитивы кадра — `App/Ui/TerminalCanvas.cs`, геометрия — `App/Ui/TerminalLayout.cs`, framebuffer/diff/вывод — `App/Ui/TerminalOutput.cs`; общая геометрия больших списков — `App/Ui/ListWindow.cs`; история — `InteractiveActionHistory.cs` | App + ручная проверка затронутого экрана |
 | Выбор подключений для авторизации | `App/Ui/ConnectionSelectionScreen.cs` — только пункты/selection/scroll/кадр; список адаптеров UI получает через `AgentNetworkClient` от agent-owned `PhysicalAdapterSelection.Enumerate`, а сохранение выбранной настройки остаётся в `Program.cs` | App + `agent-network-ipc` + ручная проверка экрана |
 | Снимок состояния и подробный отчёт | `App/AgentNetworkSnapshot.cs` — agent-owned snapshot сетевых путей/SSID/VPN/authorization state, сохраняемый после agent tick/IPC операции; `StatusService.cs` только объединяет этот snapshot с локальными настройками/регистрацией для UI/отчёта; live refresh идёт через `AgentNetworkClient` | App (`status-service` + `agent-network-ipc` + Python live-status) |
+| Сигнал Wi-Fi и точки доступа | `App/WindowsWifiDiagnostics.cs` — on-demand Native Wi-Fi, `WifiDiagnostics.cs` — локальные модели/форматирование; `Ui/WifiDiagnosticsScreen.cs` — кадр/прокрутка; `InteractiveTerminalUi.WifiDiagnostics.cs` — input/обновление. TXT получает тот же radio snapshot через `StatusService` | App (`terminal-ui-wifi-diagnostics`, `status-service`); local IPC timestamp — `agent-network-ipc`; NativeAOT publish отдельно |
 | Экран скорости/рейтинга | `App/InteractiveTerminalUi.SpeedTools.cs` (partial того же UI; пока содержит и действия, и состояние) | App; бизнес-правила/запросы — Full + Backend |
 | Прогресс ручной авторизации | `App/ManualAuthorizationRunner.cs` отображает progress; сама операция идёт через `AgentNetworkClient` → agent-owned `AgentNetworkOperations` | App: `manual-authorization-progress` + `agent-network-ipc` |
 | Авторизация и polling | `Core/AuthorizationFlow.cs`, `PushPollingEngine.cs`, `AuthorizationStateManager.cs`; инварианты — `ProtocolContract.cs` | Core |
@@ -60,6 +61,13 @@
   Portable запуск с `IS74W_RUN_LOCAL=1` использует worker своей сборки вместо установленного агента.
 - Локальный `StatusService.ReadLocalSnapshot()` не выполняет HTTP и не создаёт `ApplicationRuntime`, но сохраняет прежние локальные нормализации: `SettingsStore.Load()` может создать default `settings.json`, а `UpdateMaintenanceService.LoadState()` — очистить и сохранить устаревшее состояние доступного обновления. Сетевые побочные эффекты находятся только в явно переданных delegate для `RefreshNetworkSnapshotAsync`/подробного отчёта.
 - Авторизационная сеть имеет одного владельца: interactive/CLI код не перечисляет адаптеры/SSID/VPN, не читает `PathAuthorizationState` и не вызывает `NetworkPathDiagnostics`, `Internet.ProbeAsync`, `ManualAuthorizationPathSelector` или `PathAuthorization.RunAsync` напрямую. Он использует `AgentNetworkClient`; agent возвращает полный network/auth snapshot и сохраняет его для локального первого кадра UI. Long-lived worker обслуживает named pipe, а при выключенном/недоступном фоне запускается короткоживущий `agent-network-worker` той же версии. `probe-only` сохраняет диагностический контракт без stepOne/stepTwo.
+  Исключение для информационных радиоданных: foreground-экран Wi-Fi/TXT читает Native
+  Wi-Fi API напрямую, без выбора authorization path, HTTP, изменений маршрутов или
+  состояния агента. При открытии/TXT — кеш Windows, только R запрашивает один scan
+  на интерфейс. В periodic status, agent и telemetry этот сборщик не подключён.
+  Подробный TXT использует `probe-only`, а не разрешающий автоавторизацию `refresh`.
+  `LastProbeUtc` — добавочное nullable-поле локального agent snapshot; старые файлы
+  и IPC без него читаются как «недоступно». Внешний backend wire не изменён.
 - `PathAuthorizationStateStore` хранит сроки/попытки под межпроцессным mutex,
   строго различает отсутствие и ошибку чтения и восстанавливает `.bak`.
   IP-кеш `PathAddressBook` имеет отдельный жизненный цикл; нельзя заменять им

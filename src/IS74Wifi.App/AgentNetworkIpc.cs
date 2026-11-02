@@ -206,7 +206,8 @@ internal sealed class AgentNetworkOperations(
                     UserActionRequired: pathState?.UserActionRequired == true,
                     AuthorizationWindowApproximate: IsAuthorizationWindowApproximate(path),
                     EdgeWatchActive: pathState?.EdgeWatchActive == true,
-                    AdapterId: path.AdapterId);
+                    AdapterId: path.AdapterId,
+                    LastProbeUtc: pathState?.LastProbeUtc);
             })
             .ToArray();
 

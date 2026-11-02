@@ -65,7 +65,7 @@ internal enum InteractiveMenuAction
     DisableAutomaticAuthorization,
     ToggleNetworkCheck,
     ChooseAuthorizationConnections,
-    DiagnoseDirectNetwork,
+    ShowWifiDiagnostics,
     RefreshServerAddresses,
     ToggleAnonymousStatistics,
     ToggleAutomaticUpdates,

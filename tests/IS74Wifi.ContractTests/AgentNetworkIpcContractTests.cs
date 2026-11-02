@@ -41,6 +41,8 @@ internal static class AgentNetworkIpcContractTests
                 "refresh IPC must return agent-owned path details");
             Assert(status.Paths[0].EdgeWatchActive,
                 "refresh IPC must preserve the agent-owned edge-watch state");
+            Assert(status.Paths[0].LastProbeUtc == FakeOperations.ProbeTime && status.Paths[1].LastProbeUtc is null,
+                "local IPC must preserve probe time and allow older snapshots without it");
         }, () => schedulerWakes++);
         Assert(schedulerWakes == 1,
             "completed agent IPC command must wake the main scheduler to recompute deadlines");
@@ -287,6 +289,7 @@ internal static class AgentNetworkIpcContractTests
 
     private sealed class FakeOperations : IAgentNetworkOperations
     {
+        internal static readonly DateTimeOffset ProbeTime = new(2026, 11, 2, 10, 0, 0, TimeSpan.Zero);
         public int AddressRefreshCalls { get; private set; }
         public Task<AgentNetworkSnapshot> RefreshAddressesAsync(CancellationToken cancellationToken = default)
         { AddressRefreshCalls++; return Task.FromResult(AgentNetworkSnapshot.Empty); }
@@ -324,7 +327,7 @@ internal static class AgentNetworkIpcContractTests
                     new AgentNetworkPathSnapshot(
                         "Wi-Fi · Campus Wi-Fi test", "Campus Wi-Fi test", 7, "10.0.0.2", "10.0.0.1",
                         PathAuthorizationStatus.Internet, true, null, "success", DateTimeOffset.UtcNow,
-                        DateTimeOffset.UtcNow.AddMinutes(1), false, DateTimeOffset.UtcNow, false, false, true),
+                        DateTimeOffset.UtcNow.AddMinutes(1), false, DateTimeOffset.UtcNow, false, false, true, LastProbeUtc: ProbeTime),
                     new AgentNetworkPathSnapshot(
                         "Ethernet", null, 9, "10.1.0.2", "10.1.0.1",
                         PathAuthorizationStatus.Captive, false, null, null, null,

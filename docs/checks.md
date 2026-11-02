@@ -141,6 +141,14 @@ backup/recovery, строгих ошибок чтения и конкурент�
 `agent-network-ipc` проверяет maintenance без авторизации и worker portable-сборки.
 Сеть в этих сценариях подменена; они не заменяют полевой цикл на ноутбуке.
 
+`terminal-ui-wifi-diagnostics` входит в App через фильтр `terminal-ui`: меню/клавиши,
+native WLAN buffers, 2,4/5/6 ГГц, radio on/off/unknown, несколько SSID/BSSID/адаптеров,
+прокрутка, resize 30–120 столбцов и 12–40 строк, ошибки/отсутствующие данные.
+`status-service` также проверяет сохранение всех разделов TXT, одну on-demand сборку
+Wi-Fi без periodic-сбора, времена bound probes, маску телефона и независимость
+ошибок Wi-Fi/agent snapshot. Эти тесты не запрашивают живое сканирование WLAN.
+Ручная проверка терминала и драйверов остаётся отдельной; [ограничения](wifi-diagnostics.md).
+
 Отдельный проект `tests/IS74Wifi.SimulationTests` моделирует месяцы и годы
 без работы с реальной сетью; [параметры и ограничения](virtual-simulation.md).
 `dotnet run --project tests/IS74Wifi.SimulationTests -c Release -- --self-test`

@@ -13,7 +13,7 @@ internal enum ConfirmationRequestFailureDisposition
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.5";
+    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.6";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
@@ -1874,26 +1874,9 @@ internal static class Program
                         _ = await ChooseAuthorizationConnectionsAsync(ui, initialStatus).ConfigureAwait(false);
                         break;
 
-                    case InteractiveMenuAction.DiagnoseDirectNetwork:
-                    {
-                        var history = new InteractiveActionHistory();
-                        history.Start("Проверяю выбранные подключения...");
-                        ui.ShowActionProgress("СЕТЬ И ДИАГНОСТИКА", history, initialStatus);
-                        try
-                        {
-                            var report = await CollectDirectNetworkDiagnosticsAsync().ConfigureAwait(false);
-                            history.FinishActiveAsInfo();
-                            foreach (var line in report) history.AddInfo(line);
-                        }
-                        catch (Exception ex)
-                        {
-                            history.FailActive("Проверка прервана");
-                            history.AddError(ex.Message);
-                        }
-                        await ui.ShowActionHistoryAsync("СЕТЬ И ДИАГНОСТИКА", history,
-                            GetInteractiveStatusSnapshot()).ConfigureAwait(false);
+                    case InteractiveMenuAction.ShowWifiDiagnostics:
+                        await ui.ShowWifiDiagnosticsAsync(WindowsWifiDiagnostics.CaptureAsync).ConfigureAwait(false);
                         break;
-                    }
 
                     case InteractiveMenuAction.RefreshServerAddresses:
                     {
@@ -2490,10 +2473,9 @@ internal static class Program
 
     private static async Task OpenDetailedStatusReportAsync()
     {
-        using var app = ApplicationRuntime.Create(ProductVersion);
-        var statusService = new StatusService(ProductVersion, app.Paths, app.Json);
+        var statusService = CreateStatusService();
         var lines = await statusService.BuildDetailedReportAsync(
-            AgentNetworkClient.RefreshAsync).ConfigureAwait(false);
+            AgentNetworkClient.ProbeOnlyAsync).ConfigureAwait(false);
 
         var reportPath = Path.Combine(Path.GetTempPath(), "IS74Wifi-status.txt");
         await File.WriteAllLinesAsync(

@@ -14,7 +14,9 @@ internal static class StatusServiceContractTests
             InstalledExecutablePath: Path.Combine(temp.Path, "Programs", "IS74Wifi", "IS74Wifi.exe"),
             AutomaticAuthorizationEnabled: false,
             AgentRunning: false);
-        var service = new StatusService("1.2.3", paths, json, () => machine);
+        var wifiReads = 0;
+        var service = new StatusService("1.2.3", paths, json, () => machine,
+            () => { wifiReads++; return WifiDiagnosticsContractTests.Fixture(); });
 
         var fresh = service.ReadLocalSnapshot();
         Assert(!fresh.Registered, "fresh local status must be unregistered");
@@ -172,12 +174,16 @@ internal static class StatusServiceContractTests
             "agent refresh snapshot must flow into the returned UI status");
 
         var reportRefreshCalls = 0;
+        Assert(wifiReads == 0, "ordinary local/menu status must not request radio diagnostics");
+        var lastProbe = DateTimeOffset.UtcNow.AddMinutes(-3);
+        edgeWatchSnapshot = edgeWatchSnapshot with { Paths = [edgeWatchSnapshot.Paths[0] with { LastProbeUtc = lastProbe }] };
         var report = await service.BuildDetailedReportAsync(_ =>
         {
             reportRefreshCalls++;
             return Task.FromResult(edgeWatchSnapshot);
         });
         Assert(reportRefreshCalls == 1, "detailed report must use only the supplied agent network refresh");
+        Assert(wifiReads == 1, "report must read Wi-Fi exactly once, without periodic or extra bound probes");
         Assert(report.Any(line => line == $"Данные приложения: {paths.Root}"),
             "detailed report must use the supplied temporary AppPaths");
         Assert(report.Any(line => line == "Интернет: доступен"),
@@ -191,6 +197,24 @@ internal static class StatusServiceContractTests
         Assert(report.Any(line => line.Contains("Ожидаемая граница:", StringComparison.Ordinal) &&
                                   line.Contains("(приблизительно)", StringComparison.Ordinal)),
             "detailed report must label approximate authorization boundaries");
+        foreach (var section in new[] { "Программа", "Состояние", "Обновления", "Телеметрия", "Сетевые пути", "Пути файлов",
+            "Wi-Fi: текущее подключение", "Доступные беспроводные сети", "Дополнительная диагностика сетевых путей" })
+            Assert(report.Count(line => line == $"=== {section} ===") == 1, "report lost or duplicated a section: " + section);
+        Assert(report.Any(line => line.Contains($"Последняя bound-проверка: {lastProbe.ToLocalTime():dd.MM.yyyy HH:mm:ss}", StringComparison.Ordinal)),
+            "report omitted the real previous probe timestamp");
+        Assert(report.Any(line => line.Contains("VPN: обнаружен", StringComparison.Ordinal)) &&
+               report.Any(line => line.Contains("Последний результат:", StringComparison.Ordinal)) &&
+               report.Any(line => line.Contains("Следующая проверка:", StringComparison.Ordinal)), "path details from the old screen were lost");
+        Assert(report.Any(line => line.Contains("02:00:00:00:00:00", StringComparison.Ordinal)) &&
+               report.All(line => !line.Contains("9991234567", StringComparison.Ordinal) && !line.Contains("test-token", StringComparison.Ordinal)),
+            "radio data absent or registration secrets leaked into the report");
+        var degraded = new StatusService("1.2.3", paths, json, () => machine,
+            () => throw new InvalidOperationException("private Wi-Fi error"));
+        var degradedReport = await degraded.BuildDetailedReportAsync(_ => throw new IOException("private network error"));
+        Assert(degradedReport.Any(line => line.StartsWith("=== Пути файлов", StringComparison.Ordinal)) &&
+               degradedReport.Any(line => line.Contains("Показан сохранённый снимок", StringComparison.Ordinal)) &&
+               degradedReport.Any(line => line.Contains("Данные Wi-Fi недоступны", StringComparison.Ordinal)) &&
+               degradedReport.All(line => !line.Contains("private", StringComparison.Ordinal)), "one failing data source broke or leaked into the rest of the report");
     }
 
     private static void Assert(bool condition, string message)
