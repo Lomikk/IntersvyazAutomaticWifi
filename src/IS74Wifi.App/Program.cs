@@ -13,7 +13,7 @@ internal enum ConfirmationRequestFailureDisposition
 
 internal static class Program
 {
-    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.8";
+    private const string ProductVersion = "v0.1.0-alpha.47.campus-test.9";
     private const string AnonymousStatisticsConsentMessage =
         "Разрешить отправку анонимной статистики о работе приложения? Это помогает развивать приложение, улучшать стабильность и скорость авторизации. Участие в публичном рейтинге скорости настраивается отдельно.";
     private const string AutomaticUpdateGateName = @"Local\IS74Wifi.CSharp.AutoUpdate";
@@ -3365,14 +3365,12 @@ internal static class Program
         }
         void SynchronizeForNetworkChange(NetworkChangeReason reason)
         {
-            app.Logger.Write(DiagnosticLevel.Info, $"agent.event source={reason}");
             app.Agent.NotifyNetworkConnectivityChanged(reason);
             WakeForNetworkChange();
         }
         void OnNetworkAddressChanged(object? _, EventArgs __) => SynchronizeForNetworkChange(NetworkChangeReason.WindowsAddress);
         void OnNetworkAvailabilityChanged(object? _, NetworkAvailabilityEventArgs args)
         {
-            app.Logger.Write(DiagnosticLevel.Info, $"agent.availability available={args.IsAvailable}");
             SynchronizeForNetworkChange(NetworkChangeReason.WindowsAvailability);
         }
         void OnNetworkStatusChanged(object? _)
@@ -3390,8 +3388,6 @@ internal static class Program
                 return;
             }
 
-            app.Logger.Write(DiagnosticLevel.Info,
-                $"agent.ncsi connectivity-changed internet-access={currentInternetAccess} profiles-changed={profilesChanged}");
             app.Agent.NotifyNetworkConnectivityChanged(NetworkChangeReason.Ncsi);
             WakeForNetworkChange();
         }
@@ -3420,7 +3416,6 @@ internal static class Program
             stopCts.Token,
             () =>
             {
-                app.Logger.Write(DiagnosticLevel.Info, "agent.event source=ipc-complete (deadline-recompute-only)");
                 WakeForNetworkChange();
             });
         app.Logger.Write(DiagnosticLevel.Info, $"agent.worker start runtime=csharp version={ProductVersion}");
@@ -3502,7 +3497,6 @@ internal static class Program
                 }
 
                 var delay = app.Agent.GetSleepDelay();
-                var authorizationDelay = delay;
                 if (resumeMonitor is null)
                 {
                     // Power notifications are unavailable on this machine.
@@ -3535,11 +3529,7 @@ internal static class Program
                 // The first handle remains the existing cross-process stop
                 // signal. Joining/leaving a network may wake the idle agent,
                 // but does not override the user's IgnoreNetworkCheck choice.
-                app.Logger.Write(DiagnosticLevel.Info,
-                    $"agent.wait authorization-ms={authorizationDelay.TotalMilliseconds:F0} effective-ms={delay.TotalMilliseconds:F0}");
                 var wakeResult = WaitHandle.WaitAny([stopEvent, networkWake], delay);
-                app.Logger.Write(DiagnosticLevel.Info,
-                    $"agent.wake source={(wakeResult == 0 ? "stop" : wakeResult == 1 ? "signal" : "timeout")}");
                 if (wakeResult == 0)
                 {
                     break;

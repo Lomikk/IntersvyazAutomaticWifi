@@ -26,7 +26,8 @@ public sealed class PathAwareAgentCoordinator(
     PreferredNetworkPathResolver? preferredPathResolver = null,
     NetworkPathTelemetryRecorder? telemetry = null,
     Func<bool>? isVpnActive = null,
-    Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+    Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+    Func<IReadOnlyDictionary<string, int>?>? readConnectivityLevels = null)
 {
     private static readonly TimeSpan NoPathRecheck = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan InitialProbeTimeout = TimeSpan.FromSeconds(2);
@@ -37,6 +38,7 @@ public sealed class PathAwareAgentCoordinator(
         delayAsync ?? ((duration, token) => Task.Delay(duration, token));
     private NetworkPathIdentity? lastPreferredPath;
     private int connectivityChangePending;
+    private readonly Dictionary<string, int?> lastProfileLevels = new(StringComparer.OrdinalIgnoreCase);
 
     public void NotifyNetworkConnectivityChanged(NetworkChangeReason reason = NetworkChangeReason.Unspecified) =>
         Interlocked.Or(ref connectivityChangePending, (int)reason);
@@ -106,6 +108,7 @@ public sealed class PathAwareAgentCoordinator(
         state.MarkMissingAsDisconnected(current.Select(path => path.Identity).ToArray());
         if (current.Count == 0)
         {
+            ObserveProfileChanges(current, changeReasons);
             return;
         }
 
@@ -141,6 +144,10 @@ public sealed class PathAwareAgentCoordinator(
             }
         }
 
+        // Read Windows only after the latency-first timer path has had its turn.
+        var changedProfiles = ObserveProfileChanges(current, changeReasons);
+        var explicitSynchronization = (changeReasons & (NetworkChangeReason.Resume | NetworkChangeReason.StartupOffline |
+            NetworkChangeReason.IpcCaptiveRefresh | NetworkChangeReason.Unspecified)) != 0;
         var vpnActiveNow = telemetry is null ? false : SafeVpnActive();
         NetworkPathSnapshot? authorizationCandidate = null;
         foreach (var path in current
@@ -163,15 +170,17 @@ public sealed class PathAwareAgentCoordinator(
                     cancellationToken, refreshAfterPreStepFailure: true).ConfigureAwait(false);
                 return;
             }
-            var connectivityTriggeredProbe = connectivityChanged &&
-                                             PathAuthorizationSchedule.IsConnectivityEventDriven(observed, path);
+            var profileChanged = changedProfiles.Contains(AdapterKey(path.AdapterId));
+            var connectivityTriggeredProbe = !observed.UserActionRequired && (profileChanged ||
+                (explicitSynchronization || readConnectivityLevels is null && connectivityChanged) &&
+                PathAuthorizationSchedule.IsConnectivityEventDriven(observed, path));
             if (!changed && !connectivityTriggeredProbe &&
                 PathAuthorizationSchedule.GetDelay(observed, path, settings, now) > TimeSpan.FromMilliseconds(100))
             {
                 continue;
             }
 
-            var probeReason = changed ? "binding." + observationReason : connectivityTriggeredProbe
+            var probeReason = changed ? "binding." + observationReason : profileChanged ? "selected-profile.changed" : connectivityTriggeredProbe
                 ? "event." + changeReasons.ToString().Replace(", ", "+") : "scheduled_recheck";
             var probeOutcome = await ProbePathAsync(path, changed, cancellationToken, reason: probeReason).ConfigureAwait(false);
             if (probeOutcome is null)
@@ -459,6 +468,46 @@ public sealed class PathAwareAgentCoordinator(
 
     private bool IsPreferred(NetworkPathSnapshot path) =>
         lastPreferredPath is not null && SameIdentity(path.Identity, lastPreferredPath);
+
+    private static string AdapterKey(string id) => Guid.TryParse(id, out var guid) ? guid.ToString("D") : id;
+
+    private HashSet<string> ObserveProfileChanges(IReadOnlyList<NetworkPathSnapshot> current, NetworkChangeReason triggers)
+    {
+        var changed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (readConnectivityLevels is null) return changed;
+        IReadOnlyDictionary<string, int>? levels;
+        try { levels = readConnectivityLevels(); }
+        catch { levels = null; }
+        var normalized = levels?.ToDictionary(pair => AdapterKey(pair.Key), pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        var selected = current.Select(path => AdapterKey(path.AdapterId)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var missing in lastProfileLevels.Keys.Where(key => !selected.Contains(key)).ToArray())
+        {
+            lastProfileLevels.Remove(missing);
+            logger.Write(DiagnosticLevel.Info, $"agent.selected-path removed adapter={missing}");
+        }
+        foreach (var key in selected)
+        {
+            // -1 means profile absent; null means Windows data could not be read.
+            int? level = normalized is null ? null : normalized.GetValueOrDefault(key, -1);
+            var hasPrevious = lastProfileLevels.TryGetValue(key, out var previous);
+            // A VPN may report global Internet at startup while this physical
+            // profile is already captive. Synchronize that uncertain baseline once.
+            if (!hasPrevious && level != 3)
+            {
+                changed.Add(key);
+                logger.Write(DiagnosticLevel.Info,
+                    $"agent.selected-profile baseline-check adapter={key} current={level?.ToString() ?? "unknown"}");
+            }
+            else if (hasPrevious && previous != level)
+            {
+                changed.Add(key);
+                logger.Write(DiagnosticLevel.Info,
+                    $"agent.selected-profile changed adapter={key} previous={previous?.ToString() ?? "unknown"} current={level?.ToString() ?? "unknown"} trigger={(triggers == 0 ? "local-resample" : triggers.ToString().Replace(", ", "+"))}");
+            }
+            lastProfileLevels[key] = level;
+        }
+        return changed;
+    }
 
     private static string ObservationReason(PathAuthorizationState? before, NetworkPathSnapshot path)
     {

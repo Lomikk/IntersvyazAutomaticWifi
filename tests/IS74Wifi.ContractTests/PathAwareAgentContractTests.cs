@@ -7,6 +7,7 @@ internal static class PathAwareAgentContractTests
     public static async Task RunAsync()
     {
         await ProbeReasonsDoNotChangeSchedulingAsync();
+        await WindowsSignalsOnlyProbeChangedSelectedPathsAsync();
         using var temp = TempDirectory.Create();
         var paths = new AppPaths(temp.Path);
         var json = new JsonFileStore();
@@ -281,6 +282,105 @@ internal static class PathAwareAgentContractTests
             "probe diagnostics leaked request secrets or response body");
         Assert(log.Split("network.probe start ").Length - 1 == 2 && log.Split("network.probe result ").Length - 1 == 2,
             "actual probes cannot be counted from matching start/result records");
+    }
+
+    private static async Task WindowsSignalsOnlyProbeChangedSelectedPathsAsync()
+    {
+        using var temp = TestDirectory.Create();
+        var paths = new AppPaths(temp.Path);
+        var json = new JsonFileStore();
+        var logger = new DiagnosticLogger(paths);
+        var now = DateTimeOffset.UtcNow;
+        var clock = new MutableTimeProvider(now);
+        var settings = new AppSettings();
+        var state = new PathAuthorizationStateStore(paths, json, timeProvider: clock);
+        var wifi = Path("{00000000-0000-0000-0000-000000000001}", NetworkInterfaceType.Wireless80211, "192.0.2.2", "192.0.2.1", "test");
+        var usb = Path("usb", NetworkInterfaceType.Ethernet, "192.0.2.4", "192.0.2.3");
+        NetworkPathSnapshot[] current = [wifi, usb];
+        foreach (var path in current)
+            state.RecordProbe(path, new(path.Identity, NetworkPathProbeStatus.Internet, ProbeResult(NetworkPathProbeStatus.Internet)), now);
+        IReadOnlyDictionary<string, int>? profiles = new Dictionary<string, int>
+        {
+            ["00000000-0000-0000-0000-000000000001"] = 3, ["usb"] = 3, ["vpn"] = 3
+        };
+        var probeCalls = new List<string>();
+        var notifyDuringProbe = false;
+        var wifiCaptive = false;
+        PathAwareAgentCoordinator? coordinator = null;
+        var probe = new NetworkPathProbe((path, _, _) =>
+        {
+            probeCalls.Add(path.AdapterId);
+            if (notifyDuringProbe) coordinator!.NotifyNetworkConnectivityChanged(NetworkChangeReason.WindowsAddress);
+            return Task.FromResult(ProbeResult(wifiCaptive && path.IsWifi ? NetworkPathProbeStatus.Captive : NetworkPathProbeStatus.Internet));
+        }, logger);
+        var runner = new FakePathAuthorizationRunner(state, clock, settings);
+        coordinator = new PathAwareAgentCoordinator(() => new("token", "9991234567"), () => "device", () => current,
+            state, probe, runner, settings, logger, clock, readConnectivityLevels: () => profiles);
+        await coordinator.TickAsync(); // Seed the local profile baseline; no HTTP needed.
+        var baselineLog = File.Exists(paths.DiagnosticLogFile) ? File.ReadAllText(paths.DiagnosticLogFile) : "";
+        for (var i = 0; i < 20; i++)
+        {
+            profiles = new Dictionary<string, int> { ["00000000-0000-0000-0000-000000000001"] = 3, ["usb"] = 3, ["vpn"] = i % 4 };
+            coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.WindowsAddress | NetworkChangeReason.Ncsi | NetworkChangeReason.WindowsAvailability);
+            await coordinator.TickAsync();
+        }
+        Assert(probeCalls.Count == 0 && (File.Exists(paths.DiagnosticLogFile) ? File.ReadAllText(paths.DiagnosticLogFile) : "") == baselineLog,
+            "unchanged selected paths / changing VPN caused HTTP or ignored-event log spam");
+        profiles = new Dictionary<string, int> { ["00000000-0000-0000-0000-000000000001"] = 1, ["usb"] = 3, ["vpn"] = 3 };
+        notifyDuringProbe = true;
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.WindowsAddress);
+        await coordinator.TickAsync();
+        await coordinator.TickAsync(); // Duplicate arrived while the first request was running.
+        notifyDuringProbe = false;
+        Assert(probeCalls.SequenceEqual([wifi.AdapterId]), "loss on physical Wi-Fi was masked by VPN or duplicate event probed stable Wi-Fi/USB");
+        profiles = new Dictionary<string, int> { ["00000000-0000-0000-0000-000000000001"] = 3, ["usb"] = 3 };
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.Ncsi);
+        await coordinator.TickAsync();
+        Assert(probeCalls.Count == 2, "restored physical profile did not trigger one synchronization");
+        wifi = wifi with { SourceIPv4 = IPAddress.Parse("192.0.2.9") }; current = [wifi, usb];
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.WindowsAddress);
+        await coordinator.TickAsync();
+        Assert(probeCalls.Count == 3 && probeCalls[^1] == wifi.AdapterId, "selected binding change was filtered out");
+        current = [usb];
+        await coordinator.TickAsync();
+        Assert(state.Find(wifi.Identity)?.Status == PathAuthorizationStatus.Disconnected, "removed selected path remained active");
+        current = [wifi, usb];
+        await coordinator.TickAsync();
+        Assert(probeCalls.Count == 4, "returning selected Wi-Fi was not probed");
+        profiles = null;
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.WindowsAddress);
+        await coordinator.TickAsync();
+        var afterReadFailure = probeCalls.Count;
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.WindowsAddress);
+        await coordinator.TickAsync();
+        Assert(probeCalls.Count == afterReadFailure && afterReadFailure == 6, "profile read error caused repeated probes or skipped the first uncertainty transition");
+        profiles = new Dictionary<string, int> { ["00000000-0000-0000-0000-000000000001"] = 3, ["usb"] = 3 };
+        await coordinator.TickAsync();
+        Assert(probeCalls.Count == 8, "recovery from unavailable profile data was ignored");
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.Resume);
+        await coordinator.TickAsync();
+        Assert(probeCalls.Count == 10 && runner.Paths.Count == 0, "resume synchronization was filtered or produced authorization on Internet paths");
+        var expiry = now.AddHours(1);
+        state.RecordConfirmedAuthorization(wifi, now.AddHours(-23), expiry, now);
+        profiles = new Dictionary<string, int> { ["00000000-0000-0000-0000-000000000001"] = 1, ["usb"] = 3 };
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.Ncsi);
+        await coordinator.TickAsync();
+        Assert(probeCalls.Count == 11 && state.Find(wifi.Identity)?.ExpectedExpiryUtc == expiry,
+            "profile loss before a known deadline was ignored or erased its timer");
+        profiles = new Dictionary<string, int> { ["00000000-0000-0000-0000-000000000001"] = 3, ["usb"] = 3 };
+        await coordinator.TickAsync();
+        wifiCaptive = true;
+        profiles = new Dictionary<string, int> { ["00000000-0000-0000-0000-000000000001"] = 1, ["usb"] = 3 };
+        coordinator.NotifyNetworkConnectivityChanged(NetworkChangeReason.Ncsi);
+        await coordinator.TickAsync();
+        Assert(probeCalls.Count == 14 && runner.Paths.Count == 1 && runner.Paths[0].AdapterId == wifi.AdapterId,
+            "same-IP captive transition did not pass the two-probe gate into authorization");
+        var restartRunner = new FakePathAuthorizationRunner(state, clock, settings);
+        var restarted = new PathAwareAgentCoordinator(() => new("token", "9991234567"), () => "device", () => current,
+            state, probe, restartRunner, settings, logger, clock, readConnectivityLevels: () => profiles);
+        await restarted.TickAsync();
+        Assert(probeCalls.Count == 16 && restartRunner.Paths.Count == 1,
+            "startup with a non-Internet physical profile silently trusted saved Internet state");
     }
 
     private static NetworkPathSnapshot Path(

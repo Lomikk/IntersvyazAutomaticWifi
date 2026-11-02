@@ -128,6 +128,10 @@ backup/recovery, строгих ошибок чтения и конкурент�
 HTTP-проб/авторизаций/таймеров и запись timeout/budget/binding. `network-path-foundation`
 проверяет TCP cached-IP/Winsock diagnostics с подменённым dialer. Поля журнала и
 анализ частоты описаны в [network-probe-logging.md](network-probe-logging.md).
+Там же описан фильтр test.9: `path-aware-agent` проверяет отсутствие HTTP/логов на
+20 шумных Windows callbacks, поздний дубль во время запроса, selected-only profile
+changes при работающем VPN, DHCP, удаление/возврат пути, unknown/recovery, resume,
+сохранение срока, startup при ограниченном профиле и две пробы перед авторизацией.
 
 Группа `authorization-connections` проверяет default Campus-only, миграцию режимов
 и явного адаптера, незавершённую первоначальную настройку, сохранение ответа Да/Нет,

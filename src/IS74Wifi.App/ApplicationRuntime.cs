@@ -226,7 +226,8 @@ internal sealed class ApplicationRuntime : IDisposable
             notifications: notifications,
             preferredPathResolver: preferredPath,
             telemetry: pathTelemetryRecorder,
-            isVpnActive: NetworkVpnDetector.IsActive);
+            isVpnActive: NetworkVpnDetector.IsActive,
+            readConnectivityLevels: WindowsNetworkConnectivity.ReadAdapterLevels);
         var agent = new AgentService(
             secrets,
             deviceIdentity,
