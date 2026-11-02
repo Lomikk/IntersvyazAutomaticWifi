@@ -98,15 +98,14 @@ The queue is bounded (currently about 10 MiB / 1024 trace files). An individuall
 
 A transport batch groups whole trace files, up to 64 events and roughly 60 KiB. The client intentionally stays below the currently deployed Apps Script guards (64 events / 64 KiB) so JSON-envelope overhead cannot push an otherwise valid batch over the receiver limit. `batch_id` is deterministic from the serialized event payload. If an HTTP response is lost, the exact same local data therefore produces the same batch ID on retry. Each row also has its own `event_id` for durable downstream deduplication.
 
-Delivery is at least once: without a successful acknowledgement the client retains
-the queued data and retries with the same event identities. The receiver suppresses
-batch/event repeats only while their CacheService markers exist (requested TTL:
-six hours); it does not maintain a permanent deduplication index in Sheets. After
-cache expiry/eviction, a retry may append duplicate rows with the same `event_id`,
-including when an earlier request wrote only some sheets. The script lock and
-flush-before-cache do not make those sheets one atomic transaction. Analysis must
-deduplicate by `event_id` **before** counting or aggregating telemetry. This does not
-relax the separate publication/lifecycle rules for the public leaderboard.
+The updated companion server (`53e9118`, included in `05b8a47`) also checks existing
+sheet `event_id` values under its script lock after the fast cache checks. This
+suppresses repeated events after cache expiry/eviction and lets a retry append only
+the missing events after a partial multi-sheet write. A lock/flush is still not an
+atomic transaction across sheets; a failed request keeps the client queue intact.
+Analysis should continue deduplicating historical data by `event_id` before
+aggregation. These are verified local-source capabilities, not confirmation that
+the versioned Apps Script deployment has been updated.
 
 ## Upload scheduling
 
@@ -158,8 +157,7 @@ The public leaderboard shows **one active position per valid `install_id`**, sel
 The private server's offline contract can be run against the owner's exact schema-v4 baseline plus the leaderboard change without accessing production Sheets: `node tests/leaderboard_server_contract.cjs /path/to/updated-private-server.js`.
 
 Also run `node tests/server_ingestion_contract.cjs /path/to/Code.gs` for full
-in-memory POST validation, mixed batches, cached retry suppression, stable event
-IDs after expiry/eviction/partial writes, route separation and
+in-memory POST validation, mixed batches, retry/deduplication, route separation and
 flush-before-cache/lock-release checks. Both can be run from the private repository
 using `./verify.ps1 -ClientRepository /path/to/IntersvyazAutomaticWifi`.
 The synthetic `tests/fixtures/queued-speedtest.json` is shared with the C# serializer
@@ -182,7 +180,7 @@ Sheets, with counter updates serialized by its script lock:
 | `leaderboardcontrol` | 30, shared across status/rename/leave/join |
 
 A window starts with the first counted request. Retries count as requests but
-cached deduplication prevents repeated event writes while its markers exist. A mixed-ID batch counts once
+deduplication still prevents repeated event writes. A mixed-ID batch counts once
 for each distinct ID; all IDs are checked before any counter is charged. This
 supports queues retained across local identity changes. The client's maximum
 flush of 8 full batches fits within the telemetry allowance. Existing rename and

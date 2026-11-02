@@ -116,12 +116,6 @@ function readBoard(limit = 50) {
   assert.equal(locked, false);
   return JSON.parse(response.body);
 }
-function storedEventIds(sheetName) {
-  const table = tables.get(sheetName);
-  const column = table.headers.indexOf('event_id');
-  assert.notEqual(column, -1);
-  return table.rows.map(row => row[column]);
-}
 let checks = 0;
 
 // Full validation + routing + storage, not a mock that always returns ok:true.
@@ -132,38 +126,32 @@ assert.equal(tables.get('Attempts').rows.length, 1);
 assert.equal(tables.get('SpeedTests').rows.length, 1);
 assert.equal(flushes, 1); checks++;
 
-// While cached, a lost response and retry must not duplicate either event.
+// A lost response and identical retry must not duplicate either part of the batch.
 result = post('telemetry', fixture);
 assert.equal(result.duplicate_batch, true);
-assert.equal(result.accepted, 0);
-result = post('telemetry', { batch_id: 'batch-repacked-cached', events: fixture.events });
-assert.equal(result.accepted, 0);
-assert.equal(result.duplicate_events, 2);
 assert.equal(tables.get('Attempts').rows.length, 1);
 assert.equal(tables.get('SpeedTests').rows.length, 1); checks++;
 
-// Append-only telemetry permits duplicates after cache expiry/eviction. Stable
-// event_id values, not a permanent receiver index, support downstream dedupe.
+// Durable dedupe must survive CacheService expiry and complete eviction.
 reset();
 result = post('telemetry', fixture);
 assert.equal(result.accepted, 2);
 clock += 7 * 3600 * 1000; // Beyond the six-hour cache TTL.
 result = post('telemetry', fixture);
 assert.equal(result.ok, true);
-assert.equal(result.accepted, 2);
-assert.equal(result.duplicate_events, 0);
-assert.deepEqual(storedEventIds('Attempts'), Array(2).fill(fixture.events[0].event_id));
-assert.deepEqual(storedEventIds('SpeedTests'), Array(2).fill(fixture.events[1].event_id));
+assert.equal(result.accepted, 0);
+assert.equal(result.duplicate_events, 2);
+assert.equal(tables.get('Attempts').rows.length, 1);
+assert.equal(tables.get('SpeedTests').rows.length, 1);
 cache.clear();
 result = post('telemetry', { batch_id: 'batch-repacked-other', events: fixture.events });
-assert.equal(result.accepted, 2);
-assert.equal(result.duplicate_events, 0);
-assert.deepEqual(storedEventIds('Attempts'), Array(3).fill(fixture.events[0].event_id));
-assert.deepEqual(storedEventIds('SpeedTests'), Array(3).fill(fixture.events[1].event_id)); checks++;
+assert.equal(result.accepted, 0, 'repacked same event IDs were written again');
+assert.equal(result.duplicate_events, 2);
+assert.equal(tables.get('Attempts').rows.length, 1);
+assert.equal(tables.get('SpeedTests').rows.length, 1); checks++;
 
 // Partial multi-sheet commit: a prior attempt wrote Attempts but not SpeedTests.
-// Without cache markers, retry may append both. The existing row keeps the same
-// event_id so analysis can deduplicate it; a script lock is not a transaction.
+// Replay must commit only the missing event without duplicating the first.
 reset();
 const attempt = fixture.events[0];
 const attemptDef = vm.runInContext("getStorageDefinition_('attempt')", sandbox);
@@ -171,16 +159,16 @@ const prior = attemptDef.headers.map(key => key === 'event_id' ? attempt.event_i
 tables.get('Attempts').rows.push(prior);
 result = post('telemetry', fixture);
 assert.equal(result.ok, true);
-assert.equal(result.accepted, 2);
-assert.equal(result.duplicate_events, 0);
-assert.deepEqual(storedEventIds('Attempts'), [attempt.event_id, attempt.event_id]);
-assert.deepEqual(storedEventIds('SpeedTests'), [fixture.events[1].event_id]);
+assert.equal(result.accepted, 1);
+assert.equal(result.duplicate_events, 1);
+assert.equal(tables.get('Attempts').rows.length, 1);
+assert.equal(tables.get('SpeedTests').rows.length, 1);
 cache.clear();
 clock += 7 * 3600 * 1000;
 result = post('telemetry', fixture);
-assert.equal(result.accepted, 2);
-assert.deepEqual(storedEventIds('Attempts'), Array(3).fill(attempt.event_id));
-assert.deepEqual(storedEventIds('SpeedTests'), Array(2).fill(fixture.events[1].event_id)); checks++;
+assert.equal(result.accepted, 0);
+assert.equal(tables.get('Attempts').rows.length, 1);
+assert.equal(tables.get('SpeedTests').rows.length, 1); checks++;
 
 reset();
 const speed = fixture.events[1];
@@ -241,7 +229,7 @@ assert.equal(tables.get('LeaderboardActions').rows.length, 1);
 assert.equal(flushes, 2, 'lifecycle action was not flushed before readback'); checks++;
 
 // Each route is independently limited before any Sheets access. Retries are
-// requests too; cached event identities still prevent duplicate rows.
+// requests too; their existing event identities still prevent duplicate rows.
 for (const [route, limit, payload] of [
   ['telemetry', 12, fixture],
   ['speedtest', 6, speed],
