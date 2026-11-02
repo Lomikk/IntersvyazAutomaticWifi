@@ -98,6 +98,16 @@ The queue is bounded (currently about 10 MiB / 1024 trace files). An individuall
 
 A transport batch groups whole trace files, up to 64 events and roughly 60 KiB. The client intentionally stays below the currently deployed Apps Script guards (64 events / 64 KiB) so JSON-envelope overhead cannot push an otherwise valid batch over the receiver limit. `batch_id` is deterministic from the serialized event payload. If an HTTP response is lost, the exact same local data therefore produces the same batch ID on retry. Each row also has its own `event_id` for durable downstream deduplication.
 
+Delivery is at least once: without a successful acknowledgement the client retains
+the queued data and retries with the same event identities. The receiver suppresses
+batch/event repeats only while their CacheService markers exist (requested TTL:
+six hours); it does not maintain a permanent deduplication index in Sheets. After
+cache expiry/eviction, a retry may append duplicate rows with the same `event_id`,
+including when an earlier request wrote only some sheets. The script lock and
+flush-before-cache do not make those sheets one atomic transaction. Analysis must
+deduplicate by `event_id` **before** counting or aggregating telemetry. This does not
+relax the separate publication/lifecycle rules for the public leaderboard.
+
 ## Upload scheduling
 
 Authorization traces are intentionally not uploaded in real time. Upload scheduling is active only while anonymous statistics consent is `allowed`. After each completed background agent tick, the uploader checks the actual persisted expiry/retry time rather than the agent's normal 15-second sleep interval. A flush is allowed if there is no automatic authorization scheduled (including a clean install), user action is required, the next expiry is safely in the future, or a post-expiry retry is explicitly scheduled far enough away. The safety window is at least one minute and grows with the configured maximum number of batches and HTTP timeout. This keeps telemetry out of the near-expiry authorization window while allowing pending registration traces to leave a newly installed client. The default upload interval is 12 hours.
@@ -148,7 +158,8 @@ The public leaderboard shows **one active position per valid `install_id`**, sel
 The private server's offline contract can be run against the owner's exact schema-v4 baseline plus the leaderboard change without accessing production Sheets: `node tests/leaderboard_server_contract.cjs /path/to/updated-private-server.js`.
 
 Also run `node tests/server_ingestion_contract.cjs /path/to/Code.gs` for full
-in-memory POST validation, mixed batches, retry/deduplication, route separation and
+in-memory POST validation, mixed batches, cached retry suppression, stable event
+IDs after expiry/eviction/partial writes, route separation and
 flush-before-cache/lock-release checks. Both can be run from the private repository
 using `./verify.ps1 -ClientRepository /path/to/IntersvyazAutomaticWifi`.
 The synthetic `tests/fixtures/queued-speedtest.json` is shared with the C# serializer
@@ -171,7 +182,7 @@ Sheets, with counter updates serialized by its script lock:
 | `leaderboardcontrol` | 30, shared across status/rename/leave/join |
 
 A window starts with the first counted request. Retries count as requests but
-deduplication still prevents repeated event writes. A mixed-ID batch counts once
+cached deduplication prevents repeated event writes while its markers exist. A mixed-ID batch counts once
 for each distinct ID; all IDs are checked before any counter is charged. This
 supports queues retained across local identity changes. The client's maximum
 flush of 8 full batches fits within the telemetry allowance. Existing rename and
