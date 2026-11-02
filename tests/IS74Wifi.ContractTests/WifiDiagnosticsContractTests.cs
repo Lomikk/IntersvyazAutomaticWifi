@@ -5,14 +5,15 @@ using static IS74Wifi.App.TerminalCanvas;
 
 internal static class WifiDiagnosticsContractTests
 {
-    public static Task RunAsync()
+    public static async Task RunAsync()
     {
         MenuOrder();
         NativeBuffers();
         RadioAndFrequency();
         ScreenNavigationAndResize();
         MissingAndDeniedData();
-        return Task.CompletedTask;
+        SourceLabelsAndScanResults();
+        await ScanNotificationDeliveryAsync();
     }
 
     internal static WifiDiagnosticSnapshot Fixture(int points = 3)
@@ -133,7 +134,7 @@ internal static class WifiDiagnosticsContractTests
             "current BSSID is not visibly marked");
         var header = rows.First(row => row.Text.Contains("ДИАПАЗОН", StringComparison.Ordinal)).Text;
         var currentRow = rows.First(row => row.Text.StartsWith("* 02:00", StringComparison.Ordinal)).Text;
-        Assert(currentRow.IndexOf("802.11ac", StringComparison.Ordinal) == header.IndexOf("СТАНДАРТ", StringComparison.Ordinal),
+        Assert(currentRow.IndexOf("802.11ac", StringComparison.Ordinal) == header.IndexOf("PHY Windows", StringComparison.Ordinal),
             "word wrapping collapsed the table column spacing");
         Assert(rows.Any(row => row.Text.Contains("Радиосоединение", StringComparison.Ordinal)) &&
                rows.Any(row => row.Text.Contains("не скорость Интернета", StringComparison.Ordinal)), "radio rate is ambiguous");
@@ -172,6 +173,61 @@ internal static class WifiDiagnosticsContractTests
         screen.ReplaceSnapshot(WifiDiagnosticSnapshot.Unavailable(denied));
         Assert(screen.BuildRows(72).Any(row => row.Color == Palette.Warning), "API error was hidden");
         Assert(!WifiDiagnosticText.Safe("name\u001b[31m\r\n").Any(char.IsControl), "SSID can inject terminal control characters");
+    }
+
+    private static void SourceLabelsAndScanResults()
+    {
+        var fixture = Fixture();
+        var adapter = fixture.Adapters[0] with
+        {
+            Connection = fixture.Adapters[0].Connection! with { SignalPercent = 99, RssiDbm = -25 },
+            AccessPoints = [new("Phone", "02:00:00:00:00:99", 8, 100, -25, 2462000)]
+        };
+        Assert(WifiDiagnosticText.HasPhyBandConflict(8, 2462000) &&
+               !WifiDiagnosticText.HasPhyBandConflict(8, 5220000) &&
+               !WifiDiagnosticText.HasPhyBandConflict(7, 2462000) &&
+               !WifiDiagnosticText.HasPhyBandConflict(8, 0), "PHY conflict inferred without known contradictory frequency");
+        foreach (var status in Enum.GetValues<WifiScanStatus>())
+        {
+            var snapshot = fixture with { Adapters = [adapter with { ScanStatus = status }] };
+            var screen = new WifiDiagnosticsScreen(); screen.ReplaceSnapshot(snapshot);
+            var text = string.Join('\n', screen.BuildRows(110).Select(row => row.Text));
+            var report = string.Join('\n', WifiDiagnosticText.BuildReport(snapshot));
+            foreach (var value in new[] { text, report })
+            {
+                Assert(value.Contains("Качество текущего соединения (Windows): 99%", StringComparison.Ordinal) &&
+                       value.Contains("RSSI из кеша BSSID: -25 dBm", StringComparison.Ordinal), "association quality and cached RSSI were merged");
+                Assert(value.Contains("противоречие с диапазоном", StringComparison.Ordinal) &&
+                       !value.Contains("802.11n", StringComparison.Ordinal), "contradictory VHT silently rewritten");
+                Assert(value.Contains(WifiDiagnosticText.Scan(status), StringComparison.Ordinal), "scan result missing or falsely claims freshness");
+            }
+            foreach (var width in new[] { 30, 50, 80, 120 })
+                Assert(screen.BuildRows(width - 7).All(row => row.Text.Length <= width - 7), "new labels overflow narrow screen");
+        }
+    }
+
+    private static async Task ScanNotificationDeliveryAsync()
+    {
+        // A successful completion just beyond the former four-second boundary must be accepted.
+        var late = new TaskCompletionSource<uint>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deliver = Task.Run(async () => { await Task.Delay(4100); late.TrySetResult(7); });
+        await WindowsWifiDiagnostics.WaitForScanNotificationsAsync([late.Task], CancellationToken.None);
+        await deliver;
+        var missing = new TaskCompletionSource<uint>();
+        try
+        {
+            await WindowsWifiDiagnostics.WaitForScanNotificationsAsync([missing.Task], CancellationToken.None);
+            throw new InvalidOperationException("missing notification did not time out");
+        }
+        catch (TimeoutException) { }
+        Assert(!missing.Task.IsCompleted, "timeout manufactured a failed/completed scan");
+        using var stop = new CancellationTokenSource(); stop.Cancel();
+        try
+        {
+            await WindowsWifiDiagnostics.WaitForScanNotificationsAsync([missing.Task], stop.Token);
+            throw new InvalidOperationException("scan wait ignored cancellation");
+        }
+        catch (OperationCanceledException) { }
     }
 
     private static ConsoleKeyInfo Key(ConsoleKey key) => new('\0', key, false, false, false);

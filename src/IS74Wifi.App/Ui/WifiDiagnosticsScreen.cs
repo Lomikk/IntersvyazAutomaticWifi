@@ -57,32 +57,39 @@ internal sealed class WifiDiagnosticsScreen
             if (c is not null)
             {
                 Add("SSID: " + WifiDiagnosticText.Ssid(c.Ssid), Palette.Bright);
-                Add("BSSID: " + c.Bssid + " · " + WifiDiagnosticText.Signal(c.SignalPercent, c.RssiDbm), SignalColor(c.SignalPercent));
-                Add($"{WifiDiagnosticText.Band(c.FrequencyKhz)} · канал {WifiDiagnosticText.Number(c.Channel)} · {WifiDiagnosticText.Standard(c.PhyType)}");
+                Add("BSSID: " + c.Bssid);
+                Add(WifiDiagnosticText.ConnectionQuality(c.SignalPercent), SignalColor(c.SignalPercent));
+                Add(WifiDiagnosticText.CachedRssi(c.RssiDbm));
+                Add($"{WifiDiagnosticText.Band(c.FrequencyKhz)} · канал {WifiDiagnosticText.Number(c.Channel)} · PHY по Windows: {WifiDiagnosticText.Phy(c.PhyType, c.FrequencyKhz)}");
                 Add($"Радиосоединение: RX {WifiDiagnosticText.Rate(c.RxKbps)} · TX {WifiDiagnosticText.Rate(c.TxKbps)}");
-                Add("Это скорость связи с точкой, не скорость Интернета.", Palette.Dim);
+                Add("Радиоскорость по Windows на момент снимка; не скорость Интернета.", Palette.Dim);
             }
             else Add("Текущее подключение: недоступно.", Palette.Dim);
+            Add("Обновление списка: " + WifiDiagnosticText.Scan(adapter.ScanStatus),
+                adapter.ScanStatus is WifiScanStatus.Failed or WifiScanStatus.NotConfirmed ? Palette.Warning : Palette.Dim);
             foreach (var message in adapter.Errors) Add(WifiDiagnosticText.Safe(message), Palette.Warning);
             Add("");
             Add("Доступные сети и точки доступа", Palette.Highlight);
+            Add("PHY по Windows; сигнал: качество драйвера / RSSI из кеша BSS.", Palette.Dim);
             if (adapter.AccessPoints.Length == 0) Add("Список пуст или недоступен.", Palette.Dim);
             foreach (var group in WifiDiagnosticText.Groups(adapter))
             {
                 Add("SSID: " + WifiDiagnosticText.Ssid(group.Key), Palette.Bright);
-                if (width >= 72) Add($"  {"BSSID",-17}  {"ДИАПАЗОН",10}  {"КАНАЛ",5}  {"СТАНДАРТ",-10}  СИГНАЛ", Palette.Dim);
+                if (width >= 72) Add($"  {"BSSID",-17}  {"ДИАПАЗОН",10}  {"КАНАЛ",5}  {"PHY Windows",-11}  СИГНАЛ", Palette.Dim);
                 foreach (var ap in WifiDiagnosticText.Points(group))
                 {
                     var current = ap.Bssid == c?.Bssid;
                     var marker = current ? "*" : " ";
                     var color = current ? Palette.Highlight : SignalColor(ap.SignalPercent);
                     if (width >= 72)
-                        Add($"{marker} {ap.Bssid,-17}  {WifiDiagnosticText.Band(ap.FrequencyKhz),10}  {WifiDiagnosticText.Number(WifiDiagnosticText.Channel(ap.FrequencyKhz)),5}  {WifiDiagnosticText.Standard(ap.PhyType),-10}  {WifiDiagnosticText.Signal(ap.SignalPercent, ap.RssiDbm)}", color);
+                        Add($"{marker} {ap.Bssid,-17}  {WifiDiagnosticText.Band(ap.FrequencyKhz),10}  {WifiDiagnosticText.Number(WifiDiagnosticText.Channel(ap.FrequencyKhz)),5}  {(WifiDiagnosticText.HasPhyBandConflict(ap.PhyType, ap.FrequencyKhz) ? "VHT (!)" : WifiDiagnosticText.Standard(ap.PhyType)),-11}  {WifiDiagnosticText.Signal(ap.SignalPercent, ap.RssiDbm)}", color);
                     else
                     {
                         Add($"{marker} {ap.Bssid}  {WifiDiagnosticText.Signal(ap.SignalPercent, ap.RssiDbm)}", color);
-                        Add($"  {WifiDiagnosticText.Band(ap.FrequencyKhz)} · канал {WifiDiagnosticText.Number(WifiDiagnosticText.Channel(ap.FrequencyKhz))} · {WifiDiagnosticText.Standard(ap.PhyType)}", Palette.Dim);
+                        Add($"  {WifiDiagnosticText.Band(ap.FrequencyKhz)} · канал {WifiDiagnosticText.Number(WifiDiagnosticText.Channel(ap.FrequencyKhz))} · PHY Windows: {WifiDiagnosticText.Standard(ap.PhyType)}", Palette.Dim);
                     }
+                    if (WifiDiagnosticText.HasPhyBandConflict(ap.PhyType, ap.FrequencyKhz))
+                        Add("  (!) VHT по Windows: противоречие с диапазоном 2,4 ГГц.", Palette.Warning);
                 }
             }
             Add("");
@@ -99,7 +106,7 @@ internal sealed class WifiDiagnosticsScreen
         DrawBox(canvas, 1, 0, width, height - 3, "СИГНАЛ WI-FI И ТОЧКИ ДОСТУПА");
         var contentWidth = width - 4;
         Put(canvas, 3, 1, Truncate(loading ? "Получаю данные Wi-Fi..." :
-            $"Кеш Windows · {Snapshot.CapturedAtUtc.ToLocalTime():HH:mm:ss} · * текущий BSSID", contentWidth), Palette.Dim);
+            $"Кеш прочитан: {Snapshot.CapturedAtUtc.ToLocalTime():HH:mm:ss} · * текущий BSSID", contentWidth), Palette.Dim);
         var rows = BuildRows(contentWidth);
         var window = ListWindow.FromOffset(rows.Count, Offset, VisibleRows(layout));
         Offset = window.Offset;

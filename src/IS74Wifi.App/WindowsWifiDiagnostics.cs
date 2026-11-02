@@ -33,7 +33,8 @@ internal static class WindowsWifiDiagnostics
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var errors = new List<string>();
-                    if (scanErrors.TryGetValue(item.Id, out var scanError)) errors.Add(scanError);
+                    scanErrors.TryGetValue(item.Id, out var scanObservation);
+                    if (scanObservation?.Error is { } scanError) errors.Add(scanError);
                     bool? radioOn = null;
                     var radio = Query(handle, item.Id, 4, out var radioError);
                     if (radio is not null) radioOn = ParseRadio(radio);
@@ -66,7 +67,8 @@ internal static class WindowsWifiDiagnostics
                         }
                         connection = connection with { Channel = channel, FrequencyKhz = current?.FrequencyKhz ?? 0, RssiDbm = current?.RssiDbm };
                     }
-                    adapters.Add(new(item.Id, item.Name, item.State, radioOn, connection, points, errors.ToArray()));
+                    adapters.Add(new(item.Id, item.Name, item.State, radioOn, connection, points, errors.ToArray(),
+                        scanObservation?.Status ?? WifiScanStatus.NotRequested));
                 }
                 return new(DateTimeOffset.UtcNow, adapters.ToArray());
             }
@@ -213,11 +215,16 @@ internal static class WindowsWifiDiagnostics
         _ => $"данные недоступны (код {code})."
     });
 
-    // One request per interface on R, bounded by 4 seconds, with no periodic scan loop.
-    private static async Task<Dictionary<Guid, string>> ScanOnceAsync(nint handle,
+    internal static readonly TimeSpan ScanNotificationTimeout = TimeSpan.FromSeconds(5);
+    internal static Task WaitForScanNotificationsAsync(IEnumerable<Task<uint>> notifications, CancellationToken cancellationToken) =>
+        Task.WhenAll(notifications).WaitAsync(ScanNotificationTimeout, cancellationToken);
+
+    private sealed record ScanObservation(WifiScanStatus Status, string? Error = null);
+    // One request per interface on R; one second of notification delivery margin, no retries.
+    private static async Task<Dictionary<Guid, ScanObservation>> ScanOnceAsync(nint handle,
         List<NativeInterface> interfaces, CancellationToken cancellationToken)
     {
-        var errors = new Dictionary<Guid, string>();
+        var observations = new Dictionary<Guid, ScanObservation>();
         var pending = interfaces.ToDictionary(item => item.Id,
             _ => new TaskCompletionSource<uint>(TaskCreationOptions.RunContinuationsAsynchronously));
         ScanNotification callback = (pointer, _) =>
@@ -233,8 +240,8 @@ internal static class WindowsWifiDiagnostics
         var registrationError = WlanRegisterNotification(handle, 8, true, callback, 0, 0, out _);
         if (registrationError != 0)
         {
-            foreach (var item in interfaces) errors[item.Id] = DescribeError("Обновление списка", registrationError);
-            return errors;
+            foreach (var item in interfaces) observations[item.Id] = new(WifiScanStatus.Failed, DescribeError("Обновление списка", registrationError));
+            return observations;
         }
         try
         {
@@ -245,20 +252,20 @@ internal static class WindowsWifiDiagnostics
                 var error = WlanScan(handle, ref id, 0, 0, 0);
                 if (error != 0)
                 {
-                    errors[id] = DescribeError("Сканирование", error);
+                    observations[id] = new(WifiScanStatus.Failed, DescribeError("Сканирование", error));
                     pending[id].TrySetResult(8);
                 }
             }
-            try { await Task.WhenAll(pending.Values.Select(value => value.Task)).WaitAsync(TimeSpan.FromSeconds(4), cancellationToken).ConfigureAwait(false); }
+            try { await WaitForScanNotificationsAsync(pending.Values.Select(value => value.Task), cancellationToken).ConfigureAwait(false); }
             catch (TimeoutException) { }
             foreach (var item in interfaces)
             {
                 var task = pending[item.Id].Task;
-                if (errors.ContainsKey(item.Id)) continue;
-                if (!task.IsCompleted) errors[item.Id] = "Windows не подтвердила завершение сканирования за 4 с; показан доступный кеш.";
-                else if (task.Result != 7) errors[item.Id] = "Windows сообщила об ошибке сканирования; показан доступный кеш.";
+                if (observations.ContainsKey(item.Id)) continue;
+                observations[item.Id] = new(!task.IsCompleted ? WifiScanStatus.NotConfirmed :
+                    task.Result == 7 ? WifiScanStatus.Confirmed : WifiScanStatus.Failed);
             }
-            return errors;
+            return observations;
         }
         finally
         {

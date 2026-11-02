@@ -10,8 +10,10 @@ internal sealed record WifiConnection(string Ssid, string Bssid, uint PhyType,
     int? SignalPercent, uint RxKbps, uint TxKbps, int? Channel = null,
     uint FrequencyKhz = 0, int? RssiDbm = null);
 
+internal enum WifiScanStatus { NotRequested, Confirmed, NotConfirmed, Failed }
 internal sealed record WifiAdapterSnapshot(Guid Id, string Name, uint State, bool? RadioOn,
-    WifiConnection? Connection, WifiAccessPoint[] AccessPoints, string[] Errors);
+    WifiConnection? Connection, WifiAccessPoint[] AccessPoints, string[] Errors,
+    WifiScanStatus ScanStatus = WifiScanStatus.NotRequested);
 
 internal sealed record WifiDiagnosticSnapshot(DateTimeOffset CapturedAtUtc,
     WifiAdapterSnapshot[] Adapters, string? Error = null)
@@ -42,6 +44,20 @@ internal static class WifiDiagnosticText
         >= 4900000 and < 5925000 => "5 ГГц",
         >= 5925000 and <= 7125000 => "6 ГГц", _ => Unavailable
     };
+    internal static bool HasPhyBandConflict(uint phy, uint khz) => phy == 8 && Band(khz) == "2,4 ГГц";
+    internal static string Phy(uint phy, uint khz) => HasPhyBandConflict(phy, khz)
+        ? "VHT (802.11ac); противоречие с диапазоном" : Standard(phy);
+    internal static string Scan(WifiScanStatus status) => status switch
+    {
+        WifiScanStatus.Confirmed => "завершение подтверждено Windows; свежесть каждой точки не гарантируется",
+        WifiScanStatus.NotConfirmed => "завершение не подтверждено; показан доступный кеш Windows",
+        WifiScanStatus.Failed => "Windows сообщила об ошибке; показан доступный кеш",
+        _ => "не запрашивалось; показан кеш Windows"
+    };
+    internal static string ConnectionQuality(int? percent) =>
+        "Качество текущего соединения (Windows): " + (percent is { } value ? value + "%" : Unavailable);
+    internal static string CachedRssi(int? rssi) =>
+        "RSSI из кеша BSSID: " + (rssi is { } value ? value + " dBm" : Unavailable);
     internal static int? Channel(uint khz)
     {
         var mhz = khz / 1000;
@@ -70,7 +86,7 @@ internal static class WifiDiagnosticText
         var lines = new List<string>
         {
             "=== Wi-Fi: текущее подключение ===",
-            $"Снимок: {snapshot.CapturedAtUtc.ToLocalTime():dd.MM.yyyy HH:mm:ss}",
+            $"Кеш прочитан: {snapshot.CapturedAtUtc.ToLocalTime():dd.MM.yyyy HH:mm:ss}; это не время наблюдения каждой точки",
             "Скорости приёма/передачи ниже — скорости радиосоединения, а не скорость Интернета."
         };
         if (snapshot.Error is { } error) lines.Add(Safe(error));
@@ -80,14 +96,17 @@ internal static class WifiDiagnosticText
             lines.Add($"Адаптер: {Safe(adapter.Name)}; GUID: {adapter.Id}; состояние: {State(adapter)}");
             var c = adapter.Connection;
             lines.Add($"  SSID: {(c is null ? Unavailable : Ssid(c.Ssid))}; BSSID: {c?.Bssid ?? Unavailable}");
-            lines.Add($"  Сигнал: {Signal(c?.SignalPercent, c?.RssiDbm)}");
-            lines.Add($"  Диапазон: {Band(c?.FrequencyKhz ?? 0)}; канал: {Number(c?.Channel)}; стандарт: {Standard(c?.PhyType ?? 0)}");
-            lines.Add($"  Приём: {Rate(c?.RxKbps ?? 0)}; передача: {Rate(c?.TxKbps ?? 0)}");
+            lines.Add("  " + ConnectionQuality(c?.SignalPercent));
+            lines.Add("  " + CachedRssi(c?.RssiDbm));
+            lines.Add($"  Диапазон из кеша: {Band(c?.FrequencyKhz ?? 0)}; канал: {Number(c?.Channel)}; PHY по Windows: {Phy(c?.PhyType ?? 0, c?.FrequencyKhz ?? 0)}");
+            lines.Add($"  Радиоскорость по Windows на момент снимка: приём {Rate(c?.RxKbps ?? 0)}; передача {Rate(c?.TxKbps ?? 0)}");
+            lines.Add("  Обновление списка: " + Scan(adapter.ScanStatus));
             foreach (var message in adapter.Errors) lines.Add("  " + Safe(message));
         }
         lines.Add("");
         lines.Add("=== Доступные беспроводные сети ===");
         lines.Add("Список из кеша Windows; при создании отчёта сканирование не запрашивается.");
+        lines.Add("PHY — тип по Windows; сигнал — качество драйвера / RSSI из одной BSS-записи.");
         foreach (var adapter in snapshot.Adapters)
         {
             lines.Add($"Адаптер: {Safe(adapter.Name)}");
@@ -96,7 +115,7 @@ internal static class WifiDiagnosticText
             {
                 lines.Add("  SSID: " + Ssid(group.Key));
                 foreach (var ap in Points(group))
-                    lines.Add($"    {(ap.Bssid == adapter.Connection?.Bssid ? "*" : " ")} {ap.Bssid}; {Band(ap.FrequencyKhz)}; канал {Number(Channel(ap.FrequencyKhz))}; {Standard(ap.PhyType)}; {Signal(ap.SignalPercent, ap.RssiDbm)}");
+                    lines.Add($"    {(ap.Bssid == adapter.Connection?.Bssid ? "*" : " ")} {ap.Bssid}; {Band(ap.FrequencyKhz)}; канал {Number(Channel(ap.FrequencyKhz))}; PHY по Windows: {Phy(ap.PhyType, ap.FrequencyKhz)}; {Signal(ap.SignalPercent, ap.RssiDbm)}");
             }
         }
         lines.Add("* — текущий BSSID. Данные окружающих сетей остаются в локальном отчёте и не отправляются в статистику.");
