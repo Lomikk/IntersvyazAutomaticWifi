@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#08090b">
+  <meta name="description" content="IS74Wifi — автоматическая авторизация Wi-Fi Интерсвязь. Скачать программу для Windows.">
+  <title>IS74Wifi — скачать для Windows</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08090b;
+      --border: rgb(18, 54, 75);
+      --brand-dim: rgb(26, 91, 126);
+      --brand: rgb(42, 151, 202);
+      --brand-bright: rgb(88, 190, 235);
+      --highlight: rgb(132, 220, 255);
+      --bright: rgb(238, 250, 255);
+      --good: rgb(104, 207, 174);
+      --warning: rgb(255, 205, 96);
+      --dim: rgb(92, 122, 139);
+      --text: rgb(166, 194, 208);
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace; }
+    .site { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 18px 10px 24px; }
+    .viewport { width: 100%; overflow-x: auto; scrollbar-color: var(--border) transparent; }
+    .screen { width: max-content; max-width: 100%; margin-inline: auto; background: var(--bg); font-size: 14px; line-height: 1.25; letter-spacing: 0; white-space: pre; font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; user-select: text; outline: none; }
+    .screen:focus-visible { outline: 1px solid var(--border); outline-offset: 5px; }
+    .ambient { position: fixed; z-index: 0; inset: 0; overflow: hidden; pointer-events: none; user-select: none; contain: layout style; }
+    .ambient-char { position: absolute; display: block; font: 15px/1 Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace; white-space: pre; color: var(--brand); transition: transform 320ms ease-out, opacity 280ms ease-out, color 280ms ease-out; }
+    .ambient-char:nth-child(5n) { color: var(--brand-bright); }
+    .ambient-char.is-near { color: var(--highlight); }
+    .ambient-char.twinkles .glyph { animation: twinkle var(--twinkle-duration) linear var(--twinkle-delay) infinite; }
+    .ambient-char.is-near .glyph { animation: none; }
+    @keyframes twinkle {
+      0%, 71%, 83%, 100% { opacity: 1; }
+      74% { opacity: .23; }
+      78% { opacity: 1; }
+      80% { opacity: .48; }
+    }
+    .row { height: 1.25em; white-space: pre; }
+    /* Полублоки QR должны оставаться почти квадратными, независимо от обычного интервала меню. */
+    .row.qr-row { height: 1.10em; line-height: 1.10em; }
+    .row[data-option] { cursor: pointer; }
+    .row[data-option]:hover { background: rgba(42, 151, 202, .09); }
+    .row.qr-link { display: block; color: inherit; text-decoration: none; cursor: pointer; }
+    .row.qr-link:hover, .row[data-qr-back]:hover { background: rgba(42, 151, 202, .12); }
+    .row[data-qr-back] { cursor: pointer; }
+    .p-border { color: var(--border); }
+    .p-brand-dim { color: var(--brand-dim); }
+    .p-brand { color: var(--brand); }
+    .p-brand-bright { color: var(--brand-bright); }
+    .p-highlight { color: var(--highlight); }
+    .p-bright { color: var(--bright); }
+    .p-qr { display: inline-block; height: 1.10em; vertical-align: top; color: #000; background: #fff; }
+    .p-good { color: var(--good); }
+    .p-warning { color: var(--warning); }
+    .p-dim { color: var(--dim); }
+    .p-text { color: var(--text); }
+    .measure { position: absolute; visibility: hidden; pointer-events: none; white-space: pre; font: 14px/1.25 Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace; letter-spacing: 0; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+    .no-script { max-width: 680px; padding: 22px; border: 1px solid var(--border); line-height: 1.7; }
+    .no-script a { color: var(--highlight); }
+    @media (max-width: 720px) { .site { justify-content: flex-start; padding-top: 20px; } .screen, .measure { font-size: 12px; } }
+    @media (max-width: 430px) { .screen, .measure { font-size: 11px; } }
+    @media (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce) { .ambient { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="ambient" id="ambient" aria-hidden="true"></div>
+  <main class="site">
+    <div class="viewport" id="viewport">
+      <div class="screen" id="screen" tabindex="0" role="application" aria-label="Интерактивное меню IS74Wifi. Выбирайте пункты стрелками, цифрами или нажатием мыши."></div>
+    </div>
+    <span class="sr-only" id="announcement" aria-live="polite"></span>
+    <span class="measure" id="measure" aria-hidden="true">MMMMMMMMMM</span>
+    <noscript><div class="no-script">Для текстового меню требуется JavaScript. <a href="https://github.com/Lomikk/IntersvyazAutomaticWifi/releases/download/v0.1.0-alpha.48/IS74Wifi-v0.1.0-alpha.48-win-x64.exe">Скачать IS74Wifi для Windows x64</a>.</div></noscript>
+  </main>
+  <script>
+    "use strict";
+
+    // Оригинальные строки из src/IS74Wifi.App/InteractiveTerminalUi.cs.
+    const BANNER = [
+      "        ..          ",
+      "     .::            ",
+      "   .-:              `7MMF' .M\"\"\"bgd            `7MMF'     A     `7MF'",
+      " .--                  MM  ,MI    \"Y              `MA     ,MA     ,V",
+      "-**.                  MM  `MMb.    M******A'  ,AM VM:   ,VVM:   ,V",
+      "*%#+-::::::::::-===.  MM    `YMMNq.Y     A'  AVMM  MM.  M' MM.  M'",
+      ".+*############%%%%#  MM  .     `MM     A' ,W' MM  `MM A'  `MM A'",
+      "                :*%=  MM  Mb     dM    A',W'   MM   :MM;    :MM;",
+      "                :+: .JMML.P\"Ybmmd\"    A' AmmmmmMMmm  VF      VF",
+      "              .-:                    A'        MM",
+      "            .:.                     A'         MM",
+      "          .."
+    ];
+    const SUBTITLE = "InterSvyaz Wi-Fi Auth";
+    const BANNER_WIDTH = Math.max(...BANNER.map(line => line.length));
+    const LATEST_RELEASE = "https://github.com/Lomikk/IntersvyazAutomaticWifi/releases";
+    const SOURCE_URL = "https://github.com/Lomikk/IntersvyazAutomaticWifi";
+    const MOBILE_APP_URL = "https://redirect.appmetrica.yandex.com/serve/530785716687349652?landing=mp";
+    const SUPPORT_URL = "https://yoomoney.ru/fundraise/1KUQT4FFEVD.261016";
+    const RELEASE_API = "https://api.github.com/repos/Lomikk/IntersvyazAutomaticWifi/releases?per_page=10";
+    const fallback = {
+      version: "v0.1.0-alpha.48",
+      bytes: 13033984,
+      url: "https://github.com/Lomikk/IntersvyazAutomaticWifi/releases/download/v0.1.0-alpha.48/IS74Wifi-v0.1.0-alpha.48-win-x64.exe"
+    };
+    let download = { ...fallback };
+
+    const MENU = [
+      { key: "1", label: "Скачать для Windows", id: "download", action: "download" },
+      { key: "2", label: "Как установить", id: "install" },
+      { key: "3", label: "Первый запуск", id: "first-run", action: "qr-app" },
+      { key: "4", label: "Что умеет программа", id: "features" },
+      { key: "5", label: "Поддержать проект", id: "support", action: "qr-support" },
+      { key: "6", label: "Все версии", id: "releases", action: "releases" },
+      { key: "7", label: "Исходный код", id: "source", action: "source" },
+      { key: "0", label: "О проекте", id: "about" }
+    ];
+
+    // Готовые полублочные QR-коды: на сайте не требуется генератор и сетевой запрос.
+    const QR_CODES = {
+      app: [
+        "                                         ",
+        "                                         ",
+        "    █▀▀▀▀▀█ ▄█ ▄▄▀▀▄  ▀▀▀ ▄▀▀ █▀▀▀▀▀█    ",
+        "    █ ███ █ ▄█▀█▄▄▀██▄▄▀█▀▄ █ █ ███ █    ",
+        "    █ ▀▀▀ █ ▄ █ █▄█▄▄█▀▀▀▄▀▀  █ ▀▀▀ █    ",
+        "    ▀▀▀▀▀▀▀ ▀ ▀ █ ▀ ▀ ▀▄▀▄█▄█ ▀▀▀▀▀▀▀    ",
+        "    ██▀▀█▄▀█▀█▀▄ ▀▄▀▀▀▀▄█▄▀▄▀█▄▀ ▀▄█▄    ",
+        "    ▀▄██▀▀▀█▀█▄   █▀█   ██▄ ▄▀ ▄▀▀▄▀     ",
+        "    ▄▀▄▀█▄▀▄ ▀▄█▀▀▄▀▀▀▀▄▄ ▀█▀ ▄▀▀▀ ▄▄    ",
+        "     █▀ █▄▀  ▄▀  ▀ █ ▀▀▄▀▄▀▄█▀█   ▄▀     ",
+        "     █▀▄▀█▀▀▄▀██▄█▄ ▀▀▀▄█▄▀▄ ▀▄▀▀▄ █▄    ",
+        "    ▀▄▄▄█ ▀ ▄▀▀▄ ▀█▀▄ █▄██▀ ▀▄ █▀▀▄▀     ",
+        "    ▄▀▀ ██▀▄▄▄ ▄▀█▀▀▀▀▀█ ▄▀▄ █▄ ▀▄ █▄    ",
+        "    █ ▀  ▄▀  ██▄▀ ▀▀▄▀  ███    ▄▄█▄▀     ",
+        "    ▀  ▀▀▀▀▀▄ ▀█▀▀▀▀▀█▀█▄ █ █▀▀▀█▀▄ █    ",
+        "    █▀▀▀▀▀█ ▀█  ▄ ▄█▀ █▄██ ██ ▀ █▄▄▀▄    ",
+        "    █ ███ █ █ ██▀█▀▀▀▀▀█▄  ▄██▀██▄▄ ▀    ",
+        "    █ ▀▀▀ █ ██▀ ▀▀▀▀█  ▄▀▄▀▀ ▀▀▄ ██▀     ",
+        "    ▀▀▀▀▀▀▀ ▀▀▀ ▀▀▀▀▀▀▀   ▀▀▀      ▀     ",
+        "                                         ",
+        "                                         "
+      ],
+      support: [
+        "                                     ",
+        "                                     ",
+        "    █▀▀▀▀▀█ █▄▄▀███▀ ▄█ ▄ █▀▀▀▀▀█    ",
+        "    █ ███ █   █▀▀▀█▀▄██▀▄ █ ███ █    ",
+        "    █ ▀▀▀ █ █▀▀█ ██ ▀▀█   █ ▀▀▀ █    ",
+        "    ▀▀▀▀▀▀▀ █ █▄█ ▀ █ ▀▄█ ▀▀▀▀▀▀▀    ",
+        "    █▀█▄▄▀▀ ▀██ ▀▀ ▀▄ ▄██▀██▀  ██    ",
+        "     █ ▄▄▀▀█▄▄ ██▀▄▀  ▀█▄▄▄▄██▀ ▀    ",
+        "     ▀▀█▀█▀▀█▀ █ ▀▄▀▄  ▄▀ ██   ▄█    ",
+        "    █ █▄▄ ▀▄ ██▀   ▀▄▀█▀▄ ▄▄▄   ▀    ",
+        "    ▀▄▄█ ▀▀▀█▄▄█ ▀ ▀▄▄ █▄ ██  ▄▄█    ",
+        "    ▀▀ ▀▄▀▀█ ▄▀▀▀▀ █ ▀██▀▄▀▄▄▀  ▀    ",
+        "    ▀▀▀▀ ▀▀▀▄▀▀█ ▄▀ █ ▄██▀▀▀██▄▀▄    ",
+        "    █▀▀▀▀▀█ ▄█▀▀   ▀  █▄█ ▀ █   ▀    ",
+        "    █ ███ █  ███  ██   ▀██▀▀██▄██    ",
+        "    █ ▀▀▀ █ ██ ██ ▀█▄▀▄ ▄ ▄▄▀▄ ▀▀    ",
+        "    ▀▀▀▀▀▀▀ ▀▀ ▀  ▀ ▀ ▀▀▀ ▀▀    ▀    ",
+        "                                     ",
+        "                                     "
+      ]
+    };
+
+    const screen = document.getElementById("screen");
+    const viewport = document.getElementById("viewport");
+    const announcement = document.getElementById("announcement");
+    const measure = document.getElementById("measure");
+    const ambient = document.getElementById("ambient");
+    let selected = 0;
+    let qrPage = null;
+    let currentWidth = 116;
+    let lastMarkup = "";
+    let revealStarted = performance.now();
+    let nextSweep = performance.now() + random(12000, 19000);
+    let ambientStarted = null;
+    let lastAriaIndex = -1;
+
+    // Символьное поле вокруг терминала. Никаких изображений или canvas.
+    let field = [];
+
+    function ambientAllowed() {
+      return matchMedia("(hover: hover) and (pointer: fine)").matches &&
+        !matchMedia("(prefers-reduced-motion: reduce)").matches;
+    }
+    function overTerminal(x, y, padding = 20) {
+      const rect = screen.getBoundingClientRect();
+      return x >= rect.left - padding && x <= rect.right + padding &&
+        y >= rect.top - padding && y <= rect.bottom + padding;
+    }
+    function rebuildAmbient() {
+      ambient.replaceChildren();
+      field = [];
+      if (!ambientAllowed()) return;
+
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      const step = Math.max(20, Math.sqrt(width * height / 2600));
+      const densityScale = Math.min(1, 1050000 / (width * height));
+      const terminalRect = screen.getBoundingClientRect();
+      const glyphs = ["·", "·", "·", ":", "+", "▪", "░"];
+      const fragment = document.createDocumentFragment();
+      let seed = 74074;
+      function rand() { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; }
+
+      for (let y = step / 2; y < height - step / 2; y += step) {
+        for (let x = step / 2; x < width - step / 2; x += step) {
+          const jx = x + (rand() - .5) * step * .65;
+          const jy = y + (rand() - .5) * step * .65;
+          const edge = Math.max(Math.abs(jx / width - .5), Math.abs(jy / height - .5)) * 2;
+          const chance = (.04 + .29 * Math.pow(edge, 3)) * densityScale;
+          const inTerminal = jx >= terminalRect.left - 27 && jx <= terminalRect.right + 27 &&
+            jy >= terminalRect.top - 27 && jy <= terminalRect.bottom + 27;
+          if (rand() > chance || inTerminal) continue;
+
+          const el = document.createElement("span");
+          const baseOpacity = .34 + rand() * .33;
+          const twinkles = rand() < .23;
+          el.className = twinkles ? "ambient-char twinkles" : "ambient-char";
+          const glyph = document.createElement("span");
+          glyph.className = "glyph";
+          glyph.textContent = glyphs[Math.floor(rand() * glyphs.length)];
+          el.appendChild(glyph);
+          if (twinkles) {
+            el.style.setProperty("--twinkle-duration", (5 + rand() * 8).toFixed(1) + "s");
+            el.style.setProperty("--twinkle-delay", (-rand() * 13).toFixed(1) + "s");
+          }
+          el.style.left = jx + "px";
+          el.style.top = jy + "px";
+          el.style.opacity = baseOpacity;
+          fragment.appendChild(el);
+          field.push({ x: jx, y: jy, baseOpacity, el });
+        }
+      }
+      ambient.appendChild(fragment);
+    }
+    function disturbField(x, y) {
+      for (const point of field) {
+        const dx = point.x - x;
+        const dy = point.y - y;
+        const dist = Math.hypot(dx, dy);
+        const force = Math.pow(Math.max(0, 1 - dist / 210), 1.4);
+        const shift = force * 13 / (dist || 1);
+        point.el.style.transform = `translate(${(dx * shift).toFixed(1)}px, ${(dy * shift).toFixed(1)}px)`;
+        point.el.style.opacity = Math.min(1, point.baseOpacity + force * .75).toFixed(2);
+        point.el.classList.toggle("is-near", force > .1);
+      }
+    }
+    window.addEventListener("pointermove", event => {
+      if (!field.length || event.pointerType === "touch") return;
+      const x = event.clientX;
+      const y = event.clientY;
+      if (overTerminal(x, y, 18)) {
+        disturbField(-10000, -10000);
+        return;
+      }
+      disturbField(x, y);
+    }, { passive: true });
+    window.addEventListener("pointerout", event => {
+      if (event.relatedTarget) return;
+      disturbField(-10000, -10000);
+    });
+
+    function random(min, max) { return min + Math.random() * (max - min); }
+    function escapeHtml(value) {
+      return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    }
+    function truncate(value, max) {
+      if (max <= 0) return "";
+      return value.length <= max ? value : max === 1 ? value.slice(0, 1) : value.slice(0, max - 1) + "…";
+    }
+    function wrap(text, max) {
+      const words = String(text).trim().split(/\s+/);
+      const result = [];
+      let line = "";
+      for (let word of words) {
+        while (word.length > max) {
+          if (line) { result.push(line); line = ""; }
+          result.push(word.slice(0, max));
+          word = word.slice(max);
+        }
+        if (!word) continue;
+        if (line && line.length + 1 + word.length > max) { result.push(line); line = ""; }
+        line = line ? line + " " + word : word;
+      }
+      if (line) result.push(line);
+      return result;
+    }
+    function contentFor(item) {
+      switch (item.id) {
+        case "download": return {
+          title: "СКАЧАТЬ IS74Wifi",
+          lines: [
+            download.version,
+            "Для Windows (64-бит) / " + (download.bytes / 1048576).toFixed(1) + " МБ",
+            "",
+            "Последняя доступная версия программы.",
+            "",
+            "Пока это предварительная версия: возможны ошибки."
+          ]
+        };
+        case "install": return { title: "УСТАНОВКА", lines: [
+          "1. Скачайте EXE — удобно сразу на рабочий стол.",
+          "2. Запустите его и выберите «Установить».",
+          "",
+          "Программа сама разместит рабочие файлы в нужной папке.",
+          "В дальнейшем запускайте её тем же EXE — как ярлыком."
+        ]};
+        case "first-run": return { title: "ПЕРВЫЙ ЗАПУСК", lines: [
+          "Нужен аккаунт в приложении «Интерсвязь. Умный город».",
+          "Если его нет, сначала зарегистрируйтесь в приложении.",
+          "",
+          "Enter — показать QR-код для установки приложения.",
+          "Затем зарегистрируйте устройство в IS74Wifi."
+        ]};
+        case "features": return { title: "ВОЗМОЖНОСТИ", lines: [
+          "Автоматическая и ручная авторизация Wi-Fi «Интерсвязь».",
+          "",
+          "Работа в фоне, уведомления и состояние сетевых путей.",
+          "",
+          "Измерение скорости, рейтинг, диагностика и обновления."
+        ]};
+        case "support": return { title: "ПОДДЕРЖАТЬ ПРОЕКТ", lines: [
+          "IS74Wifi — бесплатный независимый проект.",
+          "",
+          "Если программа полезна, можно поддержать её развитие через ЮMoney.",
+          "",
+          "Enter — показать QR-код для перевода."
+        ]};
+        case "releases": return { title: "ВСЕ ВЕРСИИ", lines: [
+          "История выпусков и список изменений на GitHub.",
+          "",
+          "Предварительные версии могут содержать ошибки."
+        ]};
+        case "source": return { title: "ИСХОДНЫЙ КОД", lines: [
+          "IS74Wifi распространяется с открытым исходным кодом по лицензии MIT.",
+          "",
+          "Исходный код доступен на GitHub. Для установки программы достаточно пункта «Скачать для Windows»."
+        ]};
+        default: return { title: "О ПРОЕКТЕ", lines: [
+          "IS74Wifi — бесплатная неофициальная утилита для Wi-Fi «Интерсвязь».",
+          "",
+          "Не разработана и не поддерживается компанией «Интерсвязь».",
+          "",
+          "Пользуйтесь своей учётной записью и соблюдайте правила сети."
+        ]};
+      }
+    }
+
+    function canvas(width, height) {
+      return Array.from({ length: height }, () => Array.from({ length: width }, () => ({ c: " ", p: "text" })));
+    }
+    function put(frame, x, y, text, palette = "text") {
+      if (y < 0 || y >= frame.length) return;
+      for (let i = 0; i < text.length; i++) {
+        const col = x + i;
+        if (col >= 0 && col < frame[0].length) frame[y][col] = { c: text[i], p: palette };
+      }
+    }
+    function center(frame, row, text, palette) {
+      put(frame, Math.max(0, Math.floor((frame[0].length - text.length) / 2)), row, text, palette);
+    }
+    function box(frame, x, y, w, h, title) {
+      if (w < 4 || h < 3) return;
+      put(frame, x, y, "┌" + "─".repeat(w - 2) + "┐", "border");
+      for (let i = 1; i < h - 1; i++) {
+        put(frame, x, y + i, "│", "border");
+        put(frame, x + w - 1, y + i, "│", "border");
+      }
+      put(frame, x, y + h - 1, "└" + "─".repeat(w - 2) + "┘", "border");
+      const caption = " " + title + " ";
+      put(frame, x + Math.max(2, Math.floor((w - caption.length) / 2)), y, truncate(caption, w - 4), "highlight");
+    }
+    function banner(frame, top, mode, head) {
+      const left = Math.max(0, Math.floor((frame[0].length - BANNER_WIDTH) / 2));
+      for (let row = 0; row < BANNER.length; row++) {
+        for (let col = 0; col < BANNER[row].length; col++) {
+          const ch = BANNER[row][col];
+          if (ch === " ") continue;
+          const distance = col - head;
+          let palette = "brand";
+          if (mode === "initial") {
+            if (distance > 4) palette = "border";
+            else if (distance > 1) palette = "brand-dim";
+            else if (distance >= -1) palette = "bright";
+            else if (Math.abs(distance) <= 4) palette = "highlight";
+          } else if (mode === "ambient") {
+            const d = Math.abs(distance);
+            if (d < .9) palette = "bright";
+            else if (d < 2.4) palette = "highlight";
+            else if (d < 4.8) palette = "brand-bright";
+          }
+          put(frame, left + col, top + row, ch, palette);
+        }
+      }
+    }
+    function drawItems(frame, x, startY, paneWidth, rows) {
+      for (let i = 0; i < MENU.length && i < rows; i++) {
+        const item = MENU[i];
+        const y = startY + i;
+        const active = i === selected;
+        put(frame, x, y, active ? "› " : "  ", active ? "highlight" : "text");
+        put(frame, x + 2, y, "[" + item.key + "]", "dim");
+        const labelWidth = Math.max(1, paneWidth - 10);
+        if (item.id === "download") {
+          put(frame, x + 6, y, truncate(item.label, labelWidth), active ? "bright" : "brand-bright");
+        } else if (item.action === "qr-app" || item.action === "qr-support") {
+          const hint = "  [QR ›]";
+          const fits = item.label.length + hint.length <= labelWidth;
+          put(frame, x + 6, y, truncate(item.label, fits ? labelWidth : Math.max(1, labelWidth - 2)), active ? "bright" : "text");
+          if (fits) put(frame, x + 6 + item.label.length, y, hint, "highlight");
+          else put(frame, x + 6 + labelWidth - 1, y, "›", "highlight");
+        } else {
+          put(frame, x + 6, y, truncate(item.label, labelWidth), active ? "bright" : "text");
+        }
+      }
+    }
+    function drawDescription(frame, x, y, width, maxLines) {
+      const info = contentFor(MENU[selected]);
+      const maxWidth = Math.max(12, width - 6);
+      let lineY = y;
+      if (MENU[selected].id === "support") {
+        put(frame, x, lineY, "★", "warning");
+        put(frame, x + 2, lineY++, truncate(info.title, maxWidth - 2), "highlight");
+      } else {
+        put(frame, x, lineY++, truncate(info.title, maxWidth), "brand-bright");
+      }
+      lineY++;
+      for (const paragraph of info.lines) {
+        if (lineY >= y + maxLines) break;
+        if (!paragraph) { lineY++; continue; }
+        for (const line of wrap(paragraph, maxWidth)) {
+          if (lineY >= y + maxLines) break;
+          put(frame, x, lineY++, line, "text");
+        }
+      }
+    }
+    function drawRich(frame, now, elapsed) {
+      if (elapsed < 470) {
+        banner(frame, 7, "initial", -7 + elapsed / 470 * (BANNER_WIDTH + 14));
+        return [];
+      }
+      if (elapsed < 590) {
+        const progress = (elapsed - 470) / 120;
+        const top = Math.max(0, Math.ceil((7 - progress * 7) / 2) * 2);
+        banner(frame, top, "final", 0);
+        center(frame, Math.min(frame.length - 1, top + 13), SUBTITLE, "dim");
+        return [];
+      }
+      const head = ambientStarted === null ? null : -7 + (now - ambientStarted) / 620 * (BANNER_WIDTH + 14);
+      banner(frame, 0, head === null ? "final" : "ambient", head ?? 0);
+      center(frame, 13, SUBTITLE, "dim");
+      const w = frame[0].length;
+      const gap = w >= 100 ? 4 : 3;
+      const paneWidth = Math.max(30, Math.floor((w - 2 - gap) / 2));
+      const leftX = 1;
+      const rightX = 1 + paneWidth + gap;
+      box(frame, leftX, 14, paneWidth, 14, "МЕНЮ");
+      box(frame, rightX, 14, paneWidth, 14, "ОПИСАНИЕ");
+      drawItems(frame, leftX + 3, 16, paneWidth, 8);
+      drawDescription(frame, rightX + 3, 16, paneWidth, 10);
+      center(frame, 29, "↑ ↓ выбрать     Enter открыть", "dim");
+      return MENU.map((_, i) => 16 + i);
+    }
+    function drawCompact(frame) {
+      center(frame, 1, "IS74W · InterSvyaz Wi-Fi Auth", "brand-bright");
+      const w = frame[0].length;
+      box(frame, 1, 4, w - 2, 13, "МЕНЮ");
+      drawItems(frame, 4, 6, w - 2, 8);
+      box(frame, 1, 19, w - 2, 14, "ОПИСАНИЕ");
+      drawDescription(frame, 4, 21, w - 2, 10);
+      center(frame, 34, "↑ ↓ выбрать   Enter открыть", "dim");
+      return MENU.map((_, i) => 6 + i);
+    }
+    function drawQr(frame) {
+      const width = frame[0].length;
+      const height = frame.length;
+      const isApp = qrPage === "app";
+      const qr = QR_CODES[qrPage];
+      const qrWidth = Math.max(...qr.map(line => line.length));
+      box(frame, 1, 0, width - 2, height - 2, isApp ? "ПРИЛОЖЕНИЕ ИНТЕРСВЯЗЬ" : "ПОДДЕРЖАТЬ ПРОЕКТ");
+      center(frame, 1, truncate(isApp ?
+        "Для работы IS74Wifi нужен аккаунт в приложении «Интерсвязь»." :
+        "IS74Wifi — бесплатный независимый проект.", width - 4), "text");
+      center(frame, 2, truncate(isApp ?
+        "Установите приложение и зарегистрируйтесь." :
+        "Если программа полезна, можно поддержать её развитие.", width - 4), "text");
+      if (width >= qrWidth + 6) {
+        const top = (height > 30 ? 6 : 4) + Math.floor((20 - qr.length) / 2);
+        const left = Math.floor((width - qrWidth) / 2);
+        for (let i = 0; i < qr.length; i++) put(frame, left, top + i, qr[i], "qr");
+      } else {
+        center(frame, Math.floor(height / 2) - 1, "QR-код не помещается по ширине.", "warning");
+        center(frame, Math.floor(height / 2) + 1, "Откройте ссылку ниже.", "text");
+      }
+      const linkRow = height - 5;
+      center(frame, linkRow, "[ ОТКРЫТЬ ССЫЛКУ ]", "highlight");
+      center(frame, height - 1, "Esc — назад   Enter — открыть ссылку", "dim");
+      return linkRow;
+    }
+    function measureColumns() {
+      const charWidth = measure.getBoundingClientRect().width / 10 || 8.5;
+      return Math.max(30, Math.floor((viewport.clientWidth - 2) / charWidth));
+    }
+    function qrUrl() { return qrPage === "app" ? MOBILE_APP_URL : SUPPORT_URL; }
+    function buildMarkup(frame, clickableRows, linkRow = -1, backRow = -1) {
+      return frame.map((row, y) => {
+        const chunks = [];
+        let palette = row[0].p;
+        let characters = "";
+        for (const cell of row) {
+          if (cell.p !== palette) {
+            chunks.push('<span class="p-' + palette + '">' + escapeHtml(characters) + '</span>');
+            palette = cell.p;
+            characters = "";
+          }
+          characters += cell.c;
+        }
+        chunks.push('<span class="p-' + palette + '">' + escapeHtml(characters) + '</span>');
+        const rowClass = row.some(cell => cell.p === "qr") ? "row qr-row" : "row";
+        if (y === linkRow) {
+          return '<a class="' + rowClass + ' qr-link" href="' + escapeHtml(qrUrl()) + '" target="_blank" rel="noopener noreferrer" aria-label="Открыть ссылку для QR-кода">' + chunks.join("") + '</a>';
+        }
+        const optionIndex = clickableRows.indexOf(y);
+        const optionAttribute = optionIndex >= 0 ? ' data-option="' + optionIndex + '" title="' + escapeHtml(MENU[optionIndex].label) + '"' : "";
+        const backAttribute = y === backRow ? ' data-qr-back="1" title="Вернуться в меню"' : "";
+        return '<div class="' + rowClass + '"' + optionAttribute + backAttribute + '>' + chunks.join("") + '</div>';
+      }).join("");
+    }
+    function render(now = performance.now()) {
+      const columns = measureColumns();
+      const compact = columns < 80;
+      currentWidth = compact ? Math.max(30, columns - 1) : Math.min(116, Math.max(79, columns - 1));
+      const frame = canvas(currentWidth, qrPage || compact ? 35 : 30);
+      if (ambientStarted !== null && now - ambientStarted >= 620) {
+        ambientStarted = null;
+        nextSweep = now + random(18000, 31000);
+      }
+      if (ambientStarted === null && now >= nextSweep) ambientStarted = now;
+      const elapsed = matchMedia("(prefers-reduced-motion: reduce)").matches ? 9999 : now - revealStarted;
+      const linkRow = qrPage ? drawQr(frame) : -1;
+      const clickRows = qrPage ? [] : compact ? drawCompact(frame) : drawRich(frame, now, elapsed);
+      const markup = buildMarkup(frame, clickRows, linkRow, qrPage ? frame.length - 1 : -1);
+      if (markup !== lastMarkup) { screen.innerHTML = markup; lastMarkup = markup; }
+      const announcementKey = qrPage ?? selected;
+      if (announcementKey !== lastAriaIndex) {
+        announcement.textContent = qrPage ?
+          (qrPage === "app" ? "QR-код мобильного приложения Интерсвязь" : "QR-код поддержки проекта через ЮMoney") + ". Нажмите Enter, чтобы открыть ссылку, или Esc, чтобы вернуться." :
+          MENU[selected].label + ". " + contentFor(MENU[selected]).lines.filter(Boolean).join(" ");
+        screen.setAttribute("aria-label", qrPage ? "QR-код. Enter открыть ссылку, Esc назад." : "Интерактивное меню IS74Wifi. Стрелки, цифры, Enter.");
+        lastAriaIndex = announcementKey;
+      }
+    }
+    function select(index) {
+      selected = (index + MENU.length) % MENU.length;
+      render();
+    }
+    function activate() {
+      const action = MENU[selected].action;
+      if (action === "download") {
+        window.location.assign(download.url);
+      } else if (action === "qr-app" || action === "qr-support") {
+        qrPage = action === "qr-app" ? "app" : "support";
+        render();
+      } else if (action === "releases" || action === "source") {
+        window.open(action === "releases" ? LATEST_RELEASE : SOURCE_URL, "_blank", "noopener,noreferrer");
+      } else {
+        render();
+      }
+    }
+    screen.addEventListener("click", event => {
+      if (qrPage) {
+        if (event.target.closest("[data-qr-back]")) { qrPage = null; render(); }
+        return;
+      }
+      const row = event.target.closest("[data-option]");
+      if (!row) return;
+      const index = Number(row.dataset.option);
+      select(index);
+      screen.focus({ preventScroll: true });
+      if (MENU[index].action) activate();
+    });
+    window.addEventListener("keydown", event => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      if (qrPage) {
+        if (event.key === "Escape" || event.key === "Backspace") {
+          event.preventDefault();
+          qrPage = null;
+          render();
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          window.open(qrUrl(), "_blank", "noopener,noreferrer");
+        }
+        return;
+      }
+      if (event.key === "ArrowUp") { event.preventDefault(); select(selected - 1); }
+      else if (event.key === "ArrowDown") { event.preventDefault(); select(selected + 1); }
+      else if (event.key === "Enter") { event.preventDefault(); activate(); }
+      else if (MENU.some(item => item.key === event.key)) {
+        event.preventDefault();
+        select(MENU.findIndex(item => item.key === event.key));
+        if (MENU[selected].action) activate();
+      }
+    });
+    window.addEventListener("resize", () => { lastMarkup = ""; render(); rebuildAmbient(); });
+
+    // GitHub API используется только для определения самого нового EXE, включая pre-release.
+    fetch(RELEASE_API, { headers: { Accept: "application/vnd.github+json" } })
+      .then(response => { if (!response.ok) throw new Error("GitHub API"); return response.json(); })
+      .then(releases => {
+        const candidates = releases.filter(release => !release.draft && release.published_at)
+          .sort((a, b) => new Date(b.published_at) - new Date(a.published_at));
+        for (const release of candidates) {
+          const asset = release.assets?.find(file => /win-x64\.exe$/i.test(file.name));
+          if (asset && asset.browser_download_url) {
+            download = { version: release.tag_name, bytes: asset.size, url: asset.browser_download_url };
+            render();
+            break;
+          }
+        }
+      })
+      .catch(() => { /* При недоступности API остаётся проверенный EXE alpha.48. */ });
+
+    // Обновляем символы только во время самой анимации и при действиях пользователя.
+    function frameLoop(now) {
+      const activeReveal = now - revealStarted < 600 && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const activeAmbient = ambientStarted !== null || now >= nextSweep;
+      if (!qrPage && (activeReveal || activeAmbient)) render(now);
+      requestAnimationFrame(frameLoop);
+    }
+    render();
+    rebuildAmbient();
+    requestAnimationFrame(frameLoop);
+  </script>
+</body>
+</html>
